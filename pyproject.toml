@@ -10,7 +10,7 @@ description = "A Python package for taking an AF2 structure and making the disor
 dynamic = ["version"]
 readme = "README.md"
 authors = [
-    { name = "Ryan Emenecker - Holehouse Lab", email = "rremenecker@wustl.edu" }
+    { name = "Ryan Emenecker - Holehouse Lab", email = "remenecker@wustl.edu" }
 ]
 license = { text = "MIT" }
 # See https://pypi.org/classifiers/
@@ -20,9 +20,15 @@ classifiers = [
 ]
 requires-python = ">=3.8"
 # Declare any run-time dependencies that should be installed with the package.
-#dependencies = [
-#    "importlib-resources;python_version<'3.10'",
-#]
+dependencies = [
+    "importlib-resources;python_version<'3.10'",
+    "cython",
+    "numpy",
+    "metapredict",
+    "getSequence",
+    "sparrow @ git+https://git@github.com/idptools/sparrow.git",
+    "matplotlib"
+]
 
 # Update the urls once the hosting is set up.
 #[project.urls]

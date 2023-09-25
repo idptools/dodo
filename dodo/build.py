@@ -74,7 +74,7 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
         betas=None
 
     if graph==True:
-        plot_structure(new_structure, region_info, save_path=out_path)
+        plot_structure(new_structure['ca_coords'], region_info, save_path=out_path)
     else:
         if out_path=='':
             return new_structure
@@ -157,7 +157,7 @@ def pdb_from_pdb(path_to_pdb, mode='predicted', out_path='',
     else:
         betas=None
     if graph==True:
-        plot_structure(new_structure, region_info, save_path=out_path)
+        plot_structure(new_structure['ca_coords'], region_info, save_path=out_path)
     else:
         if out_path=='':
             return new_structure

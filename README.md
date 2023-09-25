@@ -4,7 +4,7 @@ DODO
 **D**e-sillifying AlphaF**O**ld2 disor**D**ered regi**O**ns  
 
 
-DODO is a A Python package for taking an AF2 structure and making the disordered regions look less silly (I believe the scientific term is *de-sillifying*.  
+DODO is a A Python package for taking an AF2 structure and making the disordered regions look less silly (I believe the scientific term is *de-sillifying*).  
 
 ### How can you use DODO?
 

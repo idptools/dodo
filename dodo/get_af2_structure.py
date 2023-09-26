@@ -5,6 +5,7 @@ from getSequence import getseq
 import os
 from dodo.dodo_exceptions import dodoAF2Exception
 from dodo.dodo_tools import af2_lines_to_structure_dict
+from dodo.pdb import array
 
 
 def get_af2_pdb(protein_name, outpath='', silent=True, save=False):
@@ -58,6 +59,7 @@ def get_af2_pdb(protein_name, outpath='', silent=True, save=False):
     if af2_seq != prot_id_and_seq[1]:
         raise dodoAF2Exception('AF2 sequence does not match sequence retrieved from Uniprot!')
     return lines
+
 
 
 

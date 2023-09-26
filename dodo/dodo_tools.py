@@ -42,7 +42,10 @@ def af2_lines_to_structure_dict(af2_pdb_lines):
     sequence=''
     ca_three_letter_seq=[]
     all_atom_three_letter_seq=[]
-    coords_by_aa={}
+    coords_by_aa_ind={}
+    coords_by_aa_id=[]
+    coord_by_aa_ind_with_name={}
+    res_to_ind={}
     atom_coords_per_aa=[]
     start_resnum=1
     for line in af2_pdb_lines:
@@ -51,25 +54,48 @@ def af2_lines_to_structure_dict(af2_pdb_lines):
                 resname=line[17:20]
                 chain_id=line[21]                
                 restype=line[13:16]
+                restype_no_space=''
+                for resval in restype:
+                    if resval!=' ':
+                        restype_no_space+=resval
+
                 resnum=int(line[22:26])
                 x=float(line[30:38])
                 y=float(line[38:46])
                 z=float(line[46:54])
-                if resnum not in coords_by_aa:
-                    coords_by_aa[resnum]=[[x,y,z]]
+                if resnum not in coords_by_aa_ind:
+                    res_to_ind[resnum]=AADICT_3_to_1[resname]
+                    coords_by_aa_ind[resnum]=[[x,y,z]]
                 else:
-                    cur_coords=coords_by_aa[resnum]
+                    cur_coords=coords_by_aa_ind[resnum]
                     cur_coords.append([x,y,z])
-                    coords_by_aa[resnum]=cur_coords
+                    coords_by_aa_ind[resnum]=cur_coords
+                if resnum not in coord_by_aa_ind_with_name:
+                    coord_by_aa_ind_with_name[resnum]={restype_no_space:[x,y,z]}
+                else:
+                    cur_coord_by_aa_ind_with_name=coord_by_aa_ind_with_name[resnum]
+                    cur_coord_by_aa_ind_with_name[restype_no_space]=[x,y,z]
+                    coord_by_aa_ind_with_name[resnum]=cur_coord_by_aa_ind_with_name
                 all_atom_coords.append([x,y,z])
                 atom_coords_per_aa.append([x,y,z])
                 all_atom_three_letter_seq.append(resname)
-                all_atoms_types.append(restype)
-                if restype=='CA ' or restype==' CA':
+                all_atoms_types.append(restype_no_space)
+                if restype_no_space=='CA':
                     ca_coords.append([x,y,z])
                     ca_three_letter_seq.append(resname)
                     sequence+=AADICT_3_to_1[resname]
 
+    # popoulate the coords_by_aa_id dict
+    atom_name_ind=0
+    for aa in coords_by_aa_ind:
+        cur_aa = res_to_ind[aa]
+        cur_atom_coords=coords_by_aa_ind[aa]
+        temp={}
+        for a_ind in range(0, len(cur_atom_coords)):
+            cur_atom_type=all_atoms_types[atom_name_ind]
+            temp[cur_atom_type]=cur_atom_coords[a_ind]
+            atom_name_ind+=1
+        coords_by_aa_id.append({cur_aa:temp})
 
 
     # return lists
@@ -77,7 +103,12 @@ def af2_lines_to_structure_dict(af2_pdb_lines):
         'all_atoms_types':all_atoms_types, 'sequence':sequence, 
         'ca_three_letter_seq':ca_three_letter_seq, 
         'all_atom_three_letter_seq':all_atom_three_letter_seq,
-        'coords_by_aa':coords_by_aa}
+        'coords_by_aa_ind':coords_by_aa_ind,
+        'original_PDB_lines':af2_pdb_lines,
+        'res_to_ind':res_to_ind,
+        'coords_by_aa_id':coords_by_aa_id,
+        'coord_by_aa_ind_with_name':coord_by_aa_ind_with_name}
+
 
 
 

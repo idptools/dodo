@@ -7,7 +7,9 @@ from dodo.get_af2_structure import get_af2_pdb
 from dodo.structure_constructor import build_structure, build_idr_from_sequence, predict_e2e
 from dodo.find_idrs_fds_loops import get_fds_loops_idrs, get_fds_idrs_from_metapredict
 from dodo.dodo_tools import af2_lines_to_structure_dict, plot_structure, write_pdb
-
+import numpy as np
+from dodo.parameters import AADICT
+from dodo.pdb import array
 
 def pdb_from_name(protein_name, out_path='', mode='predicted', 
     use_metapredict=False, graph=False, beta_by_region=True, silent=False, verbose=False,
@@ -25,20 +27,22 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
     if use_metapredict:
         if verbose==True:
             print('Predicting regions using Metapredict V2.')
-        region_info = get_fds_idrs_from_metapredict(structure_dict)
+        structure_dict = get_fds_idrs_from_metapredict(structure_dict)
     else:
         if verbose==True:
             print('Predicting folded reigons, loops, and IDRs using AF2 structure information.')        
-        region_info = get_fds_loops_idrs(structure_dict)
+        structure_dict = get_fds_loops_idrs(structure_dict)
     # build the new structure
     if verbose==True:
         print('Building new structure.')    
-    new_structure = build_structure(structure_dict, region_info, mode=mode,
+    structure_dict = build_structure(structure_dict, mode=mode,
                                     attempts_per_region=attempts_per_region,
                                     attempts_per_coord=attempts_per_coord,
                                     bond_length=bond_length, clash_dist=clash_dist,
                                     min_bond_dist=min_bond_dist, max_bond_dist=max_bond_dist,
                                     silent=silent, verbose=verbose, debugging=debugging)
+    region_info = structure_dict['regions_dict']
+
     if beta_by_region:
         betas=[]
         for region in region_info:
@@ -74,12 +78,12 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
         betas=None
 
     if graph==True:
-        plot_structure(new_structure['ca_coords'], region_info, save_path=out_path)
+        plot_structure(structure_dict['ca_coords'], region_info, save_path=out_path)
     else:
         if out_path=='':
-            return new_structure
+            return structure_dict
         else:
-            xyz_list = new_structure['ca_coords']
+            xyz_list = structure_dict['ca_coords']
             sequence = structure_dict['ca_three_letter_seq']
             write_pdb(xyz_list, out_path, residue_names=sequence, beta=betas)
 
@@ -109,20 +113,21 @@ def pdb_from_pdb(path_to_pdb, mode='predicted', out_path='',
     if use_metapredict:
         if verbose==True:
             print('Predicting regions using Metapredict V2.')
-        region_info = get_fds_idrs_from_metapredict(structure_dict)
+        structure_dict = get_fds_idrs_from_metapredict(structure_dict)
     else:
         if verbose==True:
             print('Predicting folded reigons, loops, and IDRs using AF2 structure information.')        
-        region_info = get_fds_loops_idrs(structure_dict)
+        structure_dict = get_fds_loops_idrs(structure_dict)
     # build the new structure
     if verbose==True:
         print('Building new structure.')    
-    new_structure = build_structure(structure_dict, region_info, mode=mode,
+    structure_dict = build_structure(structure_dict, mode=mode,
                                     attempts_per_region=attempts_per_region,
                                     attempts_per_coord=attempts_per_coord,
                                     bond_length=bond_length, clash_dist=clash_dist,
                                     min_bond_dist=min_bond_dist, max_bond_dist=max_bond_dist,
                                     silent=silent, verbose=verbose, debugging=debugging)
+    region_info = structure_dict['regions_dict']
     if beta_by_region:
         betas=[]
         for region in region_info:
@@ -157,12 +162,12 @@ def pdb_from_pdb(path_to_pdb, mode='predicted', out_path='',
     else:
         betas=None
     if graph==True:
-        plot_structure(new_structure['ca_coords'], region_info, save_path=out_path)
+        plot_structure(structure_dict['ca_coords'], region_info, save_path=out_path)
     else:
         if out_path=='':
-            return new_structure
+            return structure_dict
         else:
-            xyz_list = new_structure['ca_coords']
+            xyz_list = structure_dict['ca_coords']
             sequence = structure_dict['ca_three_letter_seq']
             write_pdb(xyz_list, out_path, residue_names=sequence, beta=betas)
 
@@ -203,3 +208,6 @@ def idr(sequence, mode='predicted', bond_length=3.8, clash_dist=3.4, attempts_al
     attempts_all_coords=attempts_all_coords, min_bond_dist=min_bond_dist,
     max_bond_dist=max_bond_dist, start_coord=start_coord, all_atoms=all_atoms)
     return idr_coords
+
+
+

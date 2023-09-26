@@ -12,6 +12,7 @@ Can identify IDRs, FDs, and FDs with loops (if using non-metapredict approach).
 import math
 import metapredict as meta
 import numpy as np
+from dodo.pdb import array
 import os
 
 
@@ -36,7 +37,7 @@ def get_close_atoms(pdb_file_dict, thresh=8, loop_thresh=7):
             a list of the three letter amino acid codes of all CA atoms in the structure.
         all_atom_three_letter_seq : list
             a list of the three letter amino acid codes of all atoms in the structure.
-        coords_by_aa : dict
+        coords_by_aa_ind : dict
             For each amino acid, coords for every atom. Needed for the functionality to
             identify loops vs. IDRs
 
@@ -64,7 +65,7 @@ def get_close_atoms(pdb_file_dict, thresh=8, loop_thresh=7):
     '''
     # load chain, get sequence
     sequence=pdb_file_dict['sequence']
-    all_coords=pdb_file_dict['coords_by_aa']
+    all_coords=pdb_file_dict['coords_by_aa_ind']
     CA_atoms=pdb_file_dict['ca_coords']
     
     # list to hold number of close atoms for each of the amino acids
@@ -119,7 +120,7 @@ def get_fds_loops_idrs(pdb_file_dict, threshold=480, gap_thresh=25,
             a list of the three letter amino acid codes of all CA atoms in the structure.
         all_atom_three_letter_seq : list
             a list of the three letter amino acid codes of all atoms in the structure.
-        coords_by_aa : dict
+        coords_by_aa_ind : dict
             For each amino acid, coords for every atom. Needed for the functionality to
             identify loops vs. IDRs
 
@@ -278,8 +279,9 @@ def get_fds_loops_idrs(pdb_file_dict, threshold=480, gap_thresh=25,
             regions_dict[f'idr_{region_num}']=region
         region_num+=1
 
+    pdb_file_dict['regions_dict']=regions_dict
     # return regions in order with names and coordinates
-    return regions_dict
+    return pdb_file_dict
 
 
 def get_fds_idrs_from_metapredict(pdb_file_dict):
@@ -304,7 +306,7 @@ def get_fds_idrs_from_metapredict(pdb_file_dict):
             a list of the three letter amino acid codes of all CA atoms in the structure.
         all_atom_three_letter_seq : list
             a list of the three letter amino acid codes of all atoms in the structure.
-        coords_by_aa : dict
+        coords_by_aa_ind : dict
             For each amino acid, coords for every atom. Needed for the functionality to
             identify loops vs. IDRs
 
@@ -344,6 +346,8 @@ def get_fds_idrs_from_metapredict(pdb_file_dict):
     fin_dict_list[1]=len(seq)-1
     fin_dict[fin_dict_adjust_val]=fin_dict_list
 
-    return fin_dict
+    pdb_file_dict['regions_dict']=fin_dict
+
+    return pdb_file_dict
 
 

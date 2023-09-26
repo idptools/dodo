@@ -7,7 +7,8 @@ import math
 import numpy as np
 from sparrow import Protein as pr
 from dodo.dodo_exceptions import dodoException
-from dodo.parameters import AMINO_ACID_ATOMS_AF2
+from dodo.all_atoms import approximate_amino_acid_coordinates
+from dodo.pdb import array
 
 def get_res_dist(xyz1, xyz2):
     '''
@@ -387,35 +388,6 @@ def random_coordinate_on_sphere_surface(center_coordinate, radius):
     return (x, y, z)
 
 
-def approximate_amino_acid_coordinates(amino_acid, alpha_carbon_coordinate, coord_dict=AMINO_ACID_ATOMS_AF2):
-    """
-    Approximate the 3D coordinates of other atoms in a specific amino acid based on its identity
-    and the alpha carbon's position.
-
-    Parameters
-    ------------
-    amino_acid : str 
-        The identity of the amino acid (e.g., 'A', 'L').
-    alpha_carbon_coordinate : tuple 
-        3D coordinates of the alpha carbon (Ca) (x, y, z).
-
-    Returns:
-        dict: A dictionary containing approximate 3D coordinates of common atoms (Ca, C, O, N, H).
-    """
-    if amino_acid not in coord_dict:
-        raise ValueError(f"Amino acid '{amino_acid}' not found in the database.")
-
-    if len(alpha_carbon_coordinate) != 3:
-        raise ValueError("Alpha carbon coordinate must be a 3D coordinate (x, y, z).")
-
-    # Get pre-defined coordinates for the specified amino acid
-    amino_acid_atoms = coord_dict[amino_acid]
-
-    # Calculate the positions of atoms relative to the alpha carbon
-    relative_positions = {atom: alpha_carbon_coordinate + np.array(coord) for atom, coord in amino_acid_atoms.items()}
-
-    return relative_positions
-
 
 def bond_length_check(coords, min_dist=2.8, max_dist=4.4):
     '''
@@ -498,10 +470,14 @@ def build_idr_from_sequence(IDR_end_to_end_dist, sequence,
         all_IDR_coords=[]
         for i in range(0, len(IDR_coords)):
             all_IDR_coords.append(approximate_amino_acid_coordinates(sequence[i], IDR_coords[i]))
+            # commenting out for now, the rotations seem... not quite right. 
+            #all_IDR_coords=rotate_atoms_relative_to_alpha_c(all_IDR_coords)
         IDR_coords=all_IDR_coords
 
     # overwrite final coordinates in pdb dict
     return IDR_coords
+
+
 
 
 
@@ -576,7 +552,7 @@ def build_IDR_specific_dist_no_FDs(IDR_end_to_end_dist, pdb_dict,
     return pdb_dict
     
 
-def build_terminal_IDR_to_distance(IDR_end_to_end_dist, pdb_dict, regions_dict,
+def build_terminal_IDR_to_distance(IDR_end_to_end_dist, pdb_dict,
     relative_IDR_location, bond_length=3.8, clash_dist=3.4, attempts_start_coord=10000, 
     attempts_all_coords=30000, min_bond_dist = 2.8, max_bond_dist=4.4, silent=False, debugging=False):
     '''
@@ -591,7 +567,8 @@ def build_terminal_IDR_to_distance(IDR_end_to_end_dist, pdb_dict, regions_dict,
     # get all ca coords
     all_ca_coords = pdb_dict['ca_coords']
 
-    # need to get some info on FD next to the IDR if there is one. 
+    # need to get some info on FD next to the IDR if there is one.
+    regions_dict = pdb_dict['regions_dict'] 
     all_regions = list(regions_dict.keys())
 
     if relative_IDR_location=='N':
@@ -735,12 +712,13 @@ def build_terminal_IDR_to_distance(IDR_end_to_end_dist, pdb_dict, regions_dict,
     return pdb_dict
     
 
-def build_fd_loops(pdb_dict, regions_dict, loop_name, bond_length=3.8, clash_dist=3.4,
+def build_fd_loops(pdb_dict, loop_name, bond_length=3.8, clash_dist=3.4,
     attempts_all_coords=30000, min_bond_dist = 2.8, max_bond_dist=4.4, silent=False):
     # function for adding in loops. 
 
     # get ca coords, loop coords, and fd coords
     ca_coords = pdb_dict['ca_coords']
+    regions_dict = pdb_dict['regions_dict'] 
     loop_coords = regions_dict[loop_name][1]
     fd_coords = regions_dict[loop_name][0]
 
@@ -830,7 +808,7 @@ def build_fd_loops(pdb_dict, regions_dict, loop_name, bond_length=3.8, clash_dis
     return pdb_dict
 
 
-def build_idr_between_fds(IDR_end_to_end_dist, pdb_dict, regions_dict,
+def build_idr_between_fds(IDR_end_to_end_dist, pdb_dict,
     idr_name, bond_length=3.8, clash_dist=3.4, attempts_all_coords=30000, 
     min_bond_dist = 2.8, max_bond_dist=4.4, silent=False):
     
@@ -839,6 +817,7 @@ def build_idr_between_fds(IDR_end_to_end_dist, pdb_dict, regions_dict,
 
     # get some info. 
     ca_coords = pdb_dict['ca_coords']
+    regions_dict = pdb_dict['regions_dict'] 
     idr_indices = regions_dict[idr_name]
     all_idr_indices=[aa for aa in range(idr_indices[0], idr_indices[1])]
     region_names = list(regions_dict.keys())
@@ -942,7 +921,7 @@ def build_idr_between_fds(IDR_end_to_end_dist, pdb_dict, regions_dict,
     pdb_dict['ca_coords']=rebuilt_coords
     return pdb_dict
 
-def build_structure(pdb_dict, region_dict, mode, attempts_per_region=50,
+def build_structure(pdb_dict, mode, attempts_per_region=50,
     attempts_per_coord=5000, bond_length=3.8, clash_dist=3.4, min_bond_dist=2.8, 
     max_bond_dist=4.4, silent=False, verbose=False, debugging=False):
 
@@ -965,9 +944,10 @@ def build_structure(pdb_dict, region_dict, mode, attempts_per_region=50,
     else:
         raise Exception('Invalid mode specified. Please specify super_compact, compact, normal, expanded, super_expanded, or max_expansion, or predicted.')
 
-    idrs = [region for region in region_dict if 'idr' in region]
-    fd_loops = [region for region in region_dict if 'loop' in region]
-    fds = [region for region in region_dict if 'folded' in region]
+    regions_dict=pdb_dict['regions_dict']
+    idrs = [region for region in regions_dict if 'idr' in region]
+    fd_loops = [region for region in regions_dict if 'loop' in region]
+    fds = [region for region in regions_dict if 'folded' in region]
 
     if verbose==True:
         print(f'{len(idrs)} IDRs detected, {len(fd_loops)} FDs with loops detected, {len(fds)} folded domaind detected.')
@@ -1000,7 +980,7 @@ def build_structure(pdb_dict, region_dict, mode, attempts_per_region=50,
                     if verbose==True:
                         print(f'On loop {loop}, attempt number {cur_attempt}')
                     try:
-                        pdb_dict = build_fd_loops(pdb_dict, region_dict, loop, bond_length=bond_length,
+                        pdb_dict = build_fd_loops(pdb_dict, loop, bond_length=bond_length,
                             clash_dist=clash_dist, attempts_all_coords=attempts_per_coord, 
                             min_bond_dist=min_bond_dist, max_bond_dist=max_bond_dist, silent=silent)
                         success=True
@@ -1009,7 +989,7 @@ def build_structure(pdb_dict, region_dict, mode, attempts_per_region=50,
                         pass
                 if success==False:
                     if debugging==True:
-                        print(region_dict)
+                        print(regions_dict)
                         print(loop)
                     raise dodoException(f'Unable to build loop {loop} after {cur_attempt} attempts.')
 
@@ -1017,13 +997,13 @@ def build_structure(pdb_dict, region_dict, mode, attempts_per_region=50,
         if len(idrs)!=0:
             terminal_IDRs={}
             for IDR in idrs:
-                if IDR == list(region_dict)[0]:
+                if IDR == list(regions_dict)[0]:
                     terminal_IDRs['N']=IDR
-                elif IDR == list(region_dict)[-1]:
+                elif IDR == list(regions_dict)[-1]:
                     terminal_IDRs['C']=IDR
                 else:
                     # get IDR length
-                    IDR_seq = pdb_dict['sequence'][region_dict[IDR][0]:region_dict[IDR][1]]
+                    IDR_seq = pdb_dict['sequence'][regions_dict[IDR][0]:regions_dict[IDR][1]]
                     if run_prediction==True:
                         e2e = predict_e2e(IDR_seq)
                     else:
@@ -1035,7 +1015,7 @@ def build_structure(pdb_dict, region_dict, mode, attempts_per_region=50,
                         if verbose==True:
                             print(f'On IDR {IDR}, attempt number {cur_attempt}')
                         try:
-                            pdb_dict = build_idr_between_fds(e2e, pdb_dict, region_dict, IDR, 
+                            pdb_dict = build_idr_between_fds(e2e, pdb_dict, IDR, 
                                 bond_length=bond_length, clash_dist=clash_dist, 
                                 attempts_all_coords=attempts_per_coord, 
                                 min_bond_dist=min_bond_dist, max_bond_dist=max_bond_dist, silent=silent)
@@ -1045,14 +1025,14 @@ def build_structure(pdb_dict, region_dict, mode, attempts_per_region=50,
                             pass
                     if success==False:
                         if debugging==True:
-                            print(region_dict)
+                            print(regions_dict)
                             print(IDR_seq)
                         raise dodoException(f'Unable to build IDR {IDR} after {cur_attempt} attempts.')
             # now for the terminal IDRs
             if 'N' in list(terminal_IDRs):
                 # get IDR length
                 IDR = terminal_IDRs['N']
-                IDR_seq = pdb_dict['sequence'][region_dict[IDR][0]:region_dict[IDR][1]]
+                IDR_seq = pdb_dict['sequence'][regions_dict[IDR][0]:regions_dict[IDR][1]]
                 if run_prediction==True:
                     e2e = predict_e2e(IDR_seq)
                 else:
@@ -1064,7 +1044,7 @@ def build_structure(pdb_dict, region_dict, mode, attempts_per_region=50,
                     if verbose==True:
                         print(f'On N-terminal IDR, attempt number {cur_attempt}')
                     try:
-                        pdb_dict = build_terminal_IDR_to_distance(e2e, pdb_dict, region_dict, 'N', 
+                        pdb_dict = build_terminal_IDR_to_distance(e2e, pdb_dict, 'N', 
                             bond_length=bond_length, clash_dist=clash_dist, 
                             attempts_start_coord=20000, attempts_all_coords=attempts_per_coord, 
                             min_bond_dist=min_bond_dist, max_bond_dist=max_bond_dist, silent=silent)
@@ -1074,13 +1054,13 @@ def build_structure(pdb_dict, region_dict, mode, attempts_per_region=50,
                         pass
                 if success==False:
                     if debugging==True:
-                        print(region_dict)
+                        print(regions_dict)
                         print(IDR_seq)                    
                     raise dodoException(f'Unable to build IDR {IDR} after {cur_attempt} attempts.')                
             if 'C' in list(terminal_IDRs):
                 # get IDR length
                 IDR = terminal_IDRs['C']
-                IDR_seq = pdb_dict['sequence'][region_dict[IDR][0]:region_dict[IDR][1]]
+                IDR_seq = pdb_dict['sequence'][regions_dict[IDR][0]:regions_dict[IDR][1]]
                 if run_prediction==True:
                     e2e = predict_e2e(IDR_seq)
                 else:
@@ -1092,7 +1072,7 @@ def build_structure(pdb_dict, region_dict, mode, attempts_per_region=50,
                     if verbose==True:
                         print(f'On N-terminal IDR, attempt number {cur_attempt}')
                     try:
-                        pdb_dict = build_terminal_IDR_to_distance(e2e, pdb_dict, region_dict, 'C', 
+                        pdb_dict = build_terminal_IDR_to_distance(e2e, pdb_dict, 'C', 
                             bond_length=bond_length, clash_dist=clash_dist, 
                             attempts_start_coord=20000, attempts_all_coords=attempts_per_coord, 
                             min_bond_dist=min_bond_dist, max_bond_dist=max_bond_dist, silent=silent)
@@ -1102,7 +1082,10 @@ def build_structure(pdb_dict, region_dict, mode, attempts_per_region=50,
                         pass
                 if success==False:
                     if debugging==True:
-                        print(region_dict)
+                        print(regions_dict)
                         print(IDR_seq)                         
                     raise dodoException(f'Unable to build IDR {IDR} after {cur_attempt} attempts.') 
     return pdb_dict
+
+
+

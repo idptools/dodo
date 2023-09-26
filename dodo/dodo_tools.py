@@ -1,6 +1,6 @@
 # various tools
 import metapredict as meta
-from dodo.parameters import AADICT_3_to_1
+from dodo.parameters import AADICT_3_to_1, AADICT
 from dodo.dodo_exceptions import dodoException, dodoPDBException
 import matplotlib.pyplot as plt
 
@@ -278,7 +278,9 @@ def write_pdb(xyz_list,
               chain_id='A',
               chain_ids=None,
               beta=None,
-              one_atom_per_residue=True):
+              one_atom_per_residue=True, 
+              include_seq_res=False,
+              sequence=''):
                  
     
     """
@@ -586,12 +588,42 @@ def write_pdb(xyz_list,
     OCCUPANCY_WIDTH=6
     BETA_WIDTH=6
     FINAL_PAD = ' '*8
+    SEQRES_WIDTH=4
+    RES_PER_SEQRES=13
+    SEQRES_PAD = ' '*10
+    SEQRES_LEN_PAD=5
+
 
     # initialize
     idx = 0
     res_idx =  residue_start
     atom_idx = atom_start
     
+    if include_seq_res:
+        if sequence=='':
+            raise dodoPDBException('Need to provide a sequence if you want to add SEQRES lines. There are other ways to do this but... sorry!')
+
+        # figure out how many lines. 
+        n_seqres_lines = int(len(sequence)/RES_PER_SEQRES)
+        if n_seqres_lines*RES_PER_SEQRES != len(sequence):
+            n_seqres_lines+=1
+        for seqresline in range(1, n_seqres_lines+1):
+            seq_res_line=''
+            cur_aas=sequence[(seqresline-1)*RES_PER_SEQRES:seqresline*RES_PER_SEQRES]
+            seq_res_line_num=f'{seqresline}'
+            for i in range(0, 4-len(seq_res_line_num)):
+                seq_res_line_num=seq_res_line_num+' '
+            seq_res_line+=f'SEQRES{seq_res_line_num} A'
+            seq_res_seq_len=f'{len(sequence)}'
+            for i in range(0, 5-len(seq_res_seq_len)):
+                seq_res_seq_len=' '+seq_res_seq_len
+            seq_res_line+=seq_res_seq_len
+            seq_res_line+='  '
+            for aa in cur_aas:
+                seq_res_line+=f'{AADICT[aa]} '
+            seq_res_line+='         '
+            fh.write(seq_res_line+'\n')
+
     for atom in xyz_list:
 
         # extract specific data to write

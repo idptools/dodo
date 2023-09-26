@@ -4,7 +4,7 @@ import os
 
 from dodo.dodo_exceptions import dodoException
 from dodo.get_af2_structure import get_af2_pdb
-from dodo.structure_constructor import build_structure
+from dodo.structure_constructor import build_structure, build_idr_from_sequence, predict_e2e
 from dodo.find_idrs_fds_loops import get_fds_loops_idrs, get_fds_idrs_from_metapredict
 from dodo.dodo_tools import af2_lines_to_structure_dict, plot_structure, write_pdb
 
@@ -167,4 +167,39 @@ def pdb_from_pdb(path_to_pdb, mode='predicted', out_path='',
             write_pdb(xyz_list, out_path, residue_names=sequence, beta=betas)
 
 
-
+def idr(sequence, mode='predicted', bond_length=3.8, clash_dist=3.4, attempts_all_coords=30000,
+    min_bond_dist=2.8, max_bond_dist=4.4, start_coord=[0,0,0], all_atoms=False):
+    '''
+    Function to make IDR coordinates for an IDR with a specific e2e
+    based on mode and sequence
+    '''
+    # set mode
+    run_prediction=False
+    if mode =='super_compact':
+        length_multiplier = 0.3
+    elif mode == 'compact':
+        length_multiplier=0.55
+    elif mode == 'normal':
+        length_multiplier=0.8
+    elif mode == 'expanded':
+        length_multiplier = 1.05
+    elif mode == 'super_expanded':
+        length_multiplier = 1.3
+    elif mode == 'max_expansion':
+        length_multiplier=1.65
+    elif mode == 'predicted':
+        run_prediction=True
+    else:
+        raise Exception('Invalid mode specified. Please specify super_compact, compact, normal, expanded, super_expanded, or max_expansion, or predicted.')
+    # get len IDR
+    idr_len = len(sequence)
+    if run_prediction:
+        # get predicted e2e
+        e2e = predict_e2e(sequence)
+    else:
+        e2e=length_multiplier*idr_len
+    idr_coords = build_idr_from_sequence(e2e, sequence,
+    bond_length=bond_length, clash_dist=clash_dist, 
+    attempts_all_coords=attempts_all_coords, min_bond_dist=min_bond_dist,
+    max_bond_dist=max_bond_dist, start_coord=start_coord, all_atoms=all_atoms)
+    return idr_coords

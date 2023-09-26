@@ -78,14 +78,40 @@ All arguments for ``build.pdb_from_name`` are as follows:
 **clash_dist** - optional. Default: 3.4. How far atoms must be apart before being considered to be clashing.  
 **min_bond_dist** - optional. Default: 2.8. Minimum distance between each bond in the structure before raising an exception. AF2 has some shorter ones, so probably leave this alone.  
 **max_bond_dist** - optional. Default: 4.2. Maximum distance between each bond in the structure before raising an exception. AF2 has some longer ones, so probably leave this alone.  
+  
+  
+  
+**Starting n IDR sequence.**  
+If you just have an IDR sequence, you can also generate coordinates for that. Functionality is coming to automatically generate the PDB file as well, but it's near midnight so that's for later. The only required argument is the sequence. 
+
+```python
+build.idr('VQQQGIYNNGTIAVANQVSCQSPNQ')
+```
+**Additional usage:**  
+
+All arguments for ``build.pdb_from_name`` are as follows:  
+**mode** - optional. Default: 'predicted'. The ``predicted`` option predicts the end-to-end distance of your disordered regions from sequence and then makes the IDRs fit within that distance. For IDRs between folded domains, the folded domains are moved apart from each other to accomodate the IDR length. For terminal IDRs, they will just adopt a configuration within the distance equal to the end to end distance. Additional options are ``super_compact``, ``compact``, ``normal``, ``expanded``, ``super_expanded``, ``max_expansion``. These are pretty self explanatory.  
+**all_atoms** - optional. Default: False. Setting to True will result in DODO adding in atoms other than the alpha carbon (CA). NOTE: This is VERY MUCH in beta. It is NOT sophisticated AT ALL whatsoever. However, for visualization purposes, it's not bad. Given this is largely for visualization, I probably won't make it too much better to be honest but you never know. I'll add this to the other functions today or tomorrow (today?). It's late. 
+**graph** - optional. Default: False. Setting this to True will pull up a really rough looking structure of your protein using the 3D graphing functionality in matplotlib. This is something I made when developing this to quickly look at structures. You shouldn't use this, but you can if you want. It's kind of fun TBH.  
+**beta_by_region** optional. Default: True. This takes the beta values and changes them such that if you view the amino acids in something like VMD by beta values, you can see what DODO predicted to be an IDR and what it left as a folded domain. Loops will also be a different color if they were present.  
+**silent** optional. Default: False. This silences the message telling you what structure is being downloaded. Turn this off at your own risk. DODO does not gaurantee that it will download the structure you wanted from name alone. If you just put 'p53' instead of 'human p53', you might get a different organism based on how Uniprot ranks it.  
+**verbose** optional. Default: False. Set to True to get more info on what is happening as your structure is being made.  
+**attempts_per_region** - optional. Default: 50. Number of times to try and make each region.  
+**attempts_per_coord** - optional. Default: 5000. Number of times to try to generate each coordinate for each alpha carbon in the structure.  
+**bond_length** - optional. Default : 3.8. Distance between each bond in angstroms. Probably leave this alone.  
+**clash_dist** - optional. Default: 3.4. How far atoms must be apart before being considered to be clashing.  
+**min_bond_dist** - optional. Default: 2.8. Minimum distance between each bond in the structure before raising an exception. AF2 has some shorter ones, so probably leave this alone.  
+**max_bond_dist** - optional. Default: 4.2. Maximum distance between each bond in the structure before raising an exception. AF2 has some longer ones, so probably leave this alone.  
+
 
 
 #### Changes
 
 Logging changes below.
 
+V0.02 - September 26, 2023. Added generating IDR coords from sequence alone. Added filling in ATOM coordinates from alpha carbon coordinate using fixed bond angles and distances, which isn't great but is better than nothing. 
 
-V0.01 - September 25, 2023. Initial release.
+V0.01 - September 25, 2023. Initial release.  
 
 ### Copyright
 

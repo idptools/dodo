@@ -7,7 +7,7 @@ import math
 import numpy as np
 from sparrow import Protein as pr
 from dodo.dodo_exceptions import dodoException
-
+from dodo.parameters import AMINO_ACID_ATOMS_AF2
 
 def get_res_dist(xyz1, xyz2):
     '''
@@ -386,6 +386,37 @@ def random_coordinate_on_sphere_surface(center_coordinate, radius):
 
     return (x, y, z)
 
+
+def approximate_amino_acid_coordinates(amino_acid, alpha_carbon_coordinate, coord_dict=AMINO_ACID_ATOMS_AF2):
+    """
+    Approximate the 3D coordinates of other atoms in a specific amino acid based on its identity
+    and the alpha carbon's position.
+
+    Parameters
+    ------------
+    amino_acid : str 
+        The identity of the amino acid (e.g., 'A', 'L').
+    alpha_carbon_coordinate : tuple 
+        3D coordinates of the alpha carbon (Ca) (x, y, z).
+
+    Returns:
+        dict: A dictionary containing approximate 3D coordinates of common atoms (Ca, C, O, N, H).
+    """
+    if amino_acid not in coord_dict:
+        raise ValueError(f"Amino acid '{amino_acid}' not found in the database.")
+
+    if len(alpha_carbon_coordinate) != 3:
+        raise ValueError("Alpha carbon coordinate must be a 3D coordinate (x, y, z).")
+
+    # Get pre-defined coordinates for the specified amino acid
+    amino_acid_atoms = coord_dict[amino_acid]
+
+    # Calculate the positions of atoms relative to the alpha carbon
+    relative_positions = {atom: alpha_carbon_coordinate + np.array(coord) for atom, coord in amino_acid_atoms.items()}
+
+    return relative_positions
+
+
 def bond_length_check(coords, min_dist=2.8, max_dist=4.4):
     '''
     function to check bond length between each amino acid
@@ -397,8 +428,8 @@ def bond_length_check(coords, min_dist=2.8, max_dist=4.4):
     return True
 
 def build_idr_from_sequence(IDR_end_to_end_dist, sequence,
-    bond_length=3.8, clash_dist=3.4, attempts_start_coord=10000, 
-    attempts_all_coords=30000, min_bond_dist = 2.8, max_bond_dist=4.4, start_coord=[0,0,0]):
+    bond_length=3.8, clash_dist=3.4, attempts_all_coords=30000, 
+    min_bond_dist = 2.8, max_bond_dist=4.4, start_coord=[0,0,0], all_atoms=False):
     # just an IDR sequence and then the resultant IDR.
     if len(start_coord)!=3:
         raise dodoException('Start coordinate must be a 3D coordinate.')
@@ -462,9 +493,17 @@ def build_idr_from_sequence(IDR_end_to_end_dist, sequence,
     if len(IDR_coords) != len(sequence):
         raise dodoException('Error! Length of final coordinates not equal to length of input sequence')
 
+    # add atomic info
+    if all_atoms==True:
+        all_IDR_coords=[]
+        for i in range(0, len(IDR_coords)):
+            all_IDR_coords.append(approximate_amino_acid_coordinates(sequence[i], IDR_coords[i]))
+        IDR_coords=all_IDR_coords
+
     # overwrite final coordinates in pdb dict
     return IDR_coords
-    
+
+
 
 def build_IDR_specific_dist_no_FDs(IDR_end_to_end_dist, pdb_dict,
     bond_length=3.8, clash_dist=3.4, attempts_start_coord=10000, 

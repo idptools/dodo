@@ -134,36 +134,7 @@ def translate_single_amino_acid_fd(initial_coords, final_alpha_coords):
     return translated_coords
 
 
-def translate_all_fd(pdb_dict, fd_name):
-    # eventually do without fd name...
-    fd_region=pdb_dict['regions_dict'][fd_name]
-    final_ca_coords=pdb_dict['ca_coords']
-    
-    # take care of loops..
-    if type(fd_region[0])==list:
-        remove_loops=fd_region[0]
-        loops=fd_region[1]
-        for loop in loops:
-            for i in range(loop[0], loop[1]):
-                remove_loops.remove(i)
-        fd_region=remove_loops
-    # hold final coords
-    final_all_atom={}
 
-    # iterate over everything. 
-    for cur_aa_ind in range(fd_region[0], fd_region[1]):
-        cur_ca_coord=final_ca_coords[cur_aa_ind]
-        cur_initial_coord = p53_dict['coord_by_aa_ind_with_name'][cur_aa_ind]
-        translated_c = translate_single_amino_acid_fd(cur_initial_coord, cur_ca_coord)
-        final_all_atom[cur_aa_ind]=(translated_c)
-    if 'final_coords_atoms_added' not in pdb_dict:
-        pdb_dict['final_coords_atoms_added']=final_all_atom
-    else:
-        cur_vals = pdb_dict['final_coords_atoms_added']
-        for resind in final_all_atom:
-            cur_vals[resind]=final_all_atom[resind]
-        pdb_dict['final_coords_atoms_added']=cur_vals
-    return pdb_dict
 
 def add_C_terminal_IDR_atoms(pdb_dict, idr_name):
     #need to take out IDR name later and make dimilar function for N terminal IDR...
@@ -190,6 +161,12 @@ def add_all_atom_info(pdb_dict, regions_dict):
     orientation is almost certanily not what it originally was, just guesses using
     idealized bond lengths and angles. 
     This will be the final function for adding in atoms... not going great but I guess we will see. 
+
+    # the all atom stuff for the FDs as they are moved is saved in 
+    pdb_dict['final_coords_atoms_added']. Need to add the first FD to 
+    the dict too because everything is moved relative to that, so the 
+    all atom coords should be good there. Once we have that, we just need
+    to figure out how to get the IDR atoms added back. Pretty close!
 
     *** Really should just use more basic approach.
         1. determine change in initial angle to final angle for a pair of alpha carbons. 

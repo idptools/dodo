@@ -209,5 +209,3 @@ def idr(sequence, mode='predicted', bond_length=3.8, clash_dist=3.4, attempts_al
     max_bond_dist=max_bond_dist, start_coord=start_coord, all_atoms=all_atoms)
     return idr_coords
 
-
-

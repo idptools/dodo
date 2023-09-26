@@ -814,7 +814,6 @@ def build_idr_between_fds(IDR_end_to_end_dist, pdb_dict,
     
     # function for building IDRs from FDs. 
 
-
     # get some info. 
     ca_coords = pdb_dict['ca_coords']
     regions_dict = pdb_dict['regions_dict'] 
@@ -852,8 +851,39 @@ def build_idr_between_fds(IDR_end_to_end_dist, pdb_dict,
     # now make a line along the center coords a specific distance away and get point
     start_coord_second_region = generate_coordinate_on_line(center_fd1_coord, center_fd2_coord, IDR_end_to_end_dist)
 
-    # move the second region
+    # move the second region (all atoms too)
     moved_second_region = translate_coordinates(target_move_region, target_move_region[0], start_coord_second_region)
+    all_atoms_second_region=[]
+    atoms_by_res_num_and_atom_type={}
+    for vals in range(begin_second_fd_index, len(pdb_dict['sequence'])):
+        cur_vals=pdb_dict['coord_by_aa_ind_with_name'][vals]
+        for atom in cur_vals:
+            coord = cur_vals[atom]
+            all_atoms_second_region.append(coord)
+        atoms_by_res_num_and_atom_type[vals]=(list(cur_vals.keys()))
+    moved_all_atom_xyz = translate_coordinates(all_atoms_second_region, target_move_region[0], start_coord_second_region)
+    
+    # add the moved coordinates to the final_coords_atoms_added dict.
+    # this lets us keep all atom info as we translate the FDs around. 
+    # because we go in order, we can just overwrite stuff as we move things in case
+    # there are many FDs. 
+    moved_val_track=0
+    all_atom_ind_dict={}
+    for atom_num in atoms_by_res_num_and_atom_type:
+        all_atom_ind_dict[atom_num]={}
+        num_per_res = len(atoms_by_res_num_and_atom_type[atom_num])
+        for val in range(0,num_per_res):
+            cur_atom = atoms_by_res_num_and_atom_type[atom_num][val]
+            cur_coords=moved_all_atom_xyz[moved_val_track]
+            cur_dict = all_atom_ind_dict[atom_num]
+            cur_dict[cur_atom]=cur_coords
+            all_atom_ind_dict[atom_num]=cur_dict
+            moved_val_track+=1
+    cur_pdb_all_atom = pdb_dict['final_coords_atoms_added']
+    for atom in all_atom_ind_dict:
+        cur_pdb_all_atom[atom]=all_atom_ind_dict[atom]
+    pdb_dict['final_coords_atoms_added']=cur_pdb_all_atom
+
     # get the radius start point
     radius_start_point=moved_second_region[0]
 

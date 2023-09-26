@@ -107,7 +107,8 @@ def af2_lines_to_structure_dict(af2_pdb_lines):
         'original_PDB_lines':af2_pdb_lines,
         'res_to_ind':res_to_ind,
         'coords_by_aa_id':coords_by_aa_id,
-        'coord_by_aa_ind_with_name':coord_by_aa_ind_with_name}
+        'coord_by_aa_ind_with_name':coord_by_aa_ind_with_name,
+        'final_coords_atoms_added':{}}
 
 
 

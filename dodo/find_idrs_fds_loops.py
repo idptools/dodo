@@ -12,34 +12,19 @@ Can identify IDRs, FDs, and FDs with loops (if using non-metapredict approach).
 import math
 import metapredict as meta
 import numpy as np
-from dodo.pdb import array
+from dodo.pdb_tools import array, PDBParser
 import os
 
 
 
-def get_close_atoms(pdb_file_dict, thresh=8, loop_thresh=7):
+def get_close_atoms(PDBParserObj, thresh=8, loop_thresh=7):
     '''
     Gets the number of atoms that are within a threshold value.
 
     Parameters
     ----------
-    pdb_file_dict : dict
-        a dictionary of the structure info. Keys are:
-        all_atom_coords : list
-            a list of the coordinates of all atoms in the structure.
-        ca_coords : list
-            a list of the coordinates of all CA atoms in the structure.
-        all_atoms_types : list
-            a list of the atom types of all atoms in the structure.
-        sequence : string
-            the sequence of the structure in one letter code.
-        ca_three_letter_seq : list
-            a list of the three letter amino acid codes of all CA atoms in the structure.
-        all_atom_three_letter_seq : list
-            a list of the three letter amino acid codes of all atoms in the structure.
-        coords_by_aa_ind : dict
-            For each amino acid, coords for every atom. Needed for the functionality to
-            identify loops vs. IDRs
+    PDBParserObj 
+    fill in later
 
     thresh : int
         The threshold value in angstroms to consider two 
@@ -64,28 +49,27 @@ def get_close_atoms(pdb_file_dict, thresh=8, loop_thresh=7):
 
     '''
     # load chain, get sequence
-    sequence=pdb_file_dict['sequence']
-    all_coords=pdb_file_dict['coords_by_aa_ind']
-    CA_atoms=pdb_file_dict['ca_coords']
-    
+    all_coords=PDBParserObj.all_atom_coords_by_index
     # list to hold number of close atoms for each of the amino acids
     close_list=[]
     # list to hold number of close alpha carbons for each amino acid
     potential_loops_close=[]
-    for res_ind_1 in range(1, len(sequence)):
+    for res_ind_1 in range(0, len(all_coords)):
         num_close=0
         num_close_loop=0
-        for res_ind_2 in range(1, len(sequence)):
+        for res_ind_2 in range(0, len(all_coords)):
             if res_ind_1 != res_ind_2:
                 atoms_1 = all_coords[res_ind_1]
                 atoms_2 = all_coords[res_ind_2]
-                for xyz1 in atoms_1:
-                    for xyz2 in atoms_2:
+                for at1 in list(atoms_1.keys()):
+                    for at2 in list(atoms_2.keys()):
+                        xyz1=atoms_1[at1]
+                        xyz2=atoms_2[at2]
                         dist = math.sqrt(((xyz1[0]-xyz2[0])**2)+((xyz1[1]-xyz2[1])**2)+((xyz1[2]-xyz2[2])**2))
                         if dist < thresh:
                             num_close+=1
-                caxyz1=CA_atoms[res_ind_1]
-                caxyz2=CA_atoms[res_ind_2]
+                caxyz1=atoms_1['CA']
+                caxyz2=atoms_2['CA']
                 ca_dist= math.sqrt(((caxyz1[0]-caxyz2[0])**2)+((caxyz1[1]-caxyz2[1])**2)+((caxyz1[2]-caxyz2[2])**2))
                 if ca_dist < loop_thresh:
                     num_close_loop+=1
@@ -96,7 +80,7 @@ def get_close_atoms(pdb_file_dict, thresh=8, loop_thresh=7):
     return [close_list, potential_loops_close]
 
 
-def get_fds_loops_idrs(pdb_file_dict, threshold=480, gap_thresh=25, 
+def get_fds_loops_idrs(PDBParserObj, threshold=480, gap_thresh=25, 
     distance_thresh=8, loop_cutoff=6, min_loop_len=10):
     '''
     function to get the amino acid coordinates that define each
@@ -106,23 +90,7 @@ def get_fds_loops_idrs(pdb_file_dict, threshold=480, gap_thresh=25,
 
     Parameters
     ----------
-    pdb_file_dict : dict
-        a dictionary of the structure info. Keys are:
-        all_atom_coords : list
-            a list of the coordinates of all atoms in the structure.
-        ca_coords : list
-            a list of the coordinates of all CA atoms in the structure.
-        all_atoms_types : list
-            a list of the atom types of all atoms in the structure.
-        sequence : string
-            the sequence of the structure in one letter code.
-        ca_three_letter_seq : list
-            a list of the three letter amino acid codes of all CA atoms in the structure.
-        all_atom_three_letter_seq : list
-            a list of the three letter amino acid codes of all atoms in the structure.
-        coords_by_aa_ind : dict
-            For each amino acid, coords for every atom. Needed for the functionality to
-            identify loops vs. IDRs
+    PDBParserObj : 
 
     threshold : int
         The threshold number of atoms per amino acid that need to be within
@@ -162,7 +130,7 @@ def get_fds_loops_idrs(pdb_file_dict, threshold=480, gap_thresh=25,
     '''
 
     # get the number of close atoms for each amino acid and the number of close alpha carbons
-    close_atoms=get_close_atoms(pdb_file_dict, thresh=distance_thresh)
+    close_atoms=get_close_atoms(PDBParserObj, thresh=distance_thresh)
     list_of_distances=close_atoms[0]
     fds_bounds=[]
     if list_of_distances[0]<threshold:
@@ -248,7 +216,7 @@ def get_fds_loops_idrs(pdb_file_dict, threshold=480, gap_thresh=25,
             final_fds.remove(fd)
 
     # get sequence length
-    len_seq=len(close_atoms[0])+1
+    len_seq=len(close_atoms[0])
 
     # get idr coords
     if non_idr_coords == []:
@@ -279,12 +247,13 @@ def get_fds_loops_idrs(pdb_file_dict, threshold=480, gap_thresh=25,
             regions_dict[f'idr_{region_num}']=region
         region_num+=1
 
-    pdb_file_dict['regions_dict']=regions_dict
+    PDBParserObj.regions_dict=regions_dict
     # return regions in order with names and coordinates
-    return pdb_file_dict
+    return PDBParserObj
 
 
-def get_fds_idrs_from_metapredict(pdb_file_dict):
+
+def get_fds_idrs_from_metapredict(PDBParserObj):
     '''
     Function to identify IDRs using metapredict. 
     Cannot identify loops consistently and is not
@@ -293,29 +262,14 @@ def get_fds_idrs_from_metapredict(pdb_file_dict):
 
     Parameters
     -----------
-    a dictionary of the structure info. Keys are:
-        all_atom_coords : list
-            a list of the coordinates of all atoms in the structure.
-        ca_coords : list
-            a list of the coordinates of all CA atoms in the structure.
-        all_atoms_types : list
-            a list of the atom types of all atoms in the structure.
-        sequence : string
-            the sequence of the structure in one letter code.
-        ca_three_letter_seq : list
-            a list of the three letter amino acid codes of all CA atoms in the structure.
-        all_atom_three_letter_seq : list
-            a list of the three letter amino acid codes of all atoms in the structure.
-        coords_by_aa_ind : dict
-            For each amino acid, coords for every atom. Needed for the functionality to
-            identify loops vs. IDRs
+    PDBParserObj
 
     Returns
     -------
     dict
         dict of specific regions. 
     '''
-    seq=pdb_file_dict['sequence']
+    seq=PDBParserObj.sequence
     seq_disorder=meta.predict_disorder_domains(seq)
     idrs=seq_disorder.disordered_domain_boundaries
     fds = seq_disorder.folded_domain_boundaries
@@ -346,8 +300,6 @@ def get_fds_idrs_from_metapredict(pdb_file_dict):
     fin_dict_list[1]=len(seq)-1
     fin_dict[fin_dict_adjust_val]=fin_dict_list
 
-    pdb_file_dict['regions_dict']=fin_dict
+    PDBParserObj.regions_dict=fin_dict
 
-    return pdb_file_dict
-
-
+    return PDBParserObj

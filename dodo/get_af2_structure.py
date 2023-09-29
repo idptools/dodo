@@ -5,10 +5,10 @@ from getSequence import getseq
 import os
 from dodo.dodo_exceptions import dodoAF2Exception
 from dodo.dodo_tools import af2_lines_to_structure_dict
-from dodo.pdb import array
+from dodo.pdb_tools import array
 
 
-def get_af2_pdb(protein_name, outpath='', silent=True, save=False):
+def get_af2_pdb_lines(protein_name, outpath='', silent=True):
     '''
     function to get the af2 pdb from uniprot using the protein name.
     Uses a pypi package last updated in 2015, so if functionality breaks
@@ -25,9 +25,6 @@ def get_af2_pdb(protein_name, outpath='', silent=True, save=False):
 
     silent : bool
         whether to print the protein name recieved from uniprot.
-
-    save : bool 
-        whether to save a pdb. Otherwise returns the lines.
 
     '''
     # get the uniprot ID
@@ -59,8 +56,6 @@ def get_af2_pdb(protein_name, outpath='', silent=True, save=False):
     if af2_seq != prot_id_and_seq[1]:
         raise dodoAF2Exception('AF2 sequence does not match sequence retrieved from Uniprot!')
     return lines
-
-
 
 
 

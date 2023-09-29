@@ -2,6 +2,27 @@
 Various parameter dictionaries for PDB file creation
 
 """
+# important parameters for building stuffs
+
+CA_bond_length = 3.8
+CA_clash_dist = 3.4 
+min_CA_bond_dist = 2.8
+max_CA_bond_dist = 4.4
+# determined from AF2 bonds...
+N_to_CA_bond_length = 1.46656
+CA_to_C_bond_length = 1.53104
+
+modes={
+    'super_compact':0.3,
+    'compact':0.55,
+    'normal':0.8,
+    'expanded':1.05,
+    'super_expanded':1.3,
+    'max_expansion':1.65,
+    'predicted':None
+    }
+
+
           
 AADICT = {"A":"ALA", 
           "C":"CYS",

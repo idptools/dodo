@@ -1,0 +1,19 @@
+# list of stuff to do
+'''
+• Move everything off of the pdb_dictionary to the PDBParser class
+• Add in function to return all atom of folded regions and just Ca for the
+IDRs (until can add in all atom)
+• Figure out all atom placement for IDRs
+• Add documentation for everything
+• Add tests for everything
+• Make sure after moving everything to PDBParser, index for everything is correct (0 indexed)
+• Figure out CONECT lines for all atom?
+• Make new check_distance function for all atom stuff. Right now get some clashing from 
+alpha carbon of the IDR next to all atom regions. 
+• change over to mdtraj for to first make a topology, then add bonds (correctly..), then make pdb? Try is_min_distance_satisfied_all_atom
+• Rewrite build to not be so ... bad and repetetive, add checks for
+failing early so time is not wasted before failing.
+• Add more functionality for moving FDs away from each other. 
+• Add in functiionality to randomly place FDs in they end up clashing after translation.
+
+'''

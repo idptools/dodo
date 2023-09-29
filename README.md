@@ -3,8 +3,9 @@ DODO
 
 **D**e-sillifying AlphaF**O**ld2 disor**D**ered regi**O**ns  
 
+### What is DODO?
 
-DODO is a A Python package for taking an AF2 structure and making the disordered regions look less silly (I believe the scientific term is *de-sillifying*).  
+DODO is a A Python package for taking an AF2 structure and making the disordered regions look less silly (I believe the scientific term is *de-sillifying*). Right now it can only generate structures with alpha carbons, so it does also coarse grain the structure. I'm working on all-atom structure generation, which I'm hoping to bring in the future (but this is not a gaurantee).  
 
 ### How can you use DODO?
 
@@ -38,8 +39,11 @@ build.pdb_from_name('human p53', out_path='/Users/your_user_name/Desktop/my_cool
 
 All arguments for ``build.pdb_from_name`` are as follows:  
 **protein_name** - required. The name of your protein as a string. Specifying the organism increases your chance of success.  
-**out_path** - optional. Where to save your protein structure file. Specify the file name here.  
-**mode** - optional. Default: 'predicted'. The ``predicted`` option predicts the end-to-end distance of your disordered regions from sequence and then makes the IDRs fit within that distance. For IDRs between folded domains, the folded domains are moved apart from each other to accomodate the IDR length. For terminal IDRs, they will just adopt a configuration within the distance equal to the end to end distance. Additional options are ``super_compact``, ``compact``, ``normal``, ``expanded``, ``super_expanded``, ``max_expansion``. These are pretty self explanatory.  
+**out_path** - optional if you set graph=True. Otherwise raises an exception. Where to save your protein structure file. Specify the file name here.  
+**mode** - optional. Default: 'predicted'. The ``predicted`` option predicts the end-to-end distance of your disordered regions from sequence and then makes the IDRs fit within that distance. For IDRs between folded domains, the folded domains are moved apart from each other to accomodate the IDR length. For terminal IDRs, they will just adopt a configuration within the distance equal to the end to end distance. Additional options are ``super_compact``, ``compact``, ``normal``, ``expanded``, ``super_expanded``, ``max_expansion``. These are pretty self explanatory.
+**include_FD_atoms** - optional. Default: True. Whether to include all atoms for the FDs. Only CA for IDRs for now.  
+**CONECT_lines** - optional. Default: True. Whether to included CONECT lines in the generated PDB. Makes visualization generally better.
+**verbose** - optional. Default: True. Whether to show progress as structure is being made.    
 **use_metapredict** - optional. Default: False. This option lets you use metapredict to predicte the IDRs and folded regions. Although *fairly accurate*, it doesn't get the exact cutoffs for some regions and fails to predict small loops within large folded regions. The default is to use the number of atoms neighboring each atom in the AF2 structure to figure out what is a folded domain, what is a separate folded domain that is proximal to another folded domain, what is an IDR, and what is a disordered loop. The default behavior is slower but works better.  
 **graph** - optional. Default: False. Setting this to True will pull up a really rough looking structure of your protein using the 3D graphing functionality in matplotlib. This is something I made when developing this to quickly look at structures. You shouldn't use this, but you can if you want. It's kind of fun TBH.  
 **beta_by_region** optional. Default: True. This takes the beta values and changes them such that if you view the amino acids in something like VMD by beta values, you can see what DODO predicted to be an IDR and what it left as a folded domain. Loops will also be a different color if they were present.  
@@ -67,6 +71,8 @@ All arguments for ``build.pdb_from_name`` are as follows:
 **path_to_pdb** - required. The filepath to your pdb as a string.  
 **out_path** - optional. Where to save your protein structure file. Specify the file name here.  
 **mode** - optional. Default: 'predicted'. The ``predicted`` option predicts the end-to-end distance of your disordered regions from sequence and then makes the IDRs fit within that distance. For IDRs between folded domains, the folded domains are moved apart from each other to accomodate the IDR length. For terminal IDRs, they will just adopt a configuration within the distance equal to the end to end distance. Additional options are ``super_compact``, ``compact``, ``normal``, ``expanded``, ``super_expanded``, ``max_expansion``. These are pretty self explanatory.  
+**include_FD_atoms** - optional. Default: True. Whether to include all atoms for the FDs. Only CA for IDRs for now.  
+**CONECT_LINES** - optional. Default: True. Writes CONECT lines to the PDB so that all alpha carbons are connected.  
 **use_metapredict** - optional. Default: False. This option lets you use metapredict to predicte the IDRs and folded regions. Although *fairly accurate*, it doesn't get the exact cutoffs for some regions and fails to predict small loops within large folded regions. The default is to use the number of atoms neighboring each atom in the AF2 structure to figure out what is a folded domain, what is a separate folded domain that is proximal to another folded domain, what is an IDR, and what is a disordered loop. The default behavior is slower but works better.  
 **graph** - optional. Default: False. Setting this to True will pull up a really rough looking structure of your protein using the 3D graphing functionality in matplotlib. This is something I made when developing this to quickly look at structures. You shouldn't use this, but you can if you want. It's kind of fun TBH.  
 **beta_by_region** optional. Default: True. This takes the beta values and changes them such that if you view the amino acids in something like VMD by beta values, you can see what DODO predicted to be an IDR and what it left as a folded domain. Loops will also be a different color if they were present.  
@@ -85,13 +91,14 @@ All arguments for ``build.pdb_from_name`` are as follows:
 If you just have an IDR sequence, you can also generate coordinates for that. Functionality is coming to automatically generate the PDB file as well, but it's near midnight so that's for later. The only required argument is the sequence. 
 
 ```python
-build.idr('VQQQGIYNNGTIAVANQVSCQSPNQ')
+build.idr('VQQQGIYNNGTIAVANQVSCQSPNQ', out_path='/Users/your_user_name/Desktop/my_AF2_PDB_DODO.pdb')
 ```
 **Additional usage:**  
 
 All arguments for ``build.pdb_from_name`` are as follows:  
 **mode** - optional. Default: 'predicted'. The ``predicted`` option predicts the end-to-end distance of your disordered regions from sequence and then makes the IDRs fit within that distance. For IDRs between folded domains, the folded domains are moved apart from each other to accomodate the IDR length. For terminal IDRs, they will just adopt a configuration within the distance equal to the end to end distance. Additional options are ``super_compact``, ``compact``, ``normal``, ``expanded``, ``super_expanded``, ``max_expansion``. These are pretty self explanatory.  
-**all_atoms** - optional. Default: False. Setting to True will result in DODO adding in atoms other than the alpha carbon (CA). NOTE: This is VERY MUCH in beta. It is NOT sophisticated AT ALL whatsoever. However, for visualization purposes, it's not bad. Given this is largely for visualization, I probably won't make it too much better to be honest but you never know. I'll add this to the other functions today or tomorrow (today?). It's late. 
+**out_path** - optional if you set graph=True. Otherwise raises an exception. Where to save your protein structure file. Specify the file name here.   
+**CONECT_LINES** - optional. Default: True. Writes CONECT lines to the PDB so that all alpha carbons are connected.  
 **graph** - optional. Default: False. Setting this to True will pull up a really rough looking structure of your protein using the 3D graphing functionality in matplotlib. This is something I made when developing this to quickly look at structures. You shouldn't use this, but you can if you want. It's kind of fun TBH.  
 **beta_by_region** optional. Default: True. This takes the beta values and changes them such that if you view the amino acids in something like VMD by beta values, you can see what DODO predicted to be an IDR and what it left as a folded domain. Loops will also be a different color if they were present.  
 **silent** optional. Default: False. This silences the message telling you what structure is being downloaded. Turn this off at your own risk. DODO does not gaurantee that it will download the structure you wanted from name alone. If you just put 'p53' instead of 'human p53', you might get a different organism based on how Uniprot ranks it.  
@@ -107,9 +114,13 @@ All arguments for ``build.pdb_from_name`` are as follows:
 
 #### Changes
 
-Logging changes below.
+Logging changes below.  
 
-V0.02 - September 26, 2023. Added generating IDR coords from sequence alone. Added filling in ATOM coordinates from alpha carbon coordinate using fixed bond angles and distances, which isn't great but is better than nothing. 
+V0.04 - September 29, 2023. Made it so the atoms of folded domains can be kept in the structure. Only CA for the IDRs for now. Improved performance a bit. Still need to clean up the code a lot.. Made everything callable by the PDBParserObj made from the class pdb_tools.PDBParser 
+
+V0.03 - September 28, 2023. Made it so you can save the IDRs generated from sequence alone. Removed the ability to make all atom structures because it wasn't great. This hopefully will come in the future. 
+
+V0.02 - September 26, 2023. Added generating IDR coords from sequence alone. Added filling in all atom coordinates from alpha carbon coordinate using fixed bond angles and distances, which isn't great but is better than nothing. 
 
 V0.01 - September 25, 2023. Initial release.  
 

@@ -1,1 +1,0 @@
-# Eventually replacing the dictionary of PDB info with a class. 

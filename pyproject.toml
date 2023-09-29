@@ -27,8 +27,7 @@ dependencies = [
     "metapredict",
     "getSequence",
     "sparrow @ git+https://git@github.com/idptools/sparrow.git",
-    "matplotlib",
-    "scipy"
+    "matplotlib"
 ]
 
 # Update the urls once the hosting is set up.

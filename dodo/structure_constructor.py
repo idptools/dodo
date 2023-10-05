@@ -1,5 +1,10 @@
-# rewrite of IDR_constructor.py to be a bit... better. 
-# Noticed some issues in stability so going to try to fix that on a rewrite. 
+"""
+
+DEPRECATED! NOW USING idr_constructor.py
+
+Saving this in case something breaks in spectacular fashion. 
+Otherwise will delete down the line.
+
 
 
 import random
@@ -96,7 +101,7 @@ def is_min_distance_satisfied(coords_list, coordinate_of_interest, min_distance=
 
 def random_coordinate_with_biased_axis(start_coordinate, total_distance, 
     specified_distance, specified_coordinate):
-    """
+    '''
     Generate a random 3D coordinate that is a specific total distance from the starting coordinate
     and a specific distance in the X,Y, or Z direction from the starting coordinate.
 
@@ -117,7 +122,7 @@ def random_coordinate_with_biased_axis(start_coordinate, total_distance,
     Returns:
         tuple: A pseudo-random 3D coordinate (x, y, z). Pseudo-random in that we can 
         bias it in any single direction by any amount less than 'total_distance'.
-    """
+    '''
     if len(start_coordinate) != 3:
         raise ValueError("Starting coordinate must be 3D, i.e., have three components (x0, y0, z0).")
 
@@ -162,7 +167,7 @@ def random_coordinate_with_biased_axis(start_coordinate, total_distance,
     return final_coords
 
 def is_point_inside_sphere(point, center, radius):
-    """
+    '''
     Determine whether a 3D coordinate is within a sphere.
     What we can do with this is basically have an objective end point
     in our folded domain we want to connect the IDR to and shrink that 
@@ -181,7 +186,7 @@ def is_point_inside_sphere(point, center, radius):
     ----------
     bool : 
         True if the point is inside the sphere, False otherwise.
-    """
+    '''
     if len(point) != 3 or len(center) != 3:
         raise ValueError("Both point and center must be 3D coordinates.")
 
@@ -192,7 +197,7 @@ def is_point_inside_sphere(point, center, radius):
     return distance <= radius
 
 def translate_coordinates(coordinates, specific_coordinate, target_coordinate):
-    """
+    '''
     Translate all coordinates in a list such that a specific coordinate is 
     located at a target coordinate. This function lets us take the folded 
     domains and move them while holding the actual integrity (defined
@@ -213,7 +218,7 @@ def translate_coordinates(coordinates, specific_coordinate, target_coordinate):
     -----------
     list of tuples : 
         List of translated 3D coordinates.
-    """
+    '''
     if len(specific_coordinate) != 3 or len(target_coordinate) != 3:
         raise ValueError("Both specific_coordinate and target_coordinate must be 3D coordinates.")
 
@@ -228,7 +233,7 @@ def translate_coordinates(coordinates, specific_coordinate, target_coordinate):
 
 
 def get_translation_vector(specific_coordinate, target_coordinate):
-    """
+    '''
     get translation vector to apply to coordinates.
 
     Parameters
@@ -242,7 +247,7 @@ def get_translation_vector(specific_coordinate, target_coordinate):
     -----------
     np.array : 
         np.array equal to the translation vector
-    """
+    '''
     if len(specific_coordinate) != 3 or len(target_coordinate) != 3:
         raise ValueError("Both specific_coordinate and target_coordinate must be 3D coordinates.")
 
@@ -252,7 +257,7 @@ def get_translation_vector(specific_coordinate, target_coordinate):
 
 
 def generate_coordinate_on_line(coord1, coord2, distance):
-    """
+    '''
     Generate a 3D coordinate along a straight line, given two coordinates 
     that is a specific distance from the first coordinate.
     This lets us translate the FDs along a specific line. Specifically, we can
@@ -273,7 +278,7 @@ def generate_coordinate_on_line(coord1, coord2, distance):
     -------
     list of tuples : 
         List of 3D coordinates forming a straight line.
-    """
+    '''
     # check those coords.
     if len(coord1) != 3 or len(coord2) != 3:
         raise ValueError("Both coordinates must be 3D, i.e., have three components (x, y, z).")
@@ -294,7 +299,7 @@ def generate_coordinate_on_line(coord1, coord2, distance):
 
 
 def calculate_center_coordinate(coordinates):
-    """
+    '''
     Calculate the ~center coordinate of a list of 3D coordinates.
     This isn't COM. Rather, we just need an approximate center of the FDs
     so we can draw a line between those centers and translate the FDs relative to
@@ -307,7 +312,7 @@ def calculate_center_coordinate(coordinates):
 
     Returns:
         tuple: The center coordinate (x_center, y_center, z_center).
-    """
+    '''
     if not coordinates:
         raise ValueError("List of coordinates is empty.")
 
@@ -330,7 +335,7 @@ def calculate_center_coordinate(coordinates):
 
 
 def find_closest_coordinate(coordinates, specific_coordinate):
-    """
+    '''
     Find the closest coordinate from a list of 3D coordinates to a specific coordinate.
 
     Parameters
@@ -344,7 +349,7 @@ def find_closest_coordinate(coordinates, specific_coordinate):
     --------
     tuple : 
         The closest coordinate from the list.
-    """
+    '''
     if not coordinates:
         raise ValueError("List of coordinates is empty.")
 
@@ -390,7 +395,7 @@ def predict_e2e(sequence):
 
 
 def random_coordinate_on_sphere_surface(center_coordinate, radius):
-    """
+    '''
     Generate a random 3D coordinate on the surface of a sphere with a specified radius.
 
     Args:
@@ -399,7 +404,7 @@ def random_coordinate_on_sphere_surface(center_coordinate, radius):
 
     Returns:
         tuple: A random 3D coordinate on the sphere's surface.
-    """
+    '''
     if len(center_coordinate) != 3:
         raise ValueError("Center coordinate must be a 3D coordinate (x_center, y_center, z_center).")
 
@@ -1338,3 +1343,4 @@ def build_structure(PDBParserObj, mode, attempts_per_region=50,
             total_atoms+=1
     PDBParserObj.number_atoms=total_atoms
     return PDBParserObj
+"""

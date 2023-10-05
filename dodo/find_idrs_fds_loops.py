@@ -10,7 +10,6 @@ Can identify IDRs, FDs, and FDs with loops (if using non-metapredict approach).
 '''
 
 import math
-import metapredict as meta
 import numpy as np
 from dodo.pdb_tools import array, PDBParser
 import os
@@ -234,22 +233,27 @@ def get_fds_loops_idrs(PDBParserObj, threshold=480, gap_thresh=25,
             idr_coords.append([non_idr_coords[-1][1], len_seq-1])
 
     # now make dict of regions
+    # region dict is legacy, nuke later. Leaving so I don't break everything.
     regions_dict={}
     region_num=1
     all_regions = non_idr_coords
     all_regions.extend(idr_coords)
     for region in sorted(all_regions):
         if region in final_fds:
+            PDBParserObj.FD_coords[f'folded_{region_num}']=region
             regions_dict[f'folded_{region_num}']=region
         if str(region) in loops.keys():
             regions_dict[f'fd_with_loop_{region_num}']=[region, loops[f'{region}']]
+            PDBParserObj.FD_loop_coords[f'fd_with_loop_{region_num}']=[region, loops[f'{region}']]
         if region in idr_coords:
+            PDBParserObj.IDR_coords[f'idr_{region_num}']=region
             regions_dict[f'idr_{region_num}']=region
         region_num+=1
 
     PDBParserObj.regions_dict=regions_dict
     # return regions in order with names and coordinates
     return PDBParserObj
+
 
 
 
@@ -269,6 +273,7 @@ def get_fds_idrs_from_metapredict(PDBParserObj):
     dict
         dict of specific regions. 
     '''
+    import metapredict as meta
     seq=PDBParserObj.sequence
     seq_disorder=meta.predict_disorder_domains(seq)
     idrs=seq_disorder.disordered_domain_boundaries
@@ -285,13 +290,17 @@ def get_fds_idrs_from_metapredict(PDBParserObj):
 
     fin_dict={}
     dom_num=0
+    idrs=[]
+    fds=[]
 
     for ind, a in enumerate(seq):
         if ind in list(start_idr.keys()):
             fin_dict[f'idr_{dom_num}']=start_idr[ind]
+            idrs.append(f'idr_{dom_num}')
             dom_num+=1
         if ind in list(start_fd.keys()):
             fin_dict[f'folded_{dom_num}']=start_fd[ind]
+            fds.append(f'folded_{dom_num}')
             dom_num+=1
 
     # adjust final value because... somethign weird with metapredict indexing...        
@@ -299,6 +308,12 @@ def get_fds_idrs_from_metapredict(PDBParserObj):
     fin_dict_list = fin_dict[fin_dict_adjust_val]
     fin_dict_list[1]=len(seq)-1
     fin_dict[fin_dict_adjust_val]=fin_dict_list
+
+    for fd in fds:
+        PDBParserObj.FD_coords[fd]=fin_dict[fd]
+    for idr in idrs:
+        PDBParserObj.IDR_coords[idr]=fin_dict[idr]
+
 
     PDBParserObj.regions_dict=fin_dict
 

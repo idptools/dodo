@@ -120,8 +120,10 @@ All arguments for ``build.pdb_from_sequence()`` are as follows:
   
   
 **verbose** optional. Default: False. Set to True to get more info on what is happening as your structure is being made.  
-
-**attempts** - optional. Default: 25000. Number of attempts to make each coordinate fit without clashing.
+  
+**attempts_per_idr** - optional. Default: 50. Number of attempts to IDR. Basically if number of attempts per coordinate reaches max and it still hasn't succeeded, this is the number of times it tries again.  
+  
+**attempts_per_res** - optional. Number of attempts to make each coordinate fit without clashing.  
   
 **end_coord** - optional. Default: (0,0,0). The end coordinate for the IDR as a tuple.
 

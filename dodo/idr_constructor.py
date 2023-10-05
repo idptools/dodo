@@ -1310,7 +1310,8 @@ def build_structure(PDBParserObj, mode='predicted', attempts_per_region=20,
     
 
 def build_idr_from_sequence(sequence, mode, 
-    end_coord=(0,0,0), attempts_per_coord=5000,
+    end_coord=(0,0,0), attempts_per_idr=10,
+    attempts_per_coord=5000,
     bond_length=parameters.CA_bond_length, 
     clash_dist=parameters.CA_clash_dist):
     '''
@@ -1323,6 +1324,8 @@ def build_idr_from_sequence(sequence, mode,
         expanded, super_expanded, max_expansion, or predicted.
     end_coord : tuple
         the XYZ coordinate of the starting residue. Can be whatever you'd like..
+    attempts_per_idr : int
+        number of times to try to build the idr
     attempts_per_coord : int
         number of attempts to try to place each coordinate. Default is 5000.
     bond_length : float
@@ -1384,32 +1387,46 @@ def build_idr_from_sequence(sequence, mode,
     for ind_num, res_ind in enumerate([aa for aa in range(0, len(sequence))]):
         radius_distances_by_res[res_ind]=radius_distances[ind_num]  
     
-    # make list to hold coords and add first aa
-    idr_coords=[random_coordinate_on_sphere_surface(end_coord, e2e)]
+    # track if we successfully built the IDR.
+    successful_build=False
+    build_attempts=0
 
-    # iterate through residues
-    for res_ind in range(1,seq_len):
-        cur_dist_ind=seq_len-res_ind
-        prev_CA_coord=idr_coords[-1]
-        sucess=False
-        cur_attempt=0
-        if cur_dist_ind in list(off_by_dict.keys()):
-            off_by=off_by_dict[cur_dist_ind]
-        else:
-            off_by=None
-        cur_radius_dist = radius_distances_by_res[res_ind]
-        while cur_attempt < attempts_per_coord:
-            new_IDR_coord=random_walk_step(prev_CA_coord, bond_length) 
-            if is_point_within_sphere_constraints(end_coord, 
-                new_IDR_coord, cur_radius_dist, off_by=off_by, verbose=False):
-                if is_min_distance_satisfied_idr_from_seq(idr_coords, 
-                    new_IDR_coord, clash_dist):
-                    idr_coords.append(new_IDR_coord)
-                    success=True
-                    break
-            cur_attempt+=1
-    if success==False:
-        raise dodoException('Unable to place starting coordinate!')
+    while build_attempts < attempts_per_idr:
+        # make list to hold coords and add first aa
+        idr_coords=[random_coordinate_on_sphere_surface(end_coord, e2e)]
+
+        # iterate through residues
+        for res_ind in range(1,seq_len):
+            cur_dist_ind=seq_len-res_ind
+            prev_CA_coord=idr_coords[-1]
+            success=False
+            cur_attempt=0
+            if cur_dist_ind in list(off_by_dict.keys()):
+                off_by=off_by_dict[cur_dist_ind]
+            else:
+                off_by=None
+            cur_radius_dist = radius_distances_by_res[res_ind]
+            while cur_attempt < attempts_per_coord:
+                new_IDR_coord=random_walk_step(prev_CA_coord, bond_length) 
+                if is_point_within_sphere_constraints(end_coord, 
+                    new_IDR_coord, cur_radius_dist, off_by=off_by, verbose=False):
+                    if is_min_distance_satisfied_idr_from_seq(idr_coords, 
+                        new_IDR_coord, clash_dist):
+                        idr_coords.append(new_IDR_coord)
+                        success=True
+                        break
+                cur_attempt+=1
+
+        # if correct number of coords, we completed the build.
+        if len(idr_coords)==seq_len:
+            successful_build=True
+            break
+        # track number of build attempts
+        build_attempts+=1
+
+    # if we never succeeded, raise Exception.
+    if successful_build==False:
+        raise dodoException('Unable to build IDR!')
     
     # lists for stuffs
     res_names=[]
@@ -1417,6 +1434,9 @@ def build_idr_from_sequence(sequence, mode,
     atom_indices=[]
     atom_names=[]
     CONECT_coords=[]
+
+    if len(sequence)!=len(idr_coords):
+        raise dodoException('The length of the sequence does not match the number of coordinates!')
 
     for ind, aa in enumerate(sequence):
         res_names.append(parameters.AADICT[aa])

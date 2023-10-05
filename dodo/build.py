@@ -183,7 +183,8 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted', CONECT_lines=True,
             include_FD_atoms=include_FD_atoms, CONECT_lines=CONECT_lines)            
 
 
-def pdb_from_sequence(sequence, out_path='', mode='predicted', attempts=25000,
+def pdb_from_sequence(sequence, out_path='', mode='predicted', 
+    attempts_per_res=1000, attempts_per_idr=50,
     end_coord=(0,0,0), CONECT_lines=True, graph=False):
     '''
     Function to generate a PDB (or graph the IDR) using a sequence as the input.
@@ -198,8 +199,12 @@ def pdb_from_sequence(sequence, out_path='', mode='predicted', attempts=25000,
         Mode to use for building the structure. Options are 'super_compact',
         'compact', 'normal', 'expanded', 'super_expanded', 'max_expansion', 
         and 'predicted'. 'predicted' uses ALBATROSS to predict IDR end-to-end distance.
-    attempts : int
-        Number of attempts to make per coordinate. Default is 25000.
+    attempts_per_res : int
+        number of attempts to place an individual residue
+        Default is 1000
+    attempts_per_idr : int
+        Number of attempts to make entire IDR. If attempts per res hits max value,
+        it resets and retries the build this number of times. Default is 50.
     end_coord : tuple
         End coordinate to use for the IDR. Default is (0,0,0).
     CONECT_lines : bool
@@ -221,7 +226,7 @@ def pdb_from_sequence(sequence, out_path='', mode='predicted', attempts=25000,
 
     # build the IDR
     idr_dict = build_idr_from_sequence(sequence, mode=mode, end_coord=end_coord, 
-        attempts_per_coord=attempts)
+        attempts_per_idr=attempts_per_idr, attempts_per_coord=attempts_per_res)
 
     # if user doesn't want CONECT lines, don't return them.
     if CONECT_lines==True:

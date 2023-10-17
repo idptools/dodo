@@ -3,7 +3,7 @@
 # all natural good code. None of that chemical-filled dependency nonsense. 
 
 import numpy as np
-from dodo.parameters import AADICT_3_to_1, AADICT
+from dodo.parameters import AADICT_3_to_1, AADICT, valid_bonds
 from dodo.dodo_exceptions import dodoPDBException
 
 # in case array instead np.array is returned.. ugh. Will fix this problem later but here's a bandaid 
@@ -518,8 +518,6 @@ def write_pdb(xyz_list,
     # close file handle
     fh.close()
 
-        
-                 
 def save_pdb_from_PDBParserObj(PDBParserObj, out_path, 
     include_FD_atoms, CONECT_lines):
     '''

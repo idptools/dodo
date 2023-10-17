@@ -11,10 +11,11 @@ from dodo.pdb_tools import PDBParser, write_pdb, array, save_pdb_from_PDBParserO
 from dodo import parameters
 
 
+
 def pdb_from_name(protein_name, out_path='', mode='predicted', 
-    linear_placement=False, linear_axis='x', CONECT_lines=True,
-    include_FD_atoms=True, use_metapredict=False, graph=False, verbose=True,
-    attempts_per_region=20, attempts_per_coord=2000):
+    linear_placement=False, CONECT_lines=True, include_FD_atoms=True, 
+    use_metapredict=False, graph=False, verbose=True, attempts_per_region=20, 
+    attempts_per_coord=2000):
     """
     Function to take in the name of a protein and then return an AF2 PDB
     with modified disordered regions. 
@@ -33,9 +34,6 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
     linear_placement : bool
         whether to place the folded domains across a linear axis. 
         Default : False
-    linear_axis : str
-        which axis to place the folded domains along. 
-        options are 'x', 'y', or 'z'
     CONECT_lines : bool
         Whether to include CONECT lines in the pdb. Default is True.
     include_FD_atoms : bool
@@ -86,11 +84,10 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
     # build new structure  
     PDBParserObj = build_structure(PDBParserObj, mode=mode, 
                                     linear_placement=linear_placement,
-                                    linear_axis=linear_axis, 
                                     attempts_per_region=attempts_per_region,
                                     attempts_per_coord=attempts_per_coord,
                                     verbose=verbose)
-    
+
     # if graphing, graph it up
     if graph==True:
         region_info=PDBParserObj.regions_dict
@@ -103,15 +100,11 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
             save_pdb_from_PDBParserObj(PDBParserObj, out_path=out_path,
             include_FD_atoms=include_FD_atoms, CONECT_lines=CONECT_lines)
 
-pdb_from_name('human p300', out_path='/home/remenecker/Desktop/testing.pdb', 
-    mode='predicted', linear_axis=True, use_metapredict=True)
-
-
 
 def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted', 
-    linear_placement=False, linear_axis='x', CONECT_lines=True,
-    include_FD_atoms=True, use_metapredict=False, graph=False, verbose=True,
-    attempts_per_region=20, attempts_per_coord=2000, regions_dict=None):
+    linear_placement=False, CONECT_lines=True, include_FD_atoms=True, 
+    use_metapredict=False, graph=False, verbose=True, attempts_per_region=20, 
+    attempts_per_coord=2000, regions_dict=None):
     """
     Function to take in the path to an AF2 pdb structure and return the structure
     with modified disordered regions. 
@@ -129,9 +122,6 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
     linear_placement : bool
         whether to place the folded domains across a linear axis. 
         Default : False
-    linear_axis : str
-        which axis to place the folded domains along. 
-        options are 'x', 'y', or 'z'
     CONECT_lines : bool
         Whether to include CONECT lines in the pdb. Default is True.
     include_FD_atoms : bool
@@ -187,7 +177,6 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
     # build the structure.
     PDBParserObj = build_structure(PDBParserObj, mode=mode,
                                     linear_placement=linear_placement,
-                                    linear_axis=linear_axis,         
                                     attempts_per_region=attempts_per_region,
                                     attempts_per_coord=attempts_per_coord,
                                     verbose=verbose)

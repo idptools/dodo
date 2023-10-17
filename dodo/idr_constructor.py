@@ -11,6 +11,7 @@ from dodo.pdb_tools import PDBParser
 # for the ... problems.
 from dodo.dodo_exceptions import dodoException
 from dodo import parameters
+from dodo.all_atoms import add_necessary_C_N
 
 def get_res_dist(xyz1, xyz2):
     '''
@@ -644,14 +645,13 @@ def round_coordinates(PDBParserObj, decimals=3):
     for aa in all_coords:
         for at in all_coords[aa]:
             # get_coords
-            cur_coords=all_coords[aa][at]
-            # iterate through cur coords
-            if cur_coords != {}:
-                x=round(cur_coords[0], decimals)
-                y=round(cur_coords[1], decimals)
-                z=round(cur_coords[2], decimals)
+            cur_coords=np.array(all_coords[aa][at])
+            
+            x=round(cur_coords[0], decimals)
+            y=round(cur_coords[1], decimals)
+            z=round(cur_coords[2], decimals)
                 # update dict
-                PDBParserObj.all_atom_coords_by_index[aa][at]=(x,y,z)
+            PDBParserObj.all_atom_coords_by_index[aa][at]=(x,y,z)
     return PDBParserObj
 
 def random_walk_step(initial_coords, distance):
@@ -761,20 +761,9 @@ def center_fd_at_0(PDBParserObj):
         raw_num_ind+=1
     return PDBParserObj
 
-from dodo.get_af2_structure import get_af2_pdb_lines
-from dodo.find_idrs_fds_loops import get_fds_idrs_from_metapredict
 
 
-PDBParserObj = get_af2_pdb_lines('human p53')
-PDBParserObj=get_fds_idrs_from_metapredict(PDBParserObj)
-PDBParserObj=center_fd_at_0(PDBParserObj)
-print(PDBParserObj.all_atom_coords_by_index)
-
-
-
-
-
-def place_FDs(PDBParserObj, mode, linear_placement=False, linear_axis='x',
+def place_FDs(PDBParserObj, mode, linear_placement=False,
     verbose=True, total_attempts=30):
     '''
     Function to place the FDs. Basically iterates through all the FDs and 
@@ -793,9 +782,6 @@ def place_FDs(PDBParserObj, mode, linear_placement=False, linear_axis='x',
     linear_placement : bool
         whether to place the folded domains across a linear axis. 
         Default : False
-    linear_axis : str
-        which axis to place the folded domains along. 
-        options are 'x', 'y', or 'z'
     verbose : bool
         If True, prints out what is happening. Default is True.
     total_attempts : int
@@ -826,10 +812,6 @@ def place_FDs(PDBParserObj, mode, linear_placement=False, linear_axis='x',
     else:
         raise dodoException('Invalid mode specified. Please specify super_compact, compact, normal, expanded, super_expanded, or max_expansion, or predicted.')
 
-    # check specified axis.
-    if linear_placement==True:
-        if linear_axis.lower() not in ['x', 'y', 'z']:
-            raise dodoException('Please specify linear_axis as x y or z')
 
     # now we need to move the FDs relative to each other. Originally I tried to be clever here and 
     # use the center of the system and move things relative to that, but it turns out randomly 
@@ -845,6 +827,10 @@ def place_FDs(PDBParserObj, mode, linear_placement=False, linear_axis='x',
         all_fds[fd_num]=get_fds[fd]
     # sort
     fds_in_order=sorted(all_fds)
+
+    # if linear placement is True...
+    if linear_placement==True:
+        PDBParserObj = center_fd_at_0(PDBParserObj)
 
 
     # only move fds that have IDRs between them. 
@@ -908,8 +894,11 @@ def place_FDs(PDBParserObj, mode, linear_placement=False, linear_axis='x',
                     translated_coords=translate_coordinates(domain2_coords_list, ref_point2, random_point)
                 else:
                     # need to set translated coords at this part, probs gonna use a function
-                    translated_coords=[]
-                    raise Exception('havent finalized this yet!')
+                    target_coord = (ref_point1[0]+objective_dist, ref_point1[1], ref_point1[2])
+                    # translate the coords
+                    translated_coords=translate_coordinates(domain2_coords_list, ref_point2, target_coord)
+                    # only try this once because we are going to end up in the same location every time. 
+                    current_attempts+=total_attempts
 
                 # track numbers of aa and atom for repopulating dict
                 raw_num_ind=0
@@ -1274,8 +1263,7 @@ def build_loops(PDBParserObj, verbose=True,
 
 
 def build_structure(PDBParserObj, mode='predicted', attempts_per_region=20, 
-    attempts_per_coord=2000, linear_placement=False, linear_axis='x', 
-    verbose=True, very_verbose=False):
+    attempts_per_coord=2000, linear_placement=False, verbose=True, very_verbose=False):
     '''
     Function for building the entire structure. Combines all the other functions
     in this module. 
@@ -1294,9 +1282,6 @@ def build_structure(PDBParserObj, mode='predicted', attempts_per_region=20,
     linear_placement : bool
         whether to place the folded domains across a linear axis. 
         Default : False
-    linear_axis : str
-        which axis to place the folded domains along. 
-        options are 'x', 'y', or 'z'
     verbose : bool
         if True, prints out why min distance was not satisfied. Default is False.
     very_verbose : bool
@@ -1324,7 +1309,7 @@ def build_structure(PDBParserObj, mode='predicted', attempts_per_region=20,
             cur_attempt+=1
             try:
                 PDBParserObj=place_FDs(PDBParserObj,mode=mode, linear_placement=linear_placement,
-                linear_axis=linear_axis, verbose=very_verbose, total_attempts=30)
+                verbose=very_verbose, total_attempts=30)
                 success=True
                 break
             except dodoException:
@@ -1401,6 +1386,10 @@ def build_structure(PDBParserObj, mode='predicted', attempts_per_region=20,
     if built_sequence != PDBParserObj.sequence:
         raise dodoException('Built sequence does not match input sequence!')
     
+    # commented out for now, still working on this...
+    #PDBParserObj = add_necessary_C_N(PDBParserObj)
+    
+
     # return coordinates rounded to 3 places.
     return round_coordinates(PDBParserObj)
     

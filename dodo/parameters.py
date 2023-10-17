@@ -46,6 +46,9 @@ average_bond_distances_AF2={
     'NH2_CZ': 1.3012861075448443, 'CZ_OXT': 5.61536160901504
     }
 
+# list of bonds that can be made. 
+valid_bonds={'N': ['CA'], 'CA': ['C', 'CA'], 'C': ['CB', 'O'], 'CB': ['O'], 'O': ['CG', 'OG', 'CG1', 'SG', 'CG2'], 'CG': ['SD', 'CD', 'ND2', 'CD1', 'CD2', 'OD1'], 'SD': ['CE'], 'CD': ['CE', 'OE1', 'NE2', 'NE'], 'CE': ['NZ'], 'ND2': ['OD1'], 'CD1': ['CD2'], 'CD2': ['CE1', 'CE2', 'ND1'], 'CE1': ['CE2', 'NE2'], 'CE2': ['CZ', 'CE3', 'OH'], 'OE1': ['OE2'], 'CG1': ['CG2'], 'CG2': ['CD1', 'OG1'], 'NE2': ['OE1'], 'CE3': ['NE1'], 'NE1': ['CH2'], 'CH2': ['CZ2'], 'CZ2': ['CZ3'], 'ND1': ['CE1'], 'OH': ['CZ'], 'OD1': ['OD2'], 'NE': ['NH1'], 'NH1': ['NH2'], 'NH2': ['CZ'], 'CZ': ['OXT']}
+
 modes={
     'super_compact':0.3,
     'compact':0.55,

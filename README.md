@@ -15,6 +15,8 @@ DODO is a A Python package for taking an AF2 structure and making the disordered
 
 3. Some bonds aren't *quite* the right distance apart, so you might see an 'unusual bond between residues' warning in VMD. I'm working on this. It isn't so bad that it ruins the visualization, but I'll still try to fix it. This is largely because the IDRs only have alpha carbons, which results in alpha carbon to N or C bonds, which wouldn't occur if the IDR had all the atoms. I'm pretty close to getting this resolved.
 
+4. Some visualization modes don't work in VMD. Licorice seems to work fine, tube and trace do not. I'm working on this.
+
 ### How can you use DODO?
 
 DODO is currently only usable in Python.  
@@ -51,6 +53,8 @@ All arguments for ``build.pdb_from_name()`` are as follows:
 
 **mode** - optional. Default: 'predicted'. The ``predicted`` option predicts the end-to-end distance of your disordered regions from sequence and then makes the IDRs fit within that distance. Additional options are ``super_compact``, ``compact``, ``normal``, ``expanded``, ``super_expanded``, ``max_expansion``. These are pretty self explanatory.  
 
+**linear_placement** - optional. Default: False. Whether to place the folded domains linearly for visualization.  
+
 **include_FD_atoms** - optional. Default: True. Whether to include all atoms for the FDs. Only CA for IDRs for now.  
 
 **CONECT_lines** - optional. Default: True. Whether to included CONECT lines in the generated PDB. Makes visualization generally better.  
@@ -81,6 +85,8 @@ All arguments for ``build.pdb_from_pdb()`` are as follows:
 **out_path** - optional if you set graph=True. Otherwise raises an exception. Where to save your protein structure file. Specify the file name here.  
 
 **mode** - optional. Default: 'predicted'. The ``predicted`` option predicts the end-to-end distance of your disordered regions from sequence and then makes the IDRs fit within that distance. Additional options are ``super_compact``, ``compact``, ``normal``, ``expanded``, ``super_expanded``, ``max_expansion``. These are pretty self explanatory.  
+
+**linear_placement** - optional. Default: False. Whether to place the folded domains linearly for visualization.  
 
 **include_FD_atoms** - optional. Default: True. Whether to include all atoms for the FDs. Only CA for IDRs for now.  
 
@@ -132,6 +138,8 @@ All arguments for ``build.pdb_from_sequence()`` are as follows:
 #### Changes
 
 Logging changes below.  
+
+V0.06 - October 17, 2023. Added functionality to place folded domains in an approximate linear arrangement for visualization purposes.  
 
 V0.05 - October 5, 2023. Major overhaul to the backend to make structure generation more robust and efficient. Changed some user facing functionality and added ability to generate a PDB of an IDR from sequence alone. Improved documentation.
 

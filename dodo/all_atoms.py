@@ -409,8 +409,8 @@ def add_necessary_C_N(PDBParserObj):
                 next_ca=np.array(all_coords[aa]['CA'])
                 add_N = calculate_next_N_coordinates(current_n, current_ca, current_c, next_ca)
                 PDBParserObj.all_atom_coords_by_index[aa]={}
-                PDBParserObj.all_atom_coords_by_index[aa]['N']=add_N
-                PDBParserObj.all_atom_coords_by_index[aa]['CA']=next_ca
+                PDBParserObj.all_atom_coords_by_index[aa]['N']=np.array(add_N)
+                PDBParserObj.all_atom_coords_by_index[aa]['CA']=np.array(next_ca)
     return PDBParserObj
 
 

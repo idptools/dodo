@@ -11,6 +11,7 @@ from dodo.pdb_tools import PDBParser
 # for the ... problems.
 from dodo.dodo_exceptions import dodoException
 from dodo import parameters
+from dodo.all_atoms import add_necessary_C_N
 
 def get_res_dist(xyz1, xyz2):
     '''
@@ -566,7 +567,7 @@ def translate_coordinates(coordinates, specific_coordinate, target_coordinate):
     return translated_coordinates
 
 
-def generate_coordinate_on_line(coord1, coord2, distance):
+def generate_coordinate_on_line(coord1, coord2, distance, from_coord1=True):
     """
     Generate a 3D coordinate along a straight line, given two coordinates 
     that is a specific distance from the first coordinate.
@@ -583,7 +584,10 @@ def generate_coordinate_on_line(coord1, coord2, distance):
         The second 3D coordinate (x2, y2, z2).
     distance : float
         The specified distance between the coordinates.
-
+    from_coord1 : bool
+        whether the returned coordinate should be the specified distance
+        from coord1 or from coord2.
+        Default is coord1. If False, distance is from coord2
     Returns
     -------
     list of tuples : 
@@ -598,13 +602,19 @@ def generate_coordinate_on_line(coord1, coord2, distance):
     coord2 = np.array(coord2)
 
     # Calculate the direction vector between coord1 and coord2
-    direction_vector = coord2 - coord1
+    if from_coord1:
+        direction_vector = coord2 - coord1
+    else:
+        direction_vector = coord1 - coord2
 
     # Calculate the unit vector in the direction of the line
     unit_vector = direction_vector / np.linalg.norm(direction_vector)
 
     # Generate coordinate along the line at specified interval
-    return coord1+(distance*unit_vector)
+    if from_coord1:
+        return coord1+(distance*unit_vector)
+    else:
+        return coord2+(distance*unit_vector)
 
 
 def round_coordinates(PDBParserObj, decimals=3):
@@ -635,14 +645,13 @@ def round_coordinates(PDBParserObj, decimals=3):
     for aa in all_coords:
         for at in all_coords[aa]:
             # get_coords
-            cur_coords=all_coords[aa][at]
-            # iterate through cur coords
-            if cur_coords != {}:
-                x=round(cur_coords[0], decimals)
-                y=round(cur_coords[1], decimals)
-                z=round(cur_coords[2], decimals)
+            cur_coords=np.array(all_coords[aa][at])
+            
+            x=round(cur_coords[0], decimals)
+            y=round(cur_coords[1], decimals)
+            z=round(cur_coords[2], decimals)
                 # update dict
-                PDBParserObj.all_atom_coords_by_index[aa][at]=(x,y,z)
+            PDBParserObj.all_atom_coords_by_index[aa][at]=(x,y,z)
     return PDBParserObj
 
 def random_walk_step(initial_coords, distance):
@@ -702,9 +711,60 @@ def get_seq_from_all_atom_coords(PDBParserObj):
         seq+=parameters.AADICT_3_to_1[amino_acid]
     return seq
 
+def center_fd_at_0(PDBParserObj):
+    '''
+    function to take the first fd and center it at 000.
+    '''
+    # get atoms
+    atoms=PDBParserObj.all_atom_coords_by_index
+    # get those FDs
+    get_fds=PDBParserObj.FD_coords
+    # get loops
+    fd_loops=PDBParserObj.FD_loop_coords
+    for loop_num in fd_loops:
+        get_fds[loop_num]=(fd_loops[loop_num][0])
+    all_fds={}
+    for fd in get_fds:
+        fd_num=int(fd.split('_')[-1])
+        all_fds[fd_num]=get_fds[fd]
+    # sort
+    fds_in_order=sorted(all_fds)
+    # get coords of first fd
+    domain1_coords_ind = all_fds[fds_in_order[0]]
+    # get the ref point of the final CA of the first fd, we move this to 000
+    ref_point1 = np.array(atoms[domain1_coords_ind[-1]-1]['CA'])   
+    # Get actual coords for fd regions.
+    domain1_coords=get_region_coords(PDBParserObj, specific_regions=[domain1_coords_ind], return_list=False)            
+    
+    # for repopulating PDBParser after confirming everything is good..
+    aa_and_at_dom1=[]
+    domain1_coords_list=[]
+    for aa in domain1_coords:
+        for at in domain1_coords[aa]:
+            aa_and_at_dom1.append([aa, at])
+            domain1_coords_list.append(domain1_coords[aa][at])
+
+    # now have list of coords, need to translate.
+    # translate coords of fd to 000
+    translated_coords=translate_coordinates(domain1_coords_list, ref_point1, (0,0,0))
+    #IDK why I did it this way but ... yup
+    # track numbers of aa and atom for repopulating dict
+    raw_num_ind=0
+    for coord in translated_coords:
+        # get aa num and atom name to repopulate thigns
+        cur_pair = aa_and_at_dom1[raw_num_ind]
+        cur_ats = PDBParserObj.all_atom_coords_by_index[cur_pair[0]]
+        cur_ats[cur_pair[1]]=coord
+        # update all atom coords dict in pdbparserobj
+        PDBParserObj.all_atom_coords_by_index[cur_pair[0]]=cur_ats
+        # update the index so we track atoms and aa numbers
+        raw_num_ind+=1
+    return PDBParserObj
 
 
-def place_FDs(PDBParserObj, mode, verbose=True, total_attempts=30):
+
+def place_FDs(PDBParserObj, mode, linear_placement=False,
+    verbose=True, total_attempts=30):
     '''
     Function to place the FDs. Basically iterates through all the FDs and 
     FDs with loops and places them at random locations at specific distances
@@ -719,6 +779,9 @@ def place_FDs(PDBParserObj, mode, verbose=True, total_attempts=30):
         expanded, super_expanded, max_expansion, or predicted. 
         Predicted predicts the end-to-end distance of each IDR and places the FDs
         such that they will be that distance away from each other. 
+    linear_placement : bool
+        whether to place the folded domains across a linear axis. 
+        Default : False
     verbose : bool
         If True, prints out what is happening. Default is True.
     total_attempts : int
@@ -747,7 +810,8 @@ def place_FDs(PDBParserObj, mode, verbose=True, total_attempts=30):
     elif mode == 'predicted':
         run_prediction=True
     else:
-        raise Exception('Invalid mode specified. Please specify super_compact, compact, normal, expanded, super_expanded, or max_expansion, or predicted.')
+        raise dodoException('Invalid mode specified. Please specify super_compact, compact, normal, expanded, super_expanded, or max_expansion, or predicted.')
+
 
     # now we need to move the FDs relative to each other. Originally I tried to be clever here and 
     # use the center of the system and move things relative to that, but it turns out randomly 
@@ -763,6 +827,11 @@ def place_FDs(PDBParserObj, mode, verbose=True, total_attempts=30):
         all_fds[fd_num]=get_fds[fd]
     # sort
     fds_in_order=sorted(all_fds)
+
+    # if linear placement is True...
+    if linear_placement==True:
+        PDBParserObj = center_fd_at_0(PDBParserObj)
+
 
     # only move fds that have IDRs between them. 
     num_fd_move=1
@@ -819,10 +888,18 @@ def place_FDs(PDBParserObj, mode, verbose=True, total_attempts=30):
                 if verbose==True:
                     print(f'on attempt {current_attempts}!')
                 # get random point on sphere. This is the objective distance from the end of the first FD
-                random_point = random_coordinate_on_sphere_surface(ref_point1, objective_dist)
-                
-                # translate coords of fd2 by the distance we want in the random direction from FD1
-                translated_coords=translate_coordinates(domain2_coords_list, ref_point2, random_point)
+                if linear_placement==False:
+                    random_point = random_coordinate_on_sphere_surface(ref_point1, objective_dist)
+                    # translate coords of fd2 by the distance we want in the random direction from FD1
+                    translated_coords=translate_coordinates(domain2_coords_list, ref_point2, random_point)
+                else:
+                    # need to set translated coords at this part, probs gonna use a function
+                    target_coord = (ref_point1[0]+objective_dist, ref_point1[1], ref_point1[2])
+                    # translate the coords
+                    translated_coords=translate_coordinates(domain2_coords_list, ref_point2, target_coord)
+                    # only try this once because we are going to end up in the same location every time. 
+                    current_attempts+=total_attempts
+
                 # track numbers of aa and atom for repopulating dict
                 raw_num_ind=0
                 # temp copy of PDBParserObj to update and test for clashing
@@ -1186,7 +1263,7 @@ def build_loops(PDBParserObj, verbose=True,
 
 
 def build_structure(PDBParserObj, mode='predicted', attempts_per_region=20, 
-    attempts_per_coord=2000,verbose=True, very_verbose=False):
+    attempts_per_coord=2000, linear_placement=False, verbose=True, very_verbose=False):
     '''
     Function for building the entire structure. Combines all the other functions
     in this module. 
@@ -1202,6 +1279,9 @@ def build_structure(PDBParserObj, mode='predicted', attempts_per_region=20,
         number of attempts to try to place each FD. Default is 20.
     attempts_per_coord : int
         number of attempts to try to place each coordinate. Default is 2000.
+    linear_placement : bool
+        whether to place the folded domains across a linear axis. 
+        Default : False
     verbose : bool
         if True, prints out why min distance was not satisfied. Default is False.
     very_verbose : bool
@@ -1228,7 +1308,8 @@ def build_structure(PDBParserObj, mode='predicted', attempts_per_region=20,
         while cur_attempt < attempts_per_region:
             cur_attempt+=1
             try:
-                PDBParserObj=place_FDs(PDBParserObj,mode=mode, verbose=very_verbose, total_attempts=30)
+                PDBParserObj=place_FDs(PDBParserObj,mode=mode, linear_placement=linear_placement,
+                verbose=very_verbose, total_attempts=30)
                 success=True
                 break
             except dodoException:
@@ -1305,6 +1386,10 @@ def build_structure(PDBParserObj, mode='predicted', attempts_per_region=20,
     if built_sequence != PDBParserObj.sequence:
         raise dodoException('Built sequence does not match input sequence!')
     
+    # commented out for now, still working on this...
+    #PDBParserObj = add_necessary_C_N(PDBParserObj)
+    
+
     # return coordinates rounded to 3 places.
     return round_coordinates(PDBParserObj)
     

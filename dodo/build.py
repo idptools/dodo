@@ -90,8 +90,18 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
 
     # if graphing, graph it up
     if graph==True:
-        region_info=PDBParserObj.regions_dict
-        plot_structure(structure_dict['ca_coords'], region_info, save_path=out_path)
+        # get region info for graphing. Get here because even if user input their own
+        # regions, the PDBParserObj will have it at this point. 
+        region_info = PDBParserObj.regions_dict
+        all_coords = PDBParserObj.all_atom_coords_by_index
+        # get the CA coords for graphing.
+        ca_coords = []
+        for aa in all_coords:
+            cur_atoms = all_coords[aa]
+            for atom in cur_atoms:
+                if atom == 'CA':
+                    ca_coords.append(all_coords[aa][atom])
+        plot_structure(ca_coords, region_info, save_path=out_path)
     else:
         # otherwise save that stuffs.
         if out_path=='':
@@ -185,7 +195,15 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
         # get region info for graphing. Get here because even if user input their own
         # regions, the PDBParserObj will have it at this point. 
         region_info = PDBParserObj.regions_dict
-        plot_structure(structure_dict['ca_coords'], region_info, save_path=out_path)
+        all_coords = PDBParserObj.all_atom_coords_by_index
+        # get the CA coords for graphing.
+        ca_coords = []
+        for aa in all_coords:
+            cur_atoms = all_coords[aa]
+            for atom in cur_atoms:
+                if atom == 'CA':
+                    ca_coords.append(all_coords[aa][atom])
+        plot_structure(ca_coords, region_info, save_path=out_path)
     else:
         if out_path=='':
             raise dodoException('Please specify an output path.')

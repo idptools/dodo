@@ -1361,7 +1361,7 @@ def build_structure(PDBParserObj, mode='predicted', attempts_per_region=20,
         while cur_attempt < attempts_per_region:
             cur_attempt+=1
             try:
-                PDBParserObj=build_terminal_IDRs(PDBParserObj, mode='normal', verbose=very_verbose, attempts_per_coord=attempts_per_coord)
+                PDBParserObj=build_terminal_IDRs(PDBParserObj, mode=mode, verbose=very_verbose, attempts_per_coord=attempts_per_coord)
                 success=True
                 break
             except dodoException:

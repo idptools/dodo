@@ -136,6 +136,50 @@ def remove_IDRs_loops(PDBParserObj):
         PDBParserObj.all_atom_coords_by_index[aa] = {} 
     return PDBParserObj
 
+def overwrite_beta_for_vis(PDBParserObj, FD=100, IDR=0):
+    '''
+    Overwrites the beta values in a PDBParserObj
+    Can use for visualization purpose in VMD.
+    
+    Parameters
+    -----------
+    PDBParserObj
+        PDBParser object
+    FD : int
+        FD number to overwrite with
+        default: 0
+    IDR : int
+        IDR number to overwrite with
+        default: 100
+
+    Returns
+    --------
+    PDBParserObj
+    '''
+    seq=PDBParserObj.sequence
+    IDR_coords_to_overwrite = []
+    # get loop vals
+    for loop in PDBParserObj.FD_loop_coords:
+        cur_loop=PDBParserObj.FD_loop_coords[loop]
+        for val in cur_loop[1]:
+            loop_coords=[aa for aa in range(val[0], val[1])]
+            IDR_coords_to_overwrite.extend(loop_coords)
+    for idr in PDBParserObj.IDR_coords:
+        cur_idr = PDBParserObj.IDR_coords[idr]
+        # make sure we get the final value...
+        if cur_idr[-1]==len(seq)-1:
+            IDR_coords_to_overwrite.extend([aa for aa in range(cur_idr[0], cur_idr[1]+1)])    
+        else:
+            IDR_coords_to_overwrite.extend([aa for aa in range(cur_idr[0], cur_idr[1])])
+    # overwrite.
+    for res in PDBParserObj.beta_vals_by_index:
+        if res in IDR_coords_to_overwrite:
+            PDBParserObj.beta_vals_by_index[res]=IDR
+        else:
+            PDBParserObj.beta_vals_by_index[res]=FD
+    return PDBParserObj
+
+
 def get_current_alpha_carbons(PDBParserObj, return_list=True):
     '''
     Quick function to get the current alpha carbons from the PDBParserObj.
@@ -1264,7 +1308,7 @@ def build_loops(PDBParserObj, verbose=True,
 
 def build_structure(PDBParserObj, mode='predicted', attempts_per_region=40, 
     attempts_per_coord=2500, linear_placement=False, verbose=True, very_verbose=False,
-    num_models=1):
+    num_models=1, beta_for_FD_IDR=False):
     '''
     Function for building the entire structure. Combines all the other functions
     in this module. 
@@ -1291,6 +1335,9 @@ def build_structure(PDBParserObj, mode='predicted', attempts_per_region=40,
         number of models to build. This will rebuild the IDR multiple times
         but will hold the FDs constant. Will build the number of IDRs specified here.
         Default : 1
+    beta_for_FD_IDR : bool
+        whether to overwrite beta for the FD IDRs. FD = 0, IDR =100. Nifty for VMD.
+        Default : False
 
     Returns
     -------
@@ -1401,6 +1448,10 @@ def build_structure(PDBParserObj, mode='predicted', attempts_per_region=40,
         built_sequence = get_seq_from_all_atom_coords(PDBParserObj)
         if built_sequence != PDBParserObj.sequence:
             raise dodoException('Built sequence does not match input sequence!')
+
+        # if we are supposed to overwrite beta vals, do so
+        if beta_for_FD_IDR==True:
+            PDBParserObj=overwrite_beta_for_vis(PDBParserObj)
         
         # add to models dict
         models[model]=deepcopy(round_coordinates(PDBParserObj))

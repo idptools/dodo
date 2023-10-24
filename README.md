@@ -5,7 +5,7 @@ re**D**esign AlphaF**O**ld2 **D**isorered regi**O**ns
 
 ## What is DODO?  
 
-DODO is a A Python package for taking an AF2 structure redesigning the disordered regions to look more like IDRs. To be clear, the work done by DeepMind to make AlphaFold is AMAZING, and I do not mean to take away from that in *ANY WAY*. However, for visualizing proteins for presentations, etc. it would be nifty to be able to make the IDRs look more 'IDR-like'. DODO does just that! What it does is identify the IDRs in the structure, predict the end-to-end distance for each IDR from its sequence (by default, though there are other options...), and rebuild the structure such that the IDRs are the approximate correct overall dimensions. In addition, you can make a PDB with multiple IDRs in a single 'structure' and keep the folded domains fixed, which when opened in VMD makes something that looks *like* a simulation trajectroy (to be very clear, it is **NOT** the equivalent to an actual simulation trajectory but is really nice for visualization).  
+DODO is a A Python package and command-line utility for taking an AF2 structure redesigning the disordered regions to look more like IDRs. To be clear, the work done by DeepMind to make AlphaFold is AMAZING, and I do not mean to take away from that in *ANY WAY*. However, for visualizing proteins for presentations, etc. it would be nifty to be able to make the IDRs look more 'IDR-like'. DODO does just that! What it does is identify the IDRs in the structure, predict the end-to-end distance for each IDR from its sequence (by default, though there are other options...), and rebuild the structure such that the IDRs are the approximate correct overall dimensions. In addition, you can make a PDB with multiple IDRs in a single 'structure' and keep the folded domains fixed, which when opened in VMD makes something that looks *like* a simulation trajectroy (to be very clear, it is **NOT** the equivalent to an actual simulation trajectory but is really nice for visualization).  
 
 ### Current Limitations  
 
@@ -57,6 +57,8 @@ All arguments for ``build.pdb_from_name()`` are as follows:
 
 **linear_placement** - optional. Default: False. Whether to place the folded domains linearly for visualization.  
 
+**beta_for_FD_IDR** - optional. Default: False. Whether to set beta values such that all IDRs = 0 and FDs=100 for visualization.  
+  
 **include_FD_atoms** - optional. Default: True. Whether to include all atoms for the FDs. Only CA for IDRs for now.  
 
 **CONECT_lines** - optional. Default: True. Whether to included CONECT lines in the generated PDB. Makes visualization generally better.  
@@ -92,6 +94,8 @@ All arguments for ``build.pdb_from_pdb()`` are as follows:
 
 **linear_placement** - optional. Default: False. Whether to place the folded domains linearly for visualization.  
 
+**beta_for_FD_IDR** - optional. Default: False. Whether to set beta values such that all IDRs = 0 and FDs=100 for visualization.  
+  
 **include_FD_atoms** - optional. Default: True. Whether to include all atoms for the FDs. Only CA for IDRs for now.  
 
 **CONECT_lines** - optional. Default: True. Whether to included CONECT lines in the generated PDB. Makes visualization generally better.  
@@ -160,7 +164,9 @@ All arguments for ``pdb-from-name`` are as follows:
 ``-n`` or ``--num_models`` : optional. Default: 1. ``--num_models`` lets you choose the number of models of IDRs to make for your protein. The folded domains are left in the same location for all models wherease the IDRs vary.   
 
 ``-l`` or ``--linear_placement`` : optional. Default: False. The ``--linear_placement`` flag lets you place the IDRs linearly across a vector for visualization.  
-
+  
+``-b`` or ``--beta_for_FD_IDR`` : optional. Default: False. Whether to set beta values such that all IDRs = 0 and FDs=100 for visualization.  
+  
 ``-c`` or ``--no_CONECT_lines`` : optional. Default: False. The ``--no_CONECT_lines`` flag lets you make files without CONECT lines.  
   
 ``-f`` or ``--no_FD_atoms`` : optional. Default: False. The ``--no_FD_atoms`` flag lets you make structures with ONLY alpha carbon atoms. By default, the IDRs are only alpha carbons and the FDs are all atom.  
@@ -191,7 +197,9 @@ All arguments for ``pdb-from-pdb`` are as follows:
 ``-n`` or ``--num_models`` : optional. Default: 1. ``--num_models`` lets you choose the number of models of IDRs to make for your protein. The folded domains are left in the same location for all models wherease the IDRs vary.   
 
 ``-l`` or ``--linear_placement`` : optional. Default: False. The ``--linear_placement`` flag lets you place the IDRs linearly across a vector for visualization.  
-
+  
+``-b`` or ``--beta_for_FD_IDR`` : optional. Default: False. Whether to set beta values such that all IDRs = 0 and FDs=100 for visualization.  
+  
 ``-c`` or ``--no_CONECT_lines`` : optional. Default: False. The ``--no_CONECT_lines`` flag lets you make files without CONECT lines.  
   
 ``-f`` or ``--no_FD_atoms`` : optional. Default: False. The ``--no_FD_atoms`` flag lets you make structures with ONLY alpha carbon atoms. By default, the IDRs are only alpha carbons and the FDs are all atom.  

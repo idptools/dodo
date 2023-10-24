@@ -32,9 +32,9 @@ dependencies = [
 ]
 
 [project.scripts]
-pdb-from-name = "dodo.scripts.pdb_from_name:pdb_from_name"
-pdb-from-pdb = "dodo.scripts.pdb_from_pdb:pdb_from_pdb"
-pdb-from-sequence = "dodo.scripts.pdb_from_sequence:pdb_from_sequence"
+pdb-from-name = "dodo.pdb_from_name:pdb_from_name"
+pdb-from-pdb = "dodo.pdb_from_pdb:pdb_from_pdb"
+pdb-from-sequence = "dodo.pdb_from_sequence:pdb_from_sequence"
 
 # Update the urls once the hosting is set up.
 #[project.urls]

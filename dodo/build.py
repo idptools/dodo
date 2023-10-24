@@ -14,8 +14,8 @@ from dodo import parameters
 
 def pdb_from_name(protein_name, out_path='', mode='predicted', 
     linear_placement=False, CONECT_lines=True, include_FD_atoms=True, 
-    use_metapredict=False, graph=False, verbose=True, attempts_per_region=20, 
-    attempts_per_coord=2000):
+    use_metapredict=False, graph=False, verbose=True, attempts_per_region=40, 
+    attempts_per_coord=2000, num_models=1):
     """
     Function to take in the name of a protein and then return an AF2 PDB
     with modified disordered regions. 
@@ -47,9 +47,12 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
     verbose : bool
         Whether to print out info about what is happening. Default is True.
     attempts_per_region : int
-        Number of attempts to make per region. Default is 20.
+        Number of attempts to make per region. Default is 40.
     attempts_per_coord : int
         Number of attempts to make per coordinate. Default is 2000.
+    num_models : int
+        Number of times to rebuild the IDRs while holding the FDs contant.
+        Default : 1
 
     Returns
     -------
@@ -59,6 +62,11 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
         None. Just graphs the structure.
 
     """
+    # don't let people waste their time trying to graph multiple models. 
+    if graph==True and num_models!=1:
+        num_models=1
+        print('Cannot graph more than one model. Falling back to one model.')
+
     # make sure mode is reasonable before getting rolling.
     if mode not in list(parameters.modes.keys()):
         raise dodoException('Invalid mode specified. Please specify super_compact, compact, normal, expanded, super_expanded, or max_expansion, or predicted.')
@@ -86,14 +94,14 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
                                     linear_placement=linear_placement,
                                     attempts_per_region=attempts_per_region,
                                     attempts_per_coord=attempts_per_coord,
-                                    verbose=verbose)
+                                    verbose=verbose, num_models=num_models)
 
     # if graphing, graph it up
     if graph==True:
         # get region info for graphing. Get here because even if user input their own
         # regions, the PDBParserObj will have it at this point. 
-        region_info = PDBParserObj.regions_dict
-        all_coords = PDBParserObj.all_atom_coords_by_index
+        region_info = PDBParserObj[1].regions_dict
+        all_coords = PDBParserObj[1].all_atom_coords_by_index
         # get the CA coords for graphing.
         ca_coords = []
         for aa in all_coords:
@@ -107,14 +115,24 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
         if out_path=='':
             raise dodoException('Please specify an output path.')
         else:
-            save_pdb_from_PDBParserObj(PDBParserObj, out_path=out_path,
-            include_FD_atoms=include_FD_atoms, CONECT_lines=CONECT_lines)
+            for model_number in PDBParserObj:
+                if model_number==1:
+                    add_mode='w'
+                else:
+                    add_mode='a'
+                if model_number==num_models:
+                    last_model=True
+                else:
+                    last_model=False
+                save_pdb_from_PDBParserObj(PDBParserObj[model_number], out_path=out_path,
+                    include_FD_atoms=include_FD_atoms, CONECT_lines=CONECT_lines,
+                    add_mode=add_mode, last_model=last_model, model_num=model_number)
 
 
 def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted', 
     linear_placement=False, CONECT_lines=True, include_FD_atoms=True, 
-    use_metapredict=False, graph=False, verbose=True, attempts_per_region=20, 
-    attempts_per_coord=2000, regions_dict=None):
+    use_metapredict=False, graph=False, verbose=True, attempts_per_region=40, 
+    attempts_per_coord=2000, regions_dict=None, num_models=1):
     """
     Function to take in the path to an AF2 pdb structure and return the structure
     with modified disordered regions. 
@@ -148,6 +166,9 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
         Number of attempts to make per region. Default is 20.
     attempts_per_coord : int
         Number of attempts to make per coordinate. Default is 2000.
+    num_models : int
+        Number of times to rebuild the IDRs while holding the FDs contant.
+        Default : 1
 
     Returns
     -------
@@ -156,6 +177,12 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
     if graph==True:
         None. Just graphs the structure.
     """
+
+    # don't let people waste their time trying to graph multiple models. 
+    if graph==True and num_models!=1:
+        num_models=1
+        print('Cannot graph more than one model. Falling back to one model.')
+
     # make sure mode is reasonable before getting rolling.
     if mode not in list(parameters.modes.keys()):
         raise dodoException('Invalid mode specified. Please specify super_compact, compact, normal, expanded, super_expanded, or max_expansion, or predicted.')    
@@ -189,13 +216,13 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
                                     linear_placement=linear_placement,
                                     attempts_per_region=attempts_per_region,
                                     attempts_per_coord=attempts_per_coord,
-                                    verbose=verbose)
+                                    verbose=verbose, num_models=num_models)
 
     if graph==True:
         # get region info for graphing. Get here because even if user input their own
         # regions, the PDBParserObj will have it at this point. 
-        region_info = PDBParserObj.regions_dict
-        all_coords = PDBParserObj.all_atom_coords_by_index
+        region_info = PDBParserObj[1].regions_dict
+        all_coords = PDBParserObj[1].all_atom_coords_by_index
         # get the CA coords for graphing.
         ca_coords = []
         for aa in all_coords:
@@ -208,13 +235,24 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
         if out_path=='':
             raise dodoException('Please specify an output path.')
         else:
-            save_pdb_from_PDBParserObj(PDBParserObj, out_path=out_path,
-            include_FD_atoms=include_FD_atoms, CONECT_lines=CONECT_lines)            
+            for model_number in PDBParserObj:
+                if model_number==1:
+                    add_mode='w'
+                else:
+                    add_mode='a'
+                if model_number==num_models:
+                    last_model=True
+                else:
+                    last_model=False
+                save_pdb_from_PDBParserObj(PDBParserObj[model_number], out_path=out_path,
+                    include_FD_atoms=include_FD_atoms, CONECT_lines=CONECT_lines,
+                    add_mode=add_mode, last_model=last_model, model_num=model_number)
+
 
 
 def pdb_from_sequence(sequence, out_path='', mode='predicted', 
-    attempts_per_res=1000, attempts_per_idr=50,
-    end_coord=(0,0,0), CONECT_lines=True, graph=False):
+    attempts_per_res=1000, attempts_per_idr=50, end_coord=(0,0,0), 
+    CONECT_lines=True, graph=False, num_models=1):
     '''
     Function to generate a PDB (or graph the IDR) using a sequence as the input.
 
@@ -240,6 +278,8 @@ def pdb_from_sequence(sequence, out_path='', mode='predicted',
         Whether to include CONECT lines in the pdb. Default is True.
     graph : bool
         Whether to graph the structure. Default is False.
+    num_models : Int
+        Number of IDR models to make. 
 
     Returns
     -------
@@ -249,29 +289,48 @@ def pdb_from_sequence(sequence, out_path='', mode='predicted',
         None. Just graphs the structure.
     '''
 
+    # don't let people waste their time trying to graph multiple models. 
+    if graph==True and num_models!=1:
+        num_models=1
+        print('Cannot graph more than one model. Falling back to one model.')
+
     # make sure mode is reasonable before getting rolling.
     if mode not in list(parameters.modes.keys()):
         raise dodoException('Invalid mode specified. Please specify super_compact, compact, normal, expanded, super_expanded, or max_expansion, or predicted.')        
 
+    # make dict to hold models
+    models={}
+
+    for model in range(1, num_models+1):
     # build the IDR
-    idr_dict = build_idr_from_sequence(sequence, mode=mode, end_coord=end_coord, 
-        attempts_per_idr=attempts_per_idr, attempts_per_coord=attempts_per_res)
+        models[model]= build_idr_from_sequence(sequence, mode=mode, end_coord=end_coord, 
+            attempts_per_idr=attempts_per_idr, attempts_per_coord=attempts_per_res)
 
     # if user doesn't want CONECT lines, don't return them.
     if CONECT_lines==True:
-        CONECT_coords=idr_dict['CONECT_coords']
+        CONECT_coords=models[1]['CONECT_coords']
     else:
         CONECT_coords=None
 
     if graph==False:
         if out_path=='':
             raise dodoException('Please specify an output path.')
-        write_pdb(idr_dict['xyz_list'], out_path, atom_indices=idr_dict['atom_indices'],
-            atom_names=idr_dict['atom_names'], residue_indices=idr_dict['residue_indices'],
-            residue_names=idr_dict['residue_names'], CONECT_LINES=CONECT_coords)
+        for model_number in models:
+            if model_number==1:
+                add_mode='w'
+            else:
+                add_mode='a'
+            if model_number==num_models:
+                last_model=True
+            else:
+                last_model=False     
+            idr_dict=models[model_number]
+            write_pdb(idr_dict['xyz_list'], out_path, atom_indices=idr_dict['atom_indices'],
+                atom_names=idr_dict['atom_names'], residue_indices=idr_dict['residue_indices'],
+                residue_names=idr_dict['residue_names'], CONECT_LINES=CONECT_coords,
+                add_mode=add_mode, last_model=last_model, model_num=model_number)
     else:
-        plot_structure(idr_dict['xyz_list'], {'idr': [0, len(sequence)]})
-
+        plot_structure(models[1]['xyz_list'], {'idr': [0, len(sequence)]})
 
 
 

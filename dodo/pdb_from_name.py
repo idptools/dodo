@@ -44,5 +44,5 @@ def pdb_from_name():
         include_FD_atoms=args.no_FD_atoms, use_metapredict=args.use_metapredict, 
         verbose=verbose, attempts_per_region=args.attempts_per_region, 
         attempts_per_coord=args.attempts_per_coord, num_models=args.num_models,
-        beta_for_FD_IDR=beta_for_FD_IDR)
+        beta_for_FD_IDR=args.beta_for_FD_IDR)
 

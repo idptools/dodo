@@ -1262,8 +1262,9 @@ def build_loops(PDBParserObj, verbose=True,
     return PDBParserObj
 
 
-def build_structure(PDBParserObj, mode='predicted', attempts_per_region=20, 
-    attempts_per_coord=2000, linear_placement=False, verbose=True, very_verbose=False):
+def build_structure(PDBParserObj, mode='predicted', attempts_per_region=40, 
+    attempts_per_coord=2500, linear_placement=False, verbose=True, very_verbose=False,
+    num_models=1):
     '''
     Function for building the entire structure. Combines all the other functions
     in this module. 
@@ -1286,6 +1287,10 @@ def build_structure(PDBParserObj, mode='predicted', attempts_per_region=20,
         if True, prints out why min distance was not satisfied. Default is False.
     very_verbose : bool
         if True, prints out a lot of stuff. Default is False. Mainly for debugging. 
+    num_models : int
+        number of models to build. This will rebuild the IDR multiple times
+        but will hold the FDs constant. Will build the number of IDRs specified here.
+        Default : 1
 
     Returns
     -------
@@ -1293,9 +1298,12 @@ def build_structure(PDBParserObj, mode='predicted', attempts_per_region=20,
         PDBParser object with FDs placed, IDRs connecting FDs built,
         any loops build, and terminal IDRs built.
     '''
+    # dict to hold models:
+    models = {}
+
     # remove the IDRs. This is so we don't need to worry about them 
     # clashing before we build everything else. 
-    PDBParserObj=PDBParserObj=remove_IDRs_loops(PDBParserObj)
+    PDBParserObj=remove_IDRs_loops(PDBParserObj)
     # get all the regions we need to build
     all_regions=PDBParserObj.regions_dict
     # if we have FDs or FDs with loops...
@@ -1317,81 +1325,89 @@ def build_structure(PDBParserObj, mode='predicted', attempts_per_region=20,
         if success==False:
             raise dodoException('Unable to place FDs.')
     
-    # if we have loops, build in the loops.
-    if PDBParserObj.FD_loop_coords!={}:
-        success=False
-        cur_attempt=0
-        if verbose==True:
-            print('Creating disordered loops.')        
-        while cur_attempt < attempts_per_region:
-            cur_attempt+=1
-            try:
-                PDBParserObj=build_loops(PDBParserObj, verbose=very_verbose, attempts_per_coord=attempts_per_coord)
-                success=True
-                break
-            except dodoException:
-                pass
-        if success==False:
-            raise dodoException('Unable to make loops.') 
+    # make a deep copy of the starting PDBParserObj to use to overwrite stuff
+    # if we have multiple models. 
+    starting_PDBParserObj = deepcopy(PDBParserObj)
 
-    # if we have IDRs... *This doesn't need to worry if they are N or C terminal, 
-    # because the function will figure that out. 
-    if PDBParserObj.IDR_coords!={}:
-        success=False
-        cur_attempt=0
-        if verbose==True:
-            print('Connecting FDs with IDRs.')        
-        while cur_attempt < attempts_per_region:
-            cur_attempt+=1
-            try:
-                PDBParserObj=build_connecting_IDRs(PDBParserObj, verbose=very_verbose, attempts_per_coord=attempts_per_coord)
-                success=True
-                break
-            except dodoException:
-                pass
-        if success==False:
-            raise dodoException('Unable to generate IDRs to connectd FDs.')            
-    
-    # if we have terminal IDRs, add those in.
-    if 'idr' in list(all_regions.keys())[0] or 'idr' in list(all_regions.keys())[-1]:
-        success=False
-        cur_attempt=0
-        if verbose==True:
-            print('Adding N and / or C terminal IDRs.')        
-        while cur_attempt < attempts_per_region:
-            cur_attempt+=1
-            try:
-                PDBParserObj=build_terminal_IDRs(PDBParserObj, mode=mode, verbose=very_verbose, attempts_per_coord=attempts_per_coord)
-                success=True
-                break
-            except dodoException:
-                pass
-        if success==False:
-            raise dodoException('Unable to generate IDRs to connectd FDs.')          
-    
-    # get atom count. This is for CONECT lines later
-    tot_atoms=0
-    for aa_ind in PDBParserObj.all_atom_coords_by_index:
-        tot_atoms+=len(PDBParserObj.all_atom_coords_by_index[aa_ind])
+    for model in range(1, num_models+1):
+        if model > 1:
+            PDBParserObj = deepcopy(starting_PDBParserObj)
 
-    # update atom count in PDBParserObj.
-    PDBParserObj.number_atoms=tot_atoms
-    # final check
-    if len(PDBParserObj.all_atom_coords_by_index)!=len(PDBParserObj.sequence):
-        raise dodoException('Length of coordinates by aa index does not match sequence length!')
+        # if we have loops, build in the loops.
+        if PDBParserObj.FD_loop_coords!={}:
+            success=False
+            cur_attempt=0
+            if verbose==True:
+                print('Creating disordered loops.')        
+            while cur_attempt < attempts_per_region:
+                cur_attempt+=1
+                try:
+                    PDBParserObj=build_loops(PDBParserObj, verbose=very_verbose, attempts_per_coord=attempts_per_coord)
+                    success=True
+                    break
+                except dodoException:
+                    pass
+            if success==False:
+                raise dodoException('Unable to make loops.') 
 
-    # get the sequence *using the all atom coordinates* so we can make sure nothing
-    # got dropped as we were updating the coordinates using each function.
-    built_sequence = get_seq_from_all_atom_coords(PDBParserObj)
-    if built_sequence != PDBParserObj.sequence:
-        raise dodoException('Built sequence does not match input sequence!')
-    
-    # commented out for now, still working on this...
-    #PDBParserObj = add_necessary_C_N(PDBParserObj)
+        # if we have IDRs... *This doesn't need to worry if they are N or C terminal, 
+        # because the function will figure that out. 
+        if PDBParserObj.IDR_coords!={}:
+            success=False
+            cur_attempt=0
+            if verbose==True:
+                print('Connecting FDs with IDRs.')        
+            while cur_attempt < attempts_per_region:
+                cur_attempt+=1
+                try:
+                    PDBParserObj=build_connecting_IDRs(PDBParserObj, verbose=very_verbose, attempts_per_coord=attempts_per_coord)
+                    success=True
+                    break
+                except dodoException:
+                    pass
+            if success==False:
+                raise dodoException('Unable to generate IDRs to connectd FDs.')            
+        
+        # if we have terminal IDRs, add those in.
+        if 'idr' in list(all_regions.keys())[0] or 'idr' in list(all_regions.keys())[-1]:
+            success=False
+            cur_attempt=0
+            if verbose==True:
+                print('Adding N and / or C terminal IDRs.')        
+            while cur_attempt < attempts_per_region:
+                cur_attempt+=1
+                try:
+                    PDBParserObj=build_terminal_IDRs(PDBParserObj, mode=mode, verbose=very_verbose, attempts_per_coord=attempts_per_coord)
+                    success=True
+                    break
+                except dodoException:
+                    pass
+            if success==False:
+                raise dodoException('Unable to generate IDRs to connectd FDs.')          
+        
+        # get atom count. This is for CONECT lines later
+        tot_atoms=0
+        for aa_ind in PDBParserObj.all_atom_coords_by_index:
+            tot_atoms+=len(PDBParserObj.all_atom_coords_by_index[aa_ind])
+
+        # update atom count in PDBParserObj.
+        PDBParserObj.number_atoms=tot_atoms
+        # final check
+        if len(PDBParserObj.all_atom_coords_by_index)!=len(PDBParserObj.sequence):
+            raise dodoException('Length of coordinates by aa index does not match sequence length!')
+
+        # get the sequence *using the all atom coordinates* so we can make sure nothing
+        # got dropped as we were updating the coordinates using each function.
+        built_sequence = get_seq_from_all_atom_coords(PDBParserObj)
+        if built_sequence != PDBParserObj.sequence:
+            raise dodoException('Built sequence does not match input sequence!')
+        
+        # add to models dict
+        models[model]=deepcopy(round_coordinates(PDBParserObj))
     
 
     # return coordinates rounded to 3 places.
-    return round_coordinates(PDBParserObj)
+    return models
     
 
 def build_idr_from_sequence(sequence, mode, 

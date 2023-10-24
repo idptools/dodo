@@ -118,7 +118,10 @@ def write_pdb(xyz_list,
               one_atom_per_residue=True, 
               include_seq_res=False,
               sequence='', 
-              CONECT_LINES=None):
+              CONECT_LINES=None,
+              add_mode = 'w', 
+              model_num=1,
+              last_model=True):
                  
     
     """
@@ -208,6 +211,19 @@ def write_pdb(xyz_list,
 
     beta : list or None
         If provided, assigns a beta value to every atom in the xyz_list. Default = None
+
+    add_mode : str
+        'w' or 'a'
+        basically whether to append or to add to a pdb. 
+        default is 'w'
+
+    model_num : int
+        model number
+        default is 1
+
+    last_model : bool
+        whether it's the last model in the models
+        default : True
 
 
     Returns
@@ -400,16 +416,17 @@ def write_pdb(xyz_list,
     else:
         beta = [1]*n_atom_lines
 
-    # open the filehandle
-    fh = open(outname, 'w')
+    # open the filehandle 
+    fh = open(outname, add_mode)
 
-    # write the CRYSTAL line. The box dimensions need to be 7 chars long each
-    box_x = numeric_padder(box_dims[0], 7)
-    box_y = numeric_padder(box_dims[1], 7)
-    box_z = numeric_padder(box_dims[2], 7)
+    if add_mode=='w':
+        # write the CRYSTAL line. The box dimensions need to be 7 chars long each
+        box_x = numeric_padder(box_dims[0], 7)
+        box_y = numeric_padder(box_dims[1], 7)
+        box_z = numeric_padder(box_dims[2], 7)
+        fh.write(f'CRYST1  {box_x}  {box_y}  {box_x}  90.00  90.00  90.00 P 1\n')
 
-    fh.write(f'CRYST1  {box_x}  {box_y}  {box_x}  90.00  90.00  90.00 P 1\n')
-    fh.write('MODEL    1\n')
+    fh.write(f'MODEL    {model_num}\n')
 
     # define widths of PDB columns
 
@@ -505,6 +522,8 @@ def write_pdb(xyz_list,
 
         idx = idx + 1
 
+    # write TER line
+    fh.write(f'TER    {atom_idx}      {residue_name} {chain_id}{numeric_padder(res_idx, RES_NUMBER_WIDTH, rounder=0, head_padding=True)}\n')
 
     if CONECT_LINES!=None:
         fh.write(f'\n')
@@ -512,14 +531,14 @@ def write_pdb(xyz_list,
             fh.write(f'{line}\n')
 
     fh.write('ENDMDL\n')
-    fh.write('END')
-
+    if last_model==True:
+        fh.write('END')
 
     # close file handle
     fh.close()
 
 def save_pdb_from_PDBParserObj(PDBParserObj, out_path, 
-    include_FD_atoms, CONECT_lines):
+    include_FD_atoms, CONECT_lines, add_mode, model_num, last_model):
     '''
     Function for saving pdbs from PDBParserObj.
     
@@ -533,6 +552,13 @@ def save_pdb_from_PDBParserObj(PDBParserObj, out_path,
         Whether to include all atoms from the AF2 structure.
     CONECT_lines : bool
         Whether to include CONECT lines in the pdb.
+    add_mode : str
+        Whether to append or to add to a pdb. 
+    model_num : int
+        model number
+    last_model : bool    
+        whether it's the last model written
+
 
     Returns
     -------
@@ -599,5 +625,6 @@ def save_pdb_from_PDBParserObj(PDBParserObj, out_path,
     # write pdb
     write_pdb(xyz_list, out_path, atom_indices=atom_indices,
             atom_names=atom_names, residue_indices=residue_indices,
-            residue_names=residue_names, beta=beta_vals,CONECT_LINES=CONECT_COORDS)
+            residue_names=residue_names, beta=beta_vals,CONECT_LINES=CONECT_COORDS, 
+            add_mode=add_mode, model_num=model_num, last_model=last_model)
 

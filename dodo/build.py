@@ -15,7 +15,7 @@ from dodo import parameters
 def pdb_from_name(protein_name, out_path='', mode='predicted', 
     linear_placement=False, CONECT_lines=True, include_FD_atoms=True, 
     use_metapredict=False, graph=False, verbose=True, attempts_per_region=40, 
-    attempts_per_coord=2000, num_models=1):
+    attempts_per_coord=2000, num_models=1, beta_for_FD_IDR=False):
     """
     Function to take in the name of a protein and then return an AF2 PDB
     with modified disordered regions. 
@@ -53,6 +53,10 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
     num_models : int
         Number of times to rebuild the IDRs while holding the FDs contant.
         Default : 1
+    beta_for_FD_IDR : bool
+        Whether to overwrite beta vals where IDR=100 and FD=0 for 
+        visualization purposes.
+        Default is False
 
     Returns
     -------
@@ -94,7 +98,8 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
                                     linear_placement=linear_placement,
                                     attempts_per_region=attempts_per_region,
                                     attempts_per_coord=attempts_per_coord,
-                                    verbose=verbose, num_models=num_models)
+                                    verbose=verbose, num_models=num_models,
+                                    beta_for_FD_IDR=beta_for_FD_IDR)
 
     # if graphing, graph it up
     if graph==True:
@@ -132,7 +137,7 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
 def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted', 
     linear_placement=False, CONECT_lines=True, include_FD_atoms=True, 
     use_metapredict=False, graph=False, verbose=True, attempts_per_region=40, 
-    attempts_per_coord=2000, regions_dict=None, num_models=1):
+    attempts_per_coord=2000, regions_dict=None, num_models=1, beta_for_FD_IDR=False):
     """
     Function to take in the path to an AF2 pdb structure and return the structure
     with modified disordered regions. 
@@ -169,6 +174,10 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
     num_models : int
         Number of times to rebuild the IDRs while holding the FDs contant.
         Default : 1
+    beta_for_FD_IDR : bool
+        Whether to overwrite beta vals where IDR=100 and FD=0 for 
+        visualization purposes.
+        Default is False
 
     Returns
     -------
@@ -216,7 +225,8 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
                                     linear_placement=linear_placement,
                                     attempts_per_region=attempts_per_region,
                                     attempts_per_coord=attempts_per_coord,
-                                    verbose=verbose, num_models=num_models)
+                                    verbose=verbose, num_models=num_models,
+                                    beta_for_FD_IDR=beta_for_FD_IDR)
 
     if graph==True:
         # get region info for graphing. Get here because even if user input their own

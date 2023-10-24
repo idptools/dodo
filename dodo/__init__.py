@@ -2,5 +2,8 @@
 
 # Add imports here
 from .build import *
+from . import pdb_from_name
+from . import pdb_from_pdb
+from . import pdb_from_sequence
 
 from ._version import __version__

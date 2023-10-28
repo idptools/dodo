@@ -23,9 +23,17 @@ DODO is currently usable in Python and from the command-line.
 
 ### Installation
 
-To install DODO, run the following command from terminal:  
+**Note** - to install DODO, you first need to have cython and numpy isntalled. To install cython and numpy, simpy run:
+```console
+pip install cython numpy
+  ```
 
-    $ pip install git+https://github.com/ryanemenecker/dodo.git
+Once you have cython and numpy installed, you should be able to install DODO. 
+
+To install DODO, run the following command from terminal:  
+```console
+pip install git+https://github.com/ryanemenecker/dodo.git
+```
 
 ## DODO Python Functions
 

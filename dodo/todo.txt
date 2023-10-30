@@ -1,10 +1,7 @@
 # list of stuff to do
 '''
-• Keep FDs on a vector
-• fix bug in idr_from_sequence or whatever you call it
 • Figure out all atom placement for IDRs
 • Add tests for everything
-• In build.py, add checks for failing early so time is not wasted before failing.
 • Add functionality to place FDs as close as is possible and as far as is possible. 
 • Albatross sliding window to make more realistic ensembles
 '''

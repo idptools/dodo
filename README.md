@@ -7,7 +7,7 @@ re**D**esign AlphaF**O**ld2 **D**isorered regi**O**ns
 
 DODO is a A Python package and command-line utility for taking an AF2 structure redesigning the disordered regions to look more like IDRs. To be clear, the work done by DeepMind to make AlphaFold is AMAZING, and I do not mean to take away from that in *ANY WAY*. However, for visualizing proteins for presentations, etc. it would be nifty to be able to make the IDRs look more 'IDR-like'. DODO does just that! What it does is identify the IDRs in the structure, predict the end-to-end distance for each IDR from its sequence (by default, though there are other options...), and rebuild the structure such that the IDRs are the approximate correct overall dimensions (see example below). In addition, you can make a PDB with multiple IDRs in a single 'structure' and keep the folded domains fixed, which when opened in VMD makes something that looks *like* a simulation trajectroy (to be very clear, it is **NOT** the equivalent to an actual simulation trajectory but is really nice for visualization).  
 
-![DODO_EXAMPLE](https://github.com/ryanemenecker/goose/blob/main/images/DODO_example.png)
+![DODO_EXAMPLE](https://github.com/ryanemenecker/dodo/blob/main/images/DODO_example.png)
 
 ### Current Limitations  
 

@@ -1,11 +1,9 @@
-DODO
+DODO: re<ins>D</ins>esign AlphaF<ins>O</ins>ld2 <ins>D</ins>isorered regi<ins>O</ins>ns  
 ==============================
-
-re**D**esign AlphaF**O**ld2 **D**isorered regi**O**ns  
 
 ## What is DODO?  
 
-DODO is a A Python package and command-line utility for taking an AF2 structure redesigning the disordered regions to look more like IDRs. To be clear, the work done by DeepMind to make AlphaFold is AMAZING, and I do not mean to take away from that in *ANY WAY*. However, for visualizing proteins for presentations, etc. it would be nifty to be able to make the IDRs look more 'IDR-like'. DODO does just that! What it does is identify the IDRs in the structure, predict the end-to-end distance for each IDR from its sequence (by default, though there are other options...), and rebuild the structure such that the IDRs are the approximate correct overall dimensions (see example below). In addition, you can make a PDB with multiple IDRs in a single 'structure' and keep the folded domains fixed, which when opened in VMD makes something that looks *like* a simulation trajectroy (to be very clear, it is **NOT** the equivalent to an actual simulation trajectory but is really nice for visualization).  
+DODO is a Python package and command-line utility for taking an AF2 structure and redesigning the disordered regions to make them look more like IDRs. To be clear, the work done by DeepMind to make AlphaFold2 is **AMAZING**, and I do not mean to take away from that in *ANY WAY*. However, for visualizing proteins for presentations, etc. it would be nifty to be able to make the IDRs look more 'IDR-like'. DODO does just that! What it does is identify the IDRs in the structure, predict the end-to-end distance for each IDR from its sequence using ALBATROSS (see https://github.com/idptools/sparrow) and rebuild the structure such that the IDRs are the approximate correct overall dimensions (see example below). If that visualization doesn't work for you, there are other options to make the IDRs more compact or expanded than is predicted from sequence. In addition, you can make a PDB with multiple IDRs in a single 'structure' and keep the folded domains fixed, which when opened in VMD makes something that looks *like* a simulation trajectroy (to be very clear, it is **NOT** the equivalent to an actual simulation trajectory but is really nice for visualizations).  
 
 ![DODO_EXAMPLE](https://github.com/ryanemenecker/dodo/blob/main/images/DODO_example.png)
 
@@ -25,7 +23,8 @@ DODO is currently usable in Python and from the command-line.
 
 ### Installation
 
-**Note** - to install DODO, you first need to have cython and numpy installed. To install cython and numpy, simpy run:
+**Note** - to install DODO, you first need to have cython and numpy installed. To install cython and numpy, simpy run:  
+
 ```console
 pip install cython numpy
   ```
@@ -142,7 +141,6 @@ All arguments for ``build.pdb_from_sequence()`` are as follows:
 
 **graph** - optional. Default: False. Setting this to True will pull up a really rough looking structure of your protein using the 3D graphing functionality in matplotlib. This is something I made when developing this to quickly look at structures. You shouldn't use this, but you can if you want. It's kind of fun TBH.  
   
-  
 **verbose** optional. Default: False. Set to True to get more info on what is happening as your structure is being made.  
   
 **attempts_per_idr** - optional. Default: 50. Number of attempts to IDR. Basically if number of attempts per coordinate reaches max and it still hasn't succeeded, this is the number of times it tries again.  
@@ -249,6 +247,8 @@ All arguments for ``pdb-from-pdb`` are as follows:
 #### Changes
 
 Logging changes below.  
+
+V0.11 - October 30, 2023. Couple small fixes, updated documentation, fixed some embarassingly bad typos.
 
 V0.10 - October 24, 2023. Big changes! Added functionality to generate multiple IDRs for a single PDB so you can make 'simulation-like' visualizations when viewing in PDB! I also added command-line functionality and fixed some more bugs. Note: the multiple models are for visualization only and not equivalent to actual simulations!
 

@@ -3,7 +3,7 @@ import os
 import random
 import math
 import numpy as np
-from copy import deepcopy
+from copy import deepcopy, copy
 from sparrow import Protein as pr
 
 # dodo imports
@@ -725,6 +725,36 @@ def random_walk_step(initial_coords, distance):
 
     return (x, y, z)
 
+
+def randomish_step(start_coordinate, final_coordinate, step_outside_final_coord,
+    step_from_start_coord_dist=3.8):
+    '''
+    By taking a random walk step from the final coordinate, we can
+    basically move in that direction. 
+
+    Parameters
+    ----------
+    start_coordinate : tuple
+        tuple of x,y,z coordinates for start point
+    final_coordinate : tuple
+        tuple of x,y,z coordinates for end point
+    step_outside_final_coord : float
+        distance from outside final coordinate to move to
+        higher numbers = less likely to be right at the cooridnate. 
+    step_from_start_coord_dist : float
+        the distance from the start coordiante to ultiimately traverse
+
+    Returns
+    -------
+    tuple
+        tuple of x,y,z coordinates for new point\
+    '''
+    # randomly choose another direction.
+    random_direction=random_walk_step(final_coordinate, step_outside_final_coord)
+    return generate_coordinate_on_line(start_coordinate, random_direction, 
+        step_from_start_coord_dist, from_coord1=True)
+
+
 def get_seq_from_all_atom_coords(PDBParserObj):
     '''
     Function to get the sequence from the PDBParserObj
@@ -1019,7 +1049,7 @@ def build_connecting_IDRs(PDBParserObj, bond_length=parameters.CA_bond_length,
         idrnums.append(int(idr.split('_')[-1]))
 
     # final radius distances
-    final_distances={10: 15, 9: 13.8, 8: 12.5, 7: 11.2, 6: 10, 5: 8.8, 4: 7.5, 3: 6.2, 2: 5.0, 1: 3.9}
+    final_distances={10: 15, 9: 13.8, 8: 12.5, 7: 11.2, 6: 10, 5: 8.8, 4: 7.5, 3: 6.2, 2: 5.1, 1: 3.8}
     off_by_dict={30: 10, 29: 9.5, 28: 9, 27: 8.5, 26: 8, 25: 8, 24: 8, 23: 8, 22: 8,21: 6.5,20:5, 19:5, 18:5,  17:5, 16:5, 
     15:5, 14:5, 13:5, 12: 5, 10: 4.5, 9: 4, 8: 4, 7: 3.5, 6: 2.5, 5: 2, 4: 1.5, 3: 1, 2: 1, 1: 0.75}
     # just idrs with +/- fds
@@ -1130,10 +1160,8 @@ def build_terminal_IDRs(PDBParserObj, mode, verbose=True,
     # get all atoms by ind
     all_atoms = PDBParserObj.all_atom_coords_by_index
 
-    # final distances and off by vlaues for the sphere check
-    final_distances={10: 15, 9: 13.8, 8: 12.5, 7: 11.2, 6: 10, 5: 8.8, 4: 7.5, 3: 6.2, 2: 5.0, 1: 3.9}
-    off_by_dict={30: 10, 29: 9.5, 28: 9, 27: 8.5, 26: 8, 25: 8, 24: 8, 23: 8, 22: 8,21: 6.5,20:5, 19:5, 18:5,  17:5, 16:5, 
-    15:5, 14:5, 13:5, 12: 5, 10: 4.5, 9: 4, 8: 4, 7: 3.5, 6: 2.5, 5: 2, 4: 1.5, 3: 1, 2: 1, 1: 0.75}
+    # keep track of original attempts per coord
+    original_attempts_per_coord=copy(attempts_per_coord)
 
     #get_all_regions
     all_regions=PDBParserObj.regions_dict
@@ -1160,22 +1188,30 @@ def build_terminal_IDRs(PDBParserObj, mode, verbose=True,
             if N_terminal_IDR==False:
                 idr_indices=sorted(idr_indices,reverse=True)
             if len_idr>10:
+                    # final distances and off by vlaues for the sphere check
+                final_distances={10: 15, 9: 13.8, 8: 12.5, 7: 11.2, 6: 10, 5: 8.8, 4: 7.5, 3: 6.2, 2: 5.1, 1: 3.8}
+                off_by_dict={30: 10, 29: 9.5, 28: 9, 27: 8.5, 26: 8, 25: 8, 24: 8, 23: 8, 22: 8,21: 6.5,20:5, 19:5, 18:5,  17:5, 16:5, 
+                            15:5, 14:5, 13:5, 12: 5, 10: 4.5, 9: 4, 8: 4, 7: 3.5, 6: 2.5, 5: 2, 4: 1.5, 3: 1, 2: 1, 1: 0.75}
+                attempts_per_coord=original_attempts_per_coord
                 max_dist_out=IDR_end_to_end_dist+((0.2)*(len_idr-10))
                 radius_distances=sorted(np.linspace(14.8, max_dist_out, len_idr-10),reverse=True)
                 # finish radius distances
                 for i in range(10,0,-1):
                     radius_distances.append(final_distances[i])
             else:
+                attempts_per_coord=20000
                 radius_distances=[]
+                # trying alternative attempt...
+                dist_from_final = {10: 10.8, 9: 9.8, 8: 9.3, 7: 8.8, 6: 7.3, 5: 6.8, 4: 6.3, 3: 5.8, 2: 4.8, 1: 3.8}
+                off_by_dict={10: 1.5, 9: 1.5, 8: 1.5, 7: 1.5, 6: 1.5, 5: 1.5, 4: 1.5, 3: 1, 2: 1, 1: 0.75}
+                final_distances={10: 21.8, 9: 19.8, 8: 17.3, 7: 15.8, 6: 13.3, 5: 11.8, 4: 9.8, 3: 7.8, 2: 5.8, 1: 3.8}
                 for i in range(len_idr,0,-1):
                     radius_distances.append(final_distances[i])
             radius_distances_by_res={}
             for ind_num, res_ind in enumerate(idr_indices):
                 radius_distances_by_res[res_ind]=radius_distances[ind_num]  
-
             #try to place starting coord. 
             radius_center_coord=all_atoms[radius_center_residue_ind]['CA']
-            
             for idr_index_num in idr_indices:
                 success=False
                 number_res = len_idr-idr_indices.index(idr_index_num)
@@ -1187,21 +1223,24 @@ def build_terminal_IDRs(PDBParserObj, mode, verbose=True,
                 cur_attempt=0
                 while cur_attempt < attempts_per_coord:
                     cur_attempt+=1
-
                     if idr_index_num==idr_indices[0]:
                         new_IDR_coord=random_coordinate_on_sphere_surface(radius_center_coord, IDR_end_to_end_dist)
                         check_sphere=False
                     else:
-
                         prev_CA_coord=all_atoms[idr_index_num-adjust_res]['CA']
                         new_IDR_coord=random_walk_step(prev_CA_coord, bond_length) 
                         check_sphere=True
                     if check_sphere==True:
-                        within_sphere = is_point_within_sphere_constraints(radius_center_coord, new_IDR_coord, cur_radius_dist, off_by=off_by, verbose=debug)    
+                        within_sphere = is_point_within_sphere_constraints(radius_center_coord, new_IDR_coord, cur_radius_dist, off_by=off_by, verbose=debug)
                     else:
                         within_sphere=True
+                    if len(idr_indices)<10:
+                        if within_sphere==False:
+                            new_IDR_coord = randomish_step(prev_CA_coord, radius_center_coord, dist_from_final[number_res],
+                                                step_from_start_coord_dist=3.8)
+                            within_sphere = is_point_within_sphere_constraints(radius_center_coord, new_IDR_coord, cur_radius_dist, off_by=off_by, verbose=debug)
                     if within_sphere==True:
-                        if is_min_distance_satisfied(PDBParserObj, idr_index_num, new_IDR_coord, 'CA', verbose=False):
+                        if is_min_distance_satisfied(PDBParserObj, idr_index_num, new_IDR_coord, 'CA', verbose=debug):
                             PDBParserObj.all_atom_coords_by_index[idr_index_num]={'CA':new_IDR_coord}
                             # update all atoms
                             all_atoms=PDBParserObj.all_atom_coords_by_index
@@ -1413,7 +1452,7 @@ def build_structure(PDBParserObj, mode='predicted', attempts_per_region=40,
                 except dodoException:
                     pass
             if success==False:
-                raise dodoException('Unable to generate IDRs to connectd FDs.')            
+                raise dodoException('Unable to generate IDRs to connect FDs.')            
         
         # if we have terminal IDRs, add those in.
         if 'idr' in list(all_regions.keys())[0] or 'idr' in list(all_regions.keys())[-1]:
@@ -1430,7 +1469,7 @@ def build_structure(PDBParserObj, mode='predicted', attempts_per_region=40,
                 except dodoException:
                     pass
             if success==False:
-                raise dodoException('Unable to generate IDRs to connectd FDs.')          
+                raise dodoException('Unable to generate terminal IDRs.')          
         
         # get atom count. This is for CONECT lines later
         tot_atoms=0

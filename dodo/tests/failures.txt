@@ -1,0 +1,12 @@
+# Uniprot IDs of stuff DODO failed on. Compiling these over time to make sure that as people find problems with DODO, I don't break previous fixes with new 'fixes', which wouldn't really be a fix because... I'd be breaking something else. Such is the fun of coding.
+
+I'll use these eventually to make 'the_alex_test.py' or 'Ryan_vs._the_FUTURE_OF_BIOPHYSICS.py' or something like that as an automated test.
+
+Current fails (to date...), last updated October 30, 2023 at way too late but whatever.
+1. p300 - Q09472
+    Credit: Stephen P. from the Holehouse Lab, the first person to remind me that I can't deploy something in 2 weeks without significant amounts of bugs (and probably typos). I don't use spell check for any of my documentation, it's the closest I get to 'living on the edge'. Also, if Stephen is somehow on the job market, hire Stephen. He's an incredible scientist. 
+2. TDP43 - Q13148
+    Credit: Me (Ryan, if you hadn't figured that out)! Some call this testing. They would be wrong. I found it when meeting with collaborators... well after pushing my most recent udpate.
+3. Q9WUL8, P54274, Q9UKA9, Q13283, O95758, P00698, P42212
+    Credit: Alex Holehouse. The future of biophysics, a great member of the department, and a certifiably 'high risk high reward' investigator (see - https://commonfund.nih.gov/newinnovator/AwardRecipients) but more importantly a great PI, mentor, and person. He let me name this thing DODO, the silliest bird according to ChatGPT 3.5!
+4. TBD. Come at me, fixing bugs is the name of the game! Jeff, if you're reading this ... be nice please and thank you (jokes aside, Jeff is also a great person).

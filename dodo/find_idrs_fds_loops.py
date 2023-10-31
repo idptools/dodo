@@ -138,6 +138,8 @@ def get_fds_loops_idrs(PDBParserObj, threshold=480, gap_thresh=25,
         in_fd=True
         start_bound=0
     
+
+
     # keep track of consecutive fd res
     consecutive=0
     # iterate through each amino acid where the val is
@@ -161,7 +163,12 @@ def get_fds_loops_idrs(PDBParserObj, threshold=480, gap_thresh=25,
             if in_fd == True:
                 if consecutive >= 2:
                     fds_bounds.append(start_fd, len(list_of_distances))
-
+    
+    # if no fds, return the IDRs
+    if fds_bounds ==[]:
+        PDBParserObj.IDR_coords['idr_1']=[0,len(PDBParserObj.sequence)-1]
+        PDBParserObj.regions_dict['idr_1']=[0,len(PDBParserObj.sequence)-1]
+        return PDBParserObj
     # now have fd bounds, however, some fds may be 
     # too short or close enough to another fd to be considered
     # the same FD. Combine into contigous FD regions.
@@ -251,6 +258,8 @@ def get_fds_loops_idrs(PDBParserObj, threshold=480, gap_thresh=25,
         region_num+=1
 
     PDBParserObj.regions_dict=regions_dict
+
+
     # return regions in order with names and coordinates
     return PDBParserObj
 

@@ -93,6 +93,12 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
         print('Building new structure.') 
         print(PDBParserObj.regions_dict) 
 
+    if len(PDBParserObj.regions_dict)==1 and 'idr_1' in PDBParserObj.regions_dict:
+        return pdb_from_sequence(PDBParserObj.sequence, out_path=out_path, mode=mode, 
+            attempts_per_res=1000, attempts_per_idr=50, end_coord=(0,0,0), 
+                CONECT_lines=CONECT_lines, graph=graph, num_models=1)
+
+
     # build new structure  
     PDBParserObj = build_structure(PDBParserObj, mode=mode, 
                                     linear_placement=linear_placement,
@@ -203,6 +209,7 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
     # make a dict with info we need for everything.
     cur_pdb=open(path_to_pdb, 'r').read().split('\n')
     PDBParserObj = PDBParser(cur_pdb)
+
     # use metapredict or atom positions if user didn't specify the regions...
     if regions_dict==None:
         if use_metapredict:
@@ -219,6 +226,13 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
             print(PDBParserObj.regions_dict) 
     else:
         PDBParserObj.regions_dict=regions_dict
+
+
+    if len(PDBParserObj.regions_dict)==1 and 'idr_1' in PDBParserObj.regions_dict:
+        return pdb_from_sequence(PDBParserObj.sequence, out_path=out_path, mode=mode, 
+            attempts_per_res=1000, attempts_per_idr=50, end_coord=(0,0,0), 
+                CONECT_lines=CONECT_lines, graph=graph, num_models=1)
+
 
     # build the structure.
     PDBParserObj = build_structure(PDBParserObj, mode=mode,

@@ -23,6 +23,9 @@ DODO is currently usable in Python and from the command-line.
 
 ### Installation
 
+If you are having any issues installing DODO, we have a few known potential install issues, so please keep reading this section! If you're having a problem that we don't have listed here, please let me know!  
+
+
 **Note** - to install DODO, you first need to have cython and numpy installed. To install cython and numpy, simpy run:  
 
 ```console
@@ -34,6 +37,20 @@ Once you have cython and numpy installed, you should be able to install DODO.
 To install DODO, run the following command from terminal:  
 ```console
 pip install git+https://github.com/ryanemenecker/dodo.git
+```
+  
+#### Additional known install failures
+  
+Over time we have discovered some ways that installing DODO can fail. One is related to your version of **setuptools**. Try running the following and then attempt to install DODO:
+
+```console
+pip install setuptools --upgrade
+```
+  
+Another fail that we are aware of involves **wheel**. To fix this, run the following:  
+
+```console
+pip install wheel --upgrade
 ```
 
 ## DODO Python Functions

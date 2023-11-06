@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "versioningit~=2.0", "wheel"]
+requires = ["setuptools>=65.0", "versioningit~=2.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 
@@ -22,6 +22,7 @@ classifiers = [
 requires-python = ">=3.8"
 # Declare any run-time dependencies that should be installed with the package.
 dependencies = [
+    "setuptools >=65.0",
     "importlib-resources;python_version<'3.10'",
     "cython",
     "numpy",

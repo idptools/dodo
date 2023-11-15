@@ -83,6 +83,8 @@ All arguments for ``build.pdb_from_name()`` are as follows:
 
 **linear_placement** - optional. Default: False. Whether to place the folded domains linearly for visualization.  
 
+**just_fds** - optional. Default: False. Setting ``just_fds`` to True will save out folded domains as individual PDBs with the name of your protein as specified in out_path with the coordinates of the fd in the file name. Formatted as protname_resStart_resEnd.pdb for each FD.   
+
 **beta_for_FD_IDR** - optional. Default: False. Whether to set beta values such that all IDRs = 0 and FDs=100 for visualization.  
   
 **include_FD_atoms** - optional. Default: True. Whether to include all atoms for the FDs. Only CA for IDRs for now.  
@@ -119,6 +121,8 @@ All arguments for ``build.pdb_from_pdb()`` are as follows:
 **num_models** - optional. Default: 1. ``num_models`` lets you choose the number of models of IDRs to make for your protein. The folded domains are left in the same location for all models wherease the IDRs vary.  
 
 **linear_placement** - optional. Default: False. Whether to place the folded domains linearly for visualization.  
+
+**just_fds** - optional. Default: False. Setting ``just_fds`` to True will save out folded domains as individual PDBs with the name of your protein as specified in out_path with the coordinates of the fd in the file name. Formatted as protname_resStart_resEnd.pdb for each FD.  
 
 **beta_for_FD_IDR** - optional. Default: False. Whether to set beta values such that all IDRs = 0 and FDs=100 for visualization.  
   
@@ -190,6 +194,8 @@ All arguments for ``pdb-from-name`` are as follows:
 
 ``-l`` or ``--linear_placement`` : optional. Default: False. The ``--linear_placement`` flag lets you place the IDRs linearly across a vector for visualization.  
   
+``-j`` or ``--just_fds`` : optional. Default: False. The ``--just_fds`` flag will save out folded domains as individual PDBs with the name of your protein as specified in out_path with the coordinates of the fd in the file name. Formatted as protname_resStart_resEnd.pdb for each FD.  
+
 ``-b`` or ``--beta_for_FD_IDR`` : optional. Default: False. Whether to set beta values such that all IDRs = 0 and FDs=100 for visualization.  
   
 ``-c`` or ``--no_CONECT_lines`` : optional. Default: False. The ``--no_CONECT_lines`` flag lets you make files without CONECT lines.  
@@ -223,6 +229,8 @@ All arguments for ``pdb-from-pdb`` are as follows:
 
 ``-l`` or ``--linear_placement`` : optional. Default: False. The ``--linear_placement`` flag lets you place the IDRs linearly across a vector for visualization.  
   
+``-j`` or ``--just_fds`` : optional. Default: False. The ``--just_fds`` flag will save out folded domains as individual PDBs with the name of your protein as specified in out_path with the coordinates of the fd in the file name. Formatted as protname_resStart_resEnd.pdb for each FD.  
+
 ``-b`` or ``--beta_for_FD_IDR`` : optional. Default: False. Whether to set beta values such that all IDRs = 0 and FDs=100 for visualization.  
   
 ``-c`` or ``--no_CONECT_lines`` : optional. Default: False. The ``--no_CONECT_lines`` flag lets you make files without CONECT lines.  
@@ -265,21 +273,23 @@ All arguments for ``pdb-from-pdb`` are as follows:
 
 Logging changes below.  
 
-V0.11 - October 30, 2023. Couple small fixes, updated documentation, fixed some embarassingly bad typos.
+* V0.12 - November 15, 2023. Added ability to save out the predicted folded domains as individual PDBs from Python and in the command line.  
 
-V0.10 - October 24, 2023. Big changes! Added functionality to generate multiple IDRs for a single PDB so you can make 'simulation-like' visualizations when viewing in PDB! I also added command-line functionality and fixed some more bugs. Note: the multiple models are for visualization only and not equivalent to actual simulations!
+* V0.11 - October 30, 2023. Couple small fixes, updated documentation, fixed some embarassingly bad typos.
 
-V0.06 - October 17, 2023. Added functionality to place folded domains in an approximate linear arrangement for visualization purposes.  
+* V0.10 - October 24, 2023. Big changes! Added functionality to generate multiple IDRs for a single PDB so you can make 'simulation-like' visualizations when viewing in PDB! I also added command-line functionality and fixed some more bugs. Note: the multiple models are for visualization only and not equivalent to actual simulations!
 
-V0.05 - October 5, 2023. Major overhaul to the backend to make structure generation more robust and efficient. Changed some user facing functionality and added ability to generate a PDB of an IDR from sequence alone. Improved documentation.
+* V0.06 - October 17, 2023. Added functionality to place folded domains in an approximate linear arrangement for visualization purposes.  
 
-V0.04 - September 29, 2023. Made it so the atoms of folded domains can be kept in the structure. Only CA for the IDRs for now. Improved performance a bit. Still need to clean up the code a lot.. Made everything callable by the PDBParserObj made from the class pdb_tools.PDBParser 
+* V0.05 - October 5, 2023. Major overhaul to the backend to make structure generation more robust and efficient. Changed some user facing functionality and added ability to generate a PDB of an IDR from sequence alone. Improved documentation.
 
-V0.03 - September 28, 2023. Made it so you can save the IDRs generated from sequence alone. Removed the ability to make all atom structures because it wasn't great. This hopefully will come in the future. 
+* V0.04 - September 29, 2023. Made it so the atoms of folded domains can be kept in the structure. Only CA for the IDRs for now. Improved performance a bit. Still need to clean up the code a lot.. Made everything callable by the PDBParserObj made from the class pdb_tools.PDBParser 
 
-V0.02 - September 26, 2023. Added generating IDR coords from sequence alone. Added filling in all atom coordinates from alpha carbon coordinate using fixed bond angles and distances, which isn't great but is better than nothing. 
+* V0.03 - September 28, 2023. Made it so you can save the IDRs generated from sequence alone. Removed the ability to make all atom structures because it wasn't great. This hopefully will come in the future. 
 
-V0.01 - September 25, 2023. Initial release.  
+* V0.02 - September 26, 2023. Added generating IDR coords from sequence alone. Added filling in all atom coordinates from alpha carbon coordinate using fixed bond angles and distances, which isn't great but is better than nothing. 
+
+* V0.01 - September 25, 2023. Initial release.  
 
 
 ### Copyright

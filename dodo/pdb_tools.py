@@ -3,6 +3,7 @@
 # all natural good code. None of that chemical-filled dependency nonsense. 
 
 import numpy as np
+import os
 from dodo.parameters import AADICT_3_to_1, AADICT, valid_bonds
 from dodo.dodo_exceptions import dodoPDBException
 
@@ -538,7 +539,8 @@ def write_pdb(xyz_list,
     fh.close()
 
 def save_pdb_from_PDBParserObj(PDBParserObj, out_path, 
-    include_FD_atoms, CONECT_lines, add_mode, model_num, last_model):
+    include_FD_atoms, CONECT_lines, add_mode, model_num, 
+    last_model, just_fds=False):
     '''
     Function for saving pdbs from PDBParserObj.
     
@@ -558,73 +560,107 @@ def save_pdb_from_PDBParserObj(PDBParserObj, out_path,
         model number
     last_model : bool    
         whether it's the last model written
-
+    just_fds : bool
+        Whether to just dump the folded domains as individual PDBs.
+        Formatted as protname_resStart_resEnd.pdb for each FD. 
+        Default : False. 
 
     Returns
     -------
     None. Just saves the PDB.
     '''
-    # make lists based on what to include...
-    xyz_list=[]
-    residue_names=[]
-    residue_indices=[]
-    atom_indices=[]
-    beta_vals=[]
-    atom_names=[]
-    CONECT_COORDS=[]
+
 
     # get all the coords.
     all_coords = PDBParserObj.all_atom_coords_by_index
+    coords_list = list(all_coords.keys())
+    last_coord = coords_list[-1]
 
-    # let user not use all atom from FDs if they want. 
-    if include_FD_atoms==False:
-        for aa in all_coords:
-            cur_atoms = all_coords[aa]
-            for atom in cur_atoms:
-                if atom=='CA':
-                    xyz_list.append(all_coords[aa][atom])
-                    residue_names.append(PDBParserObj.sequence_3aa_by_index[aa]['CA'])
-                    residue_indices.append(aa)
-                    atom_indices.append(aa)
-                    atom_names.append('CA')
-                    beta_vals.append(PDBParserObj.beta_vals_by_index[aa])
-                    if aa < len(PDBParserObj.sequence)-1:
-                        CONECT_COORDS.append([aa, aa+1])
-
+    if just_fds==False:
+        build_coords = [[aa for aa in range(coords_list[0], coords_list[-1]+1)]]
     else:
-        atom_count=0
+        build_coords=[]
+        for region in PDBParserObj.regions_dict:
+            cur_region = PDBParserObj.regions_dict[region]
+            if 'folded' in region:
+                build_coords.append([aa for aa in range(cur_region[0], cur_region[1]+1)])
+            if 'loop' in region:
+                build_coords.append([aa for aa in range(cur_region[0][0], cur_region[0][1]+1)])
+
+
+    atom_count=0
+    for aa_range in build_coords:
+        # make lists based on what to include...
+        xyz_list=[]
+        residue_names=[]
+        residue_indices=[]
+        atom_indices=[]
+        beta_vals=[]
+        atom_names=[]
+        CONECT_COORDS=[]
         all_connect_atoms={}
-        final_aa = len(PDBParserObj.sequence)-1
-        for aa in all_coords:
-            cur_atoms = all_coords[aa]
-            for atom in cur_atoms:
-                xyz_list.append(all_coords[aa][atom])
-                residue_names.append(PDBParserObj.sequence_3aa_by_index[aa][atom])
-                residue_indices.append(aa)
-                atom_indices.append(atom_count)
-                atom_names.append(atom)
-                beta_vals.append(PDBParserObj.beta_vals_by_index[aa])
-                # only conect N-CA-C because this is for the IDR. 
-                if atom_count < PDBParserObj.number_atoms:
-                    if atom == 'CA':
-                        all_connect_atoms[atom_count]=atom
-                    if atom == 'C':
-                        all_connect_atoms[atom_count]=atom
-                    if atom=='N':
-                        all_connect_atoms[atom_count]=atom
-                atom_count+=1
+        for aa in aa_range:
+            # let user not use all atom from FDs if they want. 
+            if include_FD_atoms==False:
+                cur_atoms = all_coords[aa]
+                for atom in cur_atoms:
+                    if atom=='CA':
+                        xyz_list.append(all_coords[aa][atom])
+                        residue_names.append(PDBParserObj.sequence_3aa_by_index[aa]['CA'])
+                        residue_indices.append(aa)
+                        atom_indices.append(aa)
+                        atom_names.append('CA')
+                        beta_vals.append(PDBParserObj.beta_vals_by_index[aa])
+                        if aa < len(PDBParserObj.sequence)-1:
+                            CONECT_COORDS.append([aa, aa+1])
+            else:
+                cur_atoms = all_coords[aa]
+                for atom in cur_atoms:
+                    xyz_list.append(all_coords[aa][atom])
+                    residue_names.append(PDBParserObj.sequence_3aa_by_index[aa][atom])
+                    residue_indices.append(aa)
+                    atom_indices.append(atom_count)
+                    atom_names.append(atom)
+                    beta_vals.append(PDBParserObj.beta_vals_by_index[aa])
+                    # only conect N-CA-C because this is for the IDR. 
+                    if atom_count < PDBParserObj.number_atoms:
+                        if atom == 'CA':
+                            all_connect_atoms[atom_count]=atom
+                        if atom == 'C':
+                            all_connect_atoms[atom_count]=atom
+                        if atom=='N':
+                            all_connect_atoms[atom_count]=atom
+
+                    atom_count+=1
+            
         # make conect lines
         atoms_to_connect = list(all_connect_atoms.keys())
         for atom_ind in range(0, len(atoms_to_connect)-1):
             CONECT_COORDS.append([atoms_to_connect[atom_ind], atoms_to_connect[atom_ind+1]])
 
-    # if user doesn't want CONECT lines, nuke them. 
-    if CONECT_lines==False:
-        CONECT_COORDS=None
+        # if user doesn't want CONECT lines, nuke them. 
+        if CONECT_lines==False:
+            CONECT_COORDS=None
 
-    # write pdb
-    write_pdb(xyz_list, out_path, atom_indices=atom_indices,
-            atom_names=atom_names, residue_indices=residue_indices,
-            residue_names=residue_names, beta=beta_vals,CONECT_LINES=CONECT_COORDS, 
-            add_mode=add_mode, model_num=model_num, last_model=last_model)
+        # write pdb
+        if just_fds==False:
+            write_pdb(xyz_list, out_path, atom_indices=atom_indices,
+                    atom_names=atom_names, residue_indices=residue_indices,
+                    residue_names=residue_names, beta=beta_vals,CONECT_LINES=CONECT_COORDS, 
+                    add_mode=add_mode, model_num=model_num, last_model=last_model)
+        else:
+            # get the name of the protein. 
+            path_split = out_path.split(f'{os.sep}')
+            prot_name = path_split[-1].split('.')[0]
+            act_path = ''
+            for i in path_split[:len(path_split)-1]:
+                act_path+=f'{i}{os.sep}'
+            # get the start and end of the FDs. 
+            FD_start = aa_range[0]
+            FD_end = aa_range[-1]
+            # write the pdb. 
+            write_pdb(xyz_list, f'{act_path}{prot_name}_{FD_start}_{FD_end}.pdb', atom_indices=atom_indices,
+                    atom_names=atom_names, residue_indices=residue_indices,
+                    residue_names=residue_names, beta=beta_vals,CONECT_LINES=None, 
+                    add_mode='w', model_num=1, last_model=True)
 

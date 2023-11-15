@@ -35,35 +35,6 @@ def get_res_dist(xyz1, xyz2):
     return math.sqrt((xdiff*xdiff)+(ydiff*ydiff)+(zdiff*zdiff))
 
 
-def random_coordinate_on_sphere_surface(center_coordinate, radius):
-    """
-    Generate a random 3D coordinate on the surface of a sphere with a specified radius.
-
-    Args:
-        center_coordinate (tuple): The center of the sphere (x_center, y_center, z_center).
-        radius (float): The radius of the sphere.
-
-    Returns:
-        tuple: A random 3D coordinate on the sphere's surface.
-    """
-    if len(center_coordinate) != 3:
-        raise ValueError("Center coordinate must be a 3D coordinate (x_center, y_center, z_center).")
-
-    if radius <= 0:
-        raise ValueError("Radius must be greater than 0.")
-
-    # Generate random spherical coordinates
-    theta = random.uniform(0, 2 * math.pi)  # Azimuthal angle
-    phi = random.uniform(0, math.pi)  # Polar angle
-
-    # Convert spherical coordinates to Cartesian coordinates
-    x = center_coordinate[0] + radius * math.sin(phi) * math.cos(theta)
-    y = center_coordinate[1] + radius * math.sin(phi) * math.sin(theta)
-    z = center_coordinate[2] + radius * math.cos(phi)
-
-    return (x, y, z)
-
-
 def is_point_within_sphere_constraints(point, center, radius, off_by=None, verbose=False):
     """
     Determine whether a 3D coordinate is within a sphere.
@@ -250,7 +221,6 @@ def get_region_coords(PDBParserObj, specific_regions=[[]], return_list=True):
         return list(fin_dict.values())
     else:
         return fin_dict
-
 
 
 
@@ -537,6 +507,7 @@ def predict_e2e(sequence):
         the predicted end to end distance in Å.
     '''
     return pr(sequence).predictor.end_to_end_distance()
+
 
 def calculate_center_coordinate(coordinates):
     """

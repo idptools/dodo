@@ -23,7 +23,8 @@ def pdb_from_pdb():
     parser.add_argument('-apr', '--attempts_per_region', default=40, help='Number of attempts to make per region.', type=int)
     parser.add_argument('-apc', '--attempts_per_coord', default=2000, help='Number of attempts to make per coordinate.', type=int)
     parser.add_argument('-n', '--num_models', default=1, help='Number of models to generate.', type=int)
-    
+    parser.add_argument('-j', '--just_fds', action='store_true', default=False, help='Save the pdbs individual for just folded domains.')
+
     # parser args
     args = parser.parse_args()
 
@@ -38,5 +39,5 @@ def pdb_from_pdb():
         include_FD_atoms=args.no_FD_atoms, use_metapredict=args.use_metapredict, 
         verbose=verbose, attempts_per_region=args.attempts_per_region, 
         attempts_per_coord=args.attempts_per_coord, num_models=args.num_models,
-        beta_for_FD_IDR=args.beta_for_FD_IDR)
+        beta_for_FD_IDR=args.beta_for_FD_IDR, just_fds=args.just_fds)
 

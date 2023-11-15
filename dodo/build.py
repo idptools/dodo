@@ -15,7 +15,7 @@ from dodo import parameters
 def pdb_from_name(protein_name, out_path='', mode='predicted', 
     linear_placement=False, CONECT_lines=True, include_FD_atoms=True, 
     use_metapredict=False, graph=False, verbose=True, attempts_per_region=40, 
-    attempts_per_coord=2000, num_models=1, beta_for_FD_IDR=False):
+    attempts_per_coord=2000, num_models=1, beta_for_FD_IDR=False, just_fds=False):
     """
     Function to take in the name of a protein and then return an AF2 PDB
     with modified disordered regions. 
@@ -57,6 +57,9 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
         Whether to overwrite beta vals where IDR=100 and FD=0 for 
         visualization purposes.
         Default is False
+    just_fds : bool
+        Whether to just dump the folded domains as individual PDBs.
+        Default : False. 
 
     Returns
     -------
@@ -100,12 +103,17 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
 
 
     # build new structure  
-    PDBParserObj = build_structure(PDBParserObj, mode=mode, 
-                                    linear_placement=linear_placement,
-                                    attempts_per_region=attempts_per_region,
-                                    attempts_per_coord=attempts_per_coord,
-                                    verbose=verbose, num_models=num_models,
-                                    beta_for_FD_IDR=beta_for_FD_IDR)
+    if just_fds==False:
+        PDBParserObj = build_structure(PDBParserObj, mode=mode, 
+                                        linear_placement=linear_placement,
+                                        attempts_per_region=attempts_per_region,
+                                        attempts_per_coord=attempts_per_coord,
+                                        verbose=verbose, num_models=num_models,
+                                        beta_for_FD_IDR=beta_for_FD_IDR)
+    else:
+        PDBParserObj={'1': PDBParserObj}
+        if num_models != 1:
+            print('WARNING! When specifying just_fds==True, you cannot have multiple models. Defaulting to 1.')
 
     # if graphing, graph it up
     if graph==True:
@@ -137,13 +145,15 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
                     last_model=False
                 save_pdb_from_PDBParserObj(PDBParserObj[model_number], out_path=out_path,
                     include_FD_atoms=include_FD_atoms, CONECT_lines=CONECT_lines,
-                    add_mode=add_mode, last_model=last_model, model_num=model_number)
+                    add_mode=add_mode, last_model=last_model, model_num=model_number,
+                    just_fds=just_fds)
 
 
 def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted', 
     linear_placement=False, CONECT_lines=True, include_FD_atoms=True, 
     use_metapredict=False, graph=False, verbose=True, attempts_per_region=40, 
-    attempts_per_coord=2000, regions_dict=None, num_models=1, beta_for_FD_IDR=False):
+    attempts_per_coord=2000, regions_dict=None, num_models=1, 
+    beta_for_FD_IDR=False, just_fds=False):
     """
     Function to take in the path to an AF2 pdb structure and return the structure
     with modified disordered regions. 
@@ -184,6 +194,9 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
         Whether to overwrite beta vals where IDR=100 and FD=0 for 
         visualization purposes.
         Default is False
+    just_fds : bool
+        Whether to just dump the folded domains as individual PDBs.
+        Default : False. 
 
     Returns
     -------
@@ -235,12 +248,17 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
 
 
     # build the structure.
-    PDBParserObj = build_structure(PDBParserObj, mode=mode,
-                                    linear_placement=linear_placement,
-                                    attempts_per_region=attempts_per_region,
-                                    attempts_per_coord=attempts_per_coord,
-                                    verbose=verbose, num_models=num_models,
-                                    beta_for_FD_IDR=beta_for_FD_IDR)
+    if just_fds==False:
+        PDBParserObj = build_structure(PDBParserObj, mode=mode,
+                                        linear_placement=linear_placement,
+                                        attempts_per_region=attempts_per_region,
+                                        attempts_per_coord=attempts_per_coord,
+                                        verbose=verbose, num_models=num_models,
+                                        beta_for_FD_IDR=beta_for_FD_IDR)
+    else:
+        PDBParserObj={'1': PDBParserObj}
+        if num_models != 1:
+            print('WARNING! When specifying just_fds==True, you cannot have multiple models. Defaulting to 1.')
 
     if graph==True:
         # get region info for graphing. Get here because even if user input their own
@@ -270,7 +288,8 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
                     last_model=False
                 save_pdb_from_PDBParserObj(PDBParserObj[model_number], out_path=out_path,
                     include_FD_atoms=include_FD_atoms, CONECT_lines=CONECT_lines,
-                    add_mode=add_mode, last_model=last_model, model_num=model_number)
+                    add_mode=add_mode, last_model=last_model, model_num=model_number,
+                    just_fds=just_fds)
 
 
 

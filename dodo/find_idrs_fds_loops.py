@@ -163,7 +163,7 @@ def get_fds_loops_idrs(PDBParserObj, threshold=480, gap_thresh=25,
             if in_fd == True:
                 if consecutive >= 2:
                     fds_bounds.append(start_fd, len(list_of_distances))
-    
+
     # if no fds, return the IDRs
     if fds_bounds ==[]:
         PDBParserObj.IDR_coords['idr_1']=[0,len(PDBParserObj.sequence)-1]
@@ -189,7 +189,9 @@ def get_fds_loops_idrs(PDBParserObj, threshold=480, gap_thresh=25,
             if fds_bounds[-1][1]-start_res>=gap_thresh:
                 final_fds.append([start_res+1, fds_bounds[-1][1]-1])
                 non_idr_coords.append([start_res+1, fds_bounds[-1][1]-1])
-    
+
+
+
     # now get loops
     loops={}
     # keep track of coords to remove from the final_fds list if they end up being
@@ -224,9 +226,11 @@ def get_fds_loops_idrs(PDBParserObj, threshold=480, gap_thresh=25,
     # get sequence length
     len_seq=len(close_atoms[0])
 
+
+
     # get idr coords
     if non_idr_coords == []:
-        idr_coords=[0, len_seq-1]
+        idr_coords=[[0, len_seq-1]]
     else:
         idr_coords=[]
         # make sure 0 included. 

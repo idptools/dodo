@@ -48,6 +48,7 @@ class PDBParser:
         self.sequence = ""
         self.sequence_3aa_by_index = {}
         self.all_atom_coords_by_index = {}
+        self.all_atom_coords_by_index_with_aa = {}
         self.index_to_3aa = {}
         self.beta_vals_by_index = {}
         self.seqres = []
@@ -78,10 +79,12 @@ class PDBParser:
                     self.index_to_3aa[res_index] = aa
                     self.sequence+=AADICT_3_to_1[aa]
                     self.all_atom_coords_by_index[res_index] = {}
+                    self.all_atom_coords_by_index_with_aa[res_index] = {'amino_acid':aa, 'coords':{}}
                     self.sequence_3aa_by_index[res_index]={}
                     self.beta_vals_by_index[res_index] = {}
 
                 self.all_atom_coords_by_index[res_index][atom_type] = (x, y, z)
+                self.all_atom_coords_by_index_with_aa[res_index]['coords'][atom_type] = (x, y, z)
                 self.sequence_3aa_by_index[res_index][atom_type]=aa
                 self.beta_vals_by_index[res_index] = beta_val
 
@@ -92,9 +95,6 @@ class PDBParser:
 
     def __str__(self):
         return f"PDBParser: {len(self.sequence)} amino acids"
-
-
-
 
 
 #
@@ -616,6 +616,7 @@ def save_pdb_from_PDBParserObj(PDBParserObj, out_path,
             else:
                 cur_atoms = all_coords[aa]
                 for atom in cur_atoms:
+
                     xyz_list.append(all_coords[aa][atom])
                     residue_names.append(PDBParserObj.sequence_3aa_by_index[aa][atom])
                     residue_indices.append(aa)
@@ -630,11 +631,13 @@ def save_pdb_from_PDBParserObj(PDBParserObj, out_path,
                             all_connect_atoms[atom_count]=atom
                         if atom=='N':
                             all_connect_atoms[atom_count]=atom
-
                     atom_count+=1
+
             
         # make conect lines
+
         atoms_to_connect = list(all_connect_atoms.keys())
+
         for atom_ind in range(0, len(atoms_to_connect)-1):
             CONECT_COORDS.append([atoms_to_connect[atom_ind], atoms_to_connect[atom_ind+1]])
 

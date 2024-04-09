@@ -273,6 +273,8 @@ All arguments for ``pdb-from-pdb`` are as follows:
 
 Logging changes below.  
 
+* V0.14 - April 9, 2024. Fixed bug where you couldn't manually assign regions in the pdb_from_pdb function. Still need to add user-facing docs for this!
+
 * V0.13 - December 11, 2023. Fixed bug where proteins predicted to be fully disordered failed to build. Shoutout to Github user alexpmagalhaes for pointing out the bug and reporting with enough information to make it a quick fix. 
 
 * V0.12 - November 15, 2023. Added ability to save out the predicted folded domains as individual PDBs from Python and in the command line.  

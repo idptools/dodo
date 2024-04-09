@@ -388,7 +388,6 @@ def add_necessary_C_N(PDBParserObj):
             for loops in cur_loop:
                 # add loops and connect back.
                 IDR_residue_indices.extend([aa for aa in range(loops[0]-1, loops[1]+1)])
-
     # add in the Cs
     for aa in range(0, len(all_coords)-2):
         if aa != 0:

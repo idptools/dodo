@@ -251,30 +251,37 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
             if verbose==True:
                 print('Predicting folded reigons, loops, and IDRs using AF2 structure information.')        
             PDBParserObj = get_fds_loops_idrs(PDBParserObj)
-        # build the new structure
-        if verbose==True:
-            print('Building new structure.') 
-            temp=''
-            for reg in PDBParserObj.regions_dict:
-                cur_reg = PDBParserObj.regions_dict[reg]
-                if 'idr' in reg:
-                    reg_name = 'IDR'
-                elif 'folded' in reg:
-                    reg_name = 'FD'
-                else:
-                    reg_name = 'FD w/ loop(s)'
-                if 'loop' in reg:
-                    fd = cur_reg[0]
-                    loops = cur_reg[1]
-                    loop_locs=''
-                    for loop in loops:
-                        loop_locs+=f'{loop[0]+1} to {loop[1]+1}, '
-                    temp+=f"{reg_name}: FD {fd[0]+1} to {fd[1]+1} with loop(s) at {loop_locs}"
-                else:
-                    temp+=f"{reg_name}: {cur_reg[0]+1} to {cur_reg[1]+1}, "
-            print(temp[:len(temp)-2])
     else:
         PDBParserObj.regions_dict=regions_dict
+        for reg in regions_dict:
+            if 'folded' in reg:
+                PDBParserObj.FD_coords[reg]=regions_dict[reg]
+            if 'idr' in reg:
+                PDBParserObj.IDR_coords[reg]=regions_dict[reg]
+            if 'loop' in reg:
+                PDBParserObj.FD_loop_coords[reg]=regions_dict[reg]
+    # build the new structure
+    if verbose==True:
+        print('Building new structure.') 
+        temp=''
+        for reg in PDBParserObj.regions_dict:
+            cur_reg = PDBParserObj.regions_dict[reg]
+            if 'idr' in reg:
+                reg_name = 'IDR'
+            elif 'folded' in reg:
+                reg_name = 'FD'
+            else:
+                reg_name = 'FD w/ loop(s)'
+            if 'loop' in reg:
+                fd = cur_reg[0]
+                loops = cur_reg[1]
+                loop_locs=''
+                for loop in loops:
+                    loop_locs+=f'{loop[0]+1} to {loop[1]+1}, '
+                temp+=f"{reg_name}: FD {fd[0]+1} to {fd[1]+1} with loop(s) at {loop_locs}"
+            else:
+                temp+=f"{reg_name}: {cur_reg[0]+1} to {cur_reg[1]+1}, "
+        print(temp[:len(temp)-2])
 
 
     if len(PDBParserObj.regions_dict)==1 and 'idr_1' in PDBParserObj.regions_dict:

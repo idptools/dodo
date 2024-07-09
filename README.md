@@ -273,6 +273,8 @@ All arguments for ``pdb-from-pdb`` are as follows:
 
 Logging changes below.  
 
+* V0.15 - July 9, 2024. Fixed bug where you couldn't make structures from local PDBs when using metapredict if the structure was predicted to be completely disordered. Also fixed the inability to have multiple models for local PDBs that are fully disordered.
+
 * V0.14 - April 9, 2024. Fixed bug where you couldn't manually assign regions in the pdb_from_pdb function. Still need to add user-facing docs for this!
 
 * V0.13 - December 11, 2023. Fixed bug where proteins predicted to be fully disordered failed to build. Shoutout to Github user alexpmagalhaes for pointing out the bug and reporting with enough information to make it a quick fix. 

@@ -302,7 +302,7 @@ def get_fds_idrs_from_metapredict(PDBParserObj):
 
 
     fin_dict={}
-    dom_num=0
+    dom_num=1
     idrs=[]
     fds=[]
 

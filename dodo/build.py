@@ -117,7 +117,7 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
     if len(PDBParserObj.regions_dict)==1 and 'idr_1' in PDBParserObj.regions_dict:
         return pdb_from_sequence(PDBParserObj.sequence, out_path=out_path, mode=mode, 
             attempts_per_res=1000, attempts_per_idr=50, end_coord=(0,0,0), 
-                CONECT_lines=CONECT_lines, graph=graph, num_models=1)
+                CONECT_lines=CONECT_lines, graph=graph, num_models=num_models)
 
 
     # build new structure  
@@ -287,7 +287,7 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
     if len(PDBParserObj.regions_dict)==1 and 'idr_1' in PDBParserObj.regions_dict:
         return pdb_from_sequence(PDBParserObj.sequence, out_path=out_path, mode=mode, 
             attempts_per_res=1000, attempts_per_idr=50, end_coord=(0,0,0), 
-                CONECT_lines=CONECT_lines, graph=graph, num_models=1)
+                CONECT_lines=CONECT_lines, graph=graph, num_models=num_models)
 
 
     # build the structure.

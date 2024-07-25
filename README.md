@@ -5,7 +5,7 @@ DODO: re<ins>D</ins>esign AlphaF<ins>O</ins>ld2 <ins>D</ins>isorered regi<ins>O<
 
 DODO is a Python package and command-line utility for taking an AF2 structure and redesigning the disordered regions to make them look more like IDRs. To be clear, the work done by DeepMind to make AlphaFold2 is **AMAZING**, and I do not mean to take away from that in *ANY WAY*. However, for visualizing proteins for presentations, etc. it would be nifty to be able to make the IDRs look more 'IDR-like'. DODO does just that! What it does is identify the IDRs in the structure, predict the end-to-end distance for each IDR from its sequence using ALBATROSS (see https://github.com/idptools/sparrow) and rebuild the structure such that the IDRs are the approximate correct overall dimensions (see example below). If that visualization doesn't work for you, there are other options to make the IDRs more compact or expanded than is predicted from sequence. In addition, you can make a PDB with multiple IDRs in a single 'structure' and keep the folded domains fixed, which when opened in VMD makes something that looks *like* a simulation trajectroy (to be very clear, it is **NOT** the equivalent to an actual simulation trajectory but is really nice for visualizations).  
 
-![DODO_EXAMPLE](https://github.com/ryanemenecker/dodo/blob/main/images/DODO_example.png)
+![DODO_EXAMPLE](https://github.com/idptools/dodo/blob/main/images/DODO_example.png)
 
 ### Current Limitations  
 
@@ -36,7 +36,7 @@ Once you have cython and numpy installed, you should be able to install DODO.
 
 To install DODO, run the following command from terminal:  
 ```console
-pip install git+https://github.com/ryanemenecker/dodo.git
+pip install git+https://github.com/idptools/dodo.git
 ```
   
 #### Additional known install failures

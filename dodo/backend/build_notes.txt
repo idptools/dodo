@@ -1,0 +1,33 @@
+Notes for myself for thinknig of how best to build the IDRs. 
+
+Step 1. Reposition folded domains.
+    1a)First move folded domains far apart from eachother 
+    1b)Second, rotate folded domains such that the coordinates for the connecting
+    points are facing each other. 
+    2b)Third, translate domains such that they are objective distance apart from each other
+Step 2. Build loops.
+    Build loops first becuase they are highly constrained. 
+        •Going to use a concentric spher approach.
+            •Going to allow points to be in a volume within the spheres. 
+        •First point from start of loop and final point to be built from end of loop
+        are to be built away from rest of FD as far as is possible. 
+        •remaining points will use concentric sphere approach. 
+        • Will try to make rasonable alpha carbon angles. 
+Step 3. Build internal IDRs. I expect these to be the second most constrained 
+    Because they have a required start and end point. 
+        • First build out 1 point away from the start and the end
+            *first try with ideal alpha carbon angles...
+        • Second, use concentric sphere approach and coordinates
+        with reasonable alpha carbon (ca1, ca2, ca3) angles to build
+        the beginning of the IDR towards the end. Build to the coordinate that
+        was built away from the final coordinate on the FD as this should be less
+        sterically hindered. 
+            *consider how many points to build away from the start and end positiosn!
+
+Step 4. Build terminal IDRs. 
+
+    *Going to need a function that takes in CA2 and Ca3 and returns CA1. Should be doable
+
+Finally, try to populate the rest of the atomic positions of the backbone. This should be doable
+given that we should have semi-reasonable ca1/ca2/ca3 angles. 
+                

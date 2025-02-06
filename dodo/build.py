@@ -1,5 +1,5 @@
 # user facing stuff for making AF2 structures look less silly.
-
+"""
 import os
 
 from dodo.dodo_exceptions import dodoException
@@ -16,7 +16,7 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
     linear_placement=False, CONECT_lines=True, include_FD_atoms=True, 
     use_metapredict=False, graph=False, verbose=True, attempts_per_region=40, 
     attempts_per_coord=2000, num_models=1, beta_for_FD_IDR=False, just_fds=False):
-    """
+    '''
     Function to take in the name of a protein and then return an AF2 PDB
     with modified disordered regions. 
 
@@ -68,7 +68,7 @@ def pdb_from_name(protein_name, out_path='', mode='predicted',
     if graph==True:
         None. Just graphs the structure.
 
-    """
+    '''
     # don't let people waste their time trying to graph multiple models. 
     if graph==True and num_models!=1:
         num_models=1
@@ -172,7 +172,7 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
     use_metapredict=False, graph=False, verbose=True, attempts_per_region=40, 
     attempts_per_coord=2000, regions_dict=None, num_models=1, 
     beta_for_FD_IDR=False, just_fds=False):
-    """
+    '''
     Function to take in the path to an AF2 pdb structure and return the structure
     with modified disordered regions. 
 
@@ -222,7 +222,7 @@ def pdb_from_pdb(path_to_pdb, out_path='', mode='predicted',
         None. Just saves the PDB.
     if graph==True:
         None. Just graphs the structure.
-    """
+    '''
 
     # don't let people waste their time trying to graph multiple models. 
     if graph==True and num_models!=1:
@@ -421,3 +421,4 @@ def pdb_from_sequence(sequence, out_path='', mode='predicted',
 
 
 
+"""

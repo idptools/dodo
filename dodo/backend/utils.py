@@ -5,7 +5,7 @@ import os
 import numpy as np
 
 
-def write_dumby_pdb(CA_coordinates, save_path):
+def write_dumby_pdb(CA_coordinates, save_path, max_res=9999):
     '''
     function to write a dumby pdb so we can 
     easily visualize things we do to CA coordinates.
@@ -14,11 +14,15 @@ def write_dumby_pdb(CA_coordinates, save_path):
     save_path: str, path to save pdb file
     '''
     # open file
+    atom_per_res = int(len(CA_coordinates)/ max_res)+1
+    cur_res=1
     with open(save_path, 'w') as f:
         # iterate over CA coordinates
         for i, CA in enumerate(CA_coordinates):
+            if i % atom_per_res == 0:
+                cur_res+=1
             # write atom line
-            f.write(f'ATOM  {i+1:5}  CA  ALA A{i+1:4}    {CA[0]:8.3f}{CA[1]:8.3f}{CA[2]:8.3f}  1.00  0.00           C\n')
+            f.write(f'ATOM  {i+1:5}  CA  ALA A{cur_res:4}    {CA[0]:8.3f}{CA[1]:8.3f}{CA[2]:8.3f}  1.00  0.00           C\n')
         # write end line
         f.write('END\n')
     # close file

@@ -1,9 +1,26 @@
+'''
+If you are looking at the code in get_fds_loops_idrs() and thinking,
+'Wow! This is a mess!', you would be correct! This is something that I messed
+around with a lot 1 day, got it to work, and haven't had a chance to clean up since. 
+Long term goal is to nuke that function entirely, but it does work shockingly well
+so I'm just going to roll with it for the time being.
+
+Also, if you think you can get ChatGPT, Gemini, or some other AI to fix it, you are probably
+wrong. I've tried all of them and as of Feb. 2025, that function is written in such a weird
+way, the AI can't handle it. But I'll keep trying! -Jesse (Actually not Jesse, Copilot
+autofilled my name as Jesse, but I'm not Jesse. I'm Ryan. But I'm leaving that there
+because it made me laugh.)
+ 
+-Ryan
+'''
+
 import os
 import math
 import numpy as np
 from scipy.spatial.distance import pdist, squareform
 from dodo.backend.dodo_readers import Reader
 from dodo.backend.dodo_structures import Complex, Domain, Chain, Monomer 
+from dodo.backend.utils import amino_acid_3_to_1
 
 def get_close_atoms(chain, thresh=8, loop_thresh=7):
     '''
@@ -88,6 +105,11 @@ def get_close_atoms(chain, thresh=8, loop_thresh=7):
         
     return [close_list, potential_loops_close]
 
+# WARNING
+# the next function is remnants from DODO V1. It's a mess. 
+# putting all this commentary about how bad it is to motivate
+# myself to clean it up. Someday.
+
 
 def get_fds_loops_idrs(DodoComplex, threshold=480, gap_thresh=25, 
     distance_thresh=8, loop_cutoff=6, min_loop_len=10):
@@ -170,7 +192,7 @@ def get_fds_loops_idrs(DodoComplex, threshold=480, gap_thresh=25,
             else:
                 if in_fd == True:
                     if consecutive >= 2:
-                        fds_bounds.append(start_fd, len(list_of_distances))
+                        fds_bounds.append(start_bound, len(list_of_distances))
 
         # if no fds, set single domain as IDR
         if fds_bounds==[]:
@@ -283,65 +305,52 @@ def get_fds_loops_idrs(DodoComplex, threshold=480, gap_thresh=25,
             else:
                 # get monomers for region
                 region_monomers = [monomer for monomer in monomers if monomer.monomer_number in range(region[0], region[1])]
+                # get sequence for monomers
+                sequence = ''.join([amino_acid_3_to_1(monomer.get_monomer_name()) for monomer in region_monomers])
                 # make domain
-                cur_domain = Domain(domain_num, 'IDR', region_monomers)
+                cur_domain = Domain(domain_num, 'IDR', region_monomers, sequence=sequence)
                 DodoComplex.get_chain(cur_chain_id).add_domain(cur_domain)
                 domain_num+=1
     return DodoComplex
 
 
+def assign_domains_from_dict(DodoComplex, 
+                             dictionary_of_domains):
+    '''
+    This function will assign domains to a complex object based on a dictionary
+    of domains. The dictionary of domains should have the chain ID as the key
+    and then a sub dictionary with each domain numbered 0, 1, 2, etc. as the
+    key and the value as a dictionary that has two key and value pairs:
+        'type': FD, IDR, or loop
+        'index': the range of indices (0 indexed) that belong to that domain.
+                This will use python slicing notation, so if the domain is
+                from amino acid 10 to 20, the index would be [9, 20].
+    The function will then assign the domains to the complex object.
 
-def get_loops_idrs_from_complex(DODO_Complex, min_fd_len=10):
-    """
-    Improved function that identifies IDRs by checking missing residues 
-    (gaps in residue numbering), then creates FD domains for segments 
-    above a threshold length.
+    Parameters
+    ----------
+    DodoComplex : Complex
+        Complex object to assign domains to
 
-    Probably need to rewrite this
-    """
-    for chain in DODO_Complex.get_chains():
-        domain = chain.get_domain(0)
-        if not domain:
-            continue
+    dictionary_of_domains : dict
+        Dictionary of domains to assign to the complex object
 
-        all_monomers = domain.get_monomers()
-        if not all_monomers:
-            continue
-        
-        monomer_numbers = [m.monomer_number for m in all_monomers]
-        # Sort just in case
-        monomer_numbers.sort()
-        
-        # Detect gaps >1
-        gap_indices = [i for i in range(len(monomer_numbers)-1)
-                       if monomer_numbers[i+1] - monomer_numbers[i] > 1]
-        
-        # Remove the old domain
-        chain.remove_domain(domain)
-        
-        seg_start = monomer_numbers[0]
-        domain_id = 0
-        
-        for g_ind in gap_indices:
-            seg_end = monomer_numbers[g_ind]
-            # ...existing code to collect monomers for [seg_start, seg_end]...
-            sub_monomers = [m for m in all_monomers 
-                            if seg_start <= m.monomer_number <= seg_end]
-            domain_type = 'FD' if len(sub_monomers) >= min_fd_len else 'IDR'
-            temp_dom = Domain(domain_id, domain_type, sub_monomers)
-            chain.add_domain(temp_dom)
-            domain_id += 1
-            
-            seg_start = monomer_numbers[g_ind+1]
-        
-        # Handle last segment
-        last_segment = [m for m in all_monomers 
-                        if m.monomer_number >= seg_start]
-        domain_type = 'FD' if len(last_segment) >= min_fd_len else 'IDR'
-        final_dom = Domain(domain_id, domain_type, last_segment)
-        chain.add_domain(final_dom)
-        
-    return DODO_Complex
-
-
-
+    Returns
+    -------
+    Complex
+        Complex object with domains assigned
+    '''
+    for chain_id, domain_dict in dictionary_of_domains.items():
+        chain = DodoComplex.get_chain(chain_id)
+        for domain_num, domain_info in domain_dict.items():
+            domain_type = domain_info['type']
+            domain_indices = domain_info['index']
+            monomers = []
+            sequence=''
+            for domain_index in range(domain_indices[0], domain_indices[1]+1):
+                monomer = chain.get_monomer(domain_index)
+                sequence+=amino_acid_3_to_1(monomer.get_monomer_name())
+                monomers.append(monomer)
+            domain = Domain(domain_num, domain_type, monomers, sequence=sequence)
+            chain.add_domain(domain)
+    return DodoComplex

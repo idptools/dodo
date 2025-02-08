@@ -6,9 +6,45 @@ on another folded domain and the two coordinates are a specified distance apart.
 '''
 
 import numpy as np
+import random
 
-def position_folded_domain(FD1_coord, FD1_center_of_mass, 
-                         FD2_coord, FD2_center_of_mass, 
+def get_random_coordinates_on_sphere_surface(starting_coordinate, radius, num_coordinates):
+    '''
+    Returns a specified number of random coordinates 
+    that are uniformly distributed on the surface of a sphere
+    with a specified radius and center.
+    
+    Parameters
+    ----------
+    starting_coordinate : np.array
+        The center of the sphere
+    radius : float
+        The radius of the sphere
+    num_coordinates : int
+        The number of random coordinates to return
+    
+    Returns
+    -------
+    coordinates : np.array
+        An array of coordinates on the surface of the sphere
+    '''
+    starting_coordinate = np.array(starting_coordinate)
+    coordinates = []
+    
+    for _ in range(num_coordinates):
+        # Generate uniform random points using Gaussian distribution
+        # This ensures uniform distribution on sphere surface
+        x, y, z = np.random.normal(0, 1, 3)
+        # Normalize to get point on unit sphere
+        vec = np.array([x, y, z])
+        vec = vec / np.linalg.norm(vec)
+        # Scale by radius and add center coordinates
+        point = starting_coordinate + radius * vec
+        coordinates.append(point)
+    return np.array(coordinates)
+
+
+def position_folded_domain(FD1_index, FD2_index, chain_obj,
                          objective_final_distance):
     '''
     This function translates and rotates FD2 such that
@@ -20,123 +56,175 @@ def position_folded_domain(FD1_coord, FD1_center_of_mass,
 
     Parameters
     ----------
-    FD1_coord : np.array, shape=(3,)
-        coordinate that we want to face towards FD2_coord
-    FD1_center_of_mass : np.array, shape=(3,)
-        center of mass of folded domain 1
-    FD2_coord : np.array, shape=(3,)
-        coordinate that we want to face towards FD1_coord
-    FD2_center_of_mass : np.array, shape=(3,)
-        center of mass of folded domain 2
+    FD1_index : index for FD1 in the chain object
+    FD2_index : index for FD2 in the chain object
+    chain_obj : Chain object that is associated with the FDs
     objective_final_distance : float
-        objective final distance between FD1_coord and FD2_coord
+        The distance between FD1_coord and FD2_coord
 
     Returns
     -------
-    rotation : np.array, shape=(3, 3)
-        rotation matrix necessary to apply to fd2 to get it in the correct position
-    translation : np.array, shape=(3,)
-        translation vector necessary to apply to fd2 to get it in the correct position
+    FD2 : Domain object
+        The translated and rotated FD2
     '''
-    # Calculate vectors
-    v1 = FD1_coord - FD1_center_of_mass
-    v2 = FD2_coord - FD2_center_of_mass
+    # get FD1 and FD2
+    FD1 = chain_obj.domains[FD1_index]
+    FD2 = chain_obj.domains[FD2_index]
+
+    # now we need to get the COM for FD1 and FD2
+    FD1_COM = FD1.identify_center_of_mass()
+    FD2_COM = FD2.identify_center_of_mass()
+
+    # get the coord that needs to be facing towards the 
+    # other FD and be a specified distance away
+    FD1_coord = np.array(FD1.monomers[-1].atoms[-1].coordinates())
+    FD2_coord = np.array(FD2.monomers[0].atoms[0].coordinates())
+
+
+    # Try random positions on sphere surface until we find one without clashes
+    potential_coordinates = get_random_coordinates_on_sphere_surface(FD1_coord, objective_final_distance, 500)
+    
+    success = False
+    for target_position in potential_coordinates:
+        # Calculate translation vector to move FD2_coord to target position
+        translation_vector = target_position - FD2_coord
+        # Try the translation
+        FD2.translate(translation_vector)
+        
+        if not chain_obj.check_if_domain_clashes(FD2_index):
+            success = True
+            break
+        
+        # Undo translation if it caused clashes
+        FD2.translate(-translation_vector)
+    
+    if not success:
+        raise ValueError("Could not find clash-free position for FD2")
+
+    # Calculate rotation to make FD2 face FD1
+    # Get current and target vectors
+    current_vector = FD2_coord - FD2_COM
+    target_vector = FD1_coord - FD2_coord
 
     # Normalize vectors
-    v1_norm = v1 / np.linalg.norm(v1)
-    v2_norm = v2 / np.linalg.norm(v2)
+    current_vector = current_vector / np.linalg.norm(current_vector)
+    target_vector = target_vector / np.linalg.norm(target_vector)
 
-    # Calculate rotation axis and angle
-    rotation_axis = np.cross(v2_norm, -v1_norm)
-    if np.all(rotation_axis == 0):
-        # Vectors are parallel, rotation axis is arbitrary perpendicular vector
-        rotation_axis = np.array([1, 0, 0]) if np.allclose(v1_norm, [0, 1, 0]) else np.cross(v1_norm, [0, 1, 0])
-    rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
-    cos_angle = np.dot(v2_norm, -v1_norm)
-    angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
+    # Calculate rotation matrix using Rodrigues' formula
+    rotation_axis = np.cross(current_vector, target_vector)
+    if np.all(np.abs(rotation_axis) < 1e-10):
+        if np.dot(current_vector, target_vector) < 0:
+            # Vectors are antiparallel, rotate 180° around any perpendicular axis
+            rotation_axis = np.array([1, 0, 0]) if not np.allclose(current_vector, [1, 0, 0]) else np.array([0, 1, 0])
+            angle = np.pi
+        else:
+            # Vectors are parallel, no rotation needed
+            return FD2
+    else:
+        rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
+        cos_angle = np.clip(np.dot(current_vector, target_vector), -1.0, 1.0)
+        angle = np.arccos(cos_angle)
 
-    # Create rotation matrix using Rodrigues' rotation formula
+    # Create rotation matrix using Rodrigues' formula
     K = np.array([[0, -rotation_axis[2], rotation_axis[1]],
                   [rotation_axis[2], 0, -rotation_axis[0]],
                   [-rotation_axis[1], rotation_axis[0], 0]])
-    rotation = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * np.dot(K, K)
+    rotation_matrix = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * np.dot(K, K)
 
-    # Calculate the position where FD2_coord should end up
-    target_position = FD1_coord + v1_norm * objective_final_distance
+    # Apply rotation
+    FD2.rotate(rotation_matrix)
 
-    # Calculate where FD2_coord will be after rotation (relative to center of mass)
-    rotated_relative_pos = np.dot(rotation, FD2_coord - FD2_center_of_mass)
-    
-    # Calculate translation vector that moves the rotated coordinate to target
-    translation = target_position - (rotated_relative_pos + FD2_center_of_mass)
+    # finally do the last translation of FD2 to make sure that FD2_coord
+    # is the specified distance from FD1_coord
+    FD2_coord = np.array(FD2.monomers[0].atoms[0].coordinates())
+    distance = np.linalg.norm(FD1_coord - FD2_coord)
+    translation_vector = FD1_coord + (objective_final_distance/distance)*(FD2_coord-FD1_coord) - FD2_coord
+    FD2.translate(translation_vector)
 
-    return rotation, translation
+    return FD2
 
 
-def position_fds_along_x_axis(FD1_coord, FD1_center_of_mass, 
-                              FD2_coord, FD2_center_of_mass, 
-                              objective_final_distance):
+def position_folded_domain_linear(FD1_index, FD2_index, chain_obj,
+                         objective_final_distance):
     '''
     This function translates and rotates FD2 such that
     a line can be formed from FD1_center_of_mass through
     FD1_coord and FD2_center_of_mass and FD2_coord. This
     line will be the line that FD2_coord will be facing
     towards. FD2 will be translated and rotated such that
-    FD2_coord is a specified distance from FD1_coord. FD2
-    will be positioned such that FD1_coord and FD2_coord
-    are on the x-axis.
+    FD2_coord is a specified distance from FD1_coord.
+
+    Like position_folded_domain, but positions everything linearly.
 
     Parameters
     ----------
-    FD1_coord : np.array, shape=(3,)
-        coordinate that we want to face towards FD2_coord
-    FD1_center_of_mass : np.array,
-        center of mass of folded domain 1
-    FD2_coord : np.array, shape=(3,)
-        coordinate that we want to face towards FD1_coord
-    FD2_center_of_mass : np.array, shape=(3,)
-        center of mass of folded domain 2
+    FD1_index : index for FD1 in the chain object
+    FD2_index : index for FD2 in the chain object
+    chain_obj : Chain object that is associated with the FDs
+    objective_final_distance : float
+        The distance between FD1_coord and FD2_coord
 
     Returns
     -------
-    rotation : np.array, shape=(3, 3)
-        rotation matrix necessary to apply to fd2 to get it in the correct position
-    translation : np.array, shape=(3,)
-        translation vector necessary to apply to fd2 to get it in the correct position
+    FD2 : Domain object
+        The translated and rotated FD2
     '''
-    # Calculate vectors
-    # Calculate vectors
-    v1 = FD1_coord - FD1_center_of_mass
-    v2 = FD2_coord - FD2_center_of_mass
+    # get FD1 and FD2
+    FD1 = chain_obj.domains[FD1_index]
+    FD2 = chain_obj.domains[FD2_index]
 
-    # Get initial rotation and translation
-    rotation1, translation1 = position_folded_domain(FD1_coord, FD1_center_of_mass, 
-                                                   FD2_coord, FD2_center_of_mass, 
-                                                   objective_final_distance)
+    # translate FD2 such that it's COM is at 0,0,0.
+    FD2.translate(-FD2.identify_center_of_mass())
 
-    # Apply initial rotation and translation to FD2_coord
-    rotated_FD2_coord = np.dot(rotation1, FD2_coord - FD2_center_of_mass) + translation1 + FD2_center_of_mass
+    # Translate FD2 along x-axis by the objective distance
+    # with respect to FD1_coord
+    FD1_coord = np.array(FD1.monomers[-1].atoms[-1].coordinates())
+    FD2_coord = np.array(FD2.monomers[0].atoms[0].coordinates())
+    translation_vector = FD1_coord + np.array([objective_final_distance, 0, 0]) - FD2_coord
+    FD2.translate(translation_vector)
+    
+    # get new FD2 coord, FD2_COM, and FD1_coord
+    FD2_coord = np.array(FD2.monomers[0].atoms[0].coordinates())
+    FD2_COM = FD2.identify_center_of_mass()
+    
+    # now we need to rotate FD2 such that it's COM stays in the same location
+    # but FD2_coord is facing towards FD1_coord
+    # Get current and target vectors
+    current_vector = FD2_coord - FD2_COM
+    target_vector = FD1_coord - FD2_coord
 
-    # Calculate vector to rotate onto x-axis
-    vector = rotated_FD2_coord - FD1_coord
-    vector_norm = vector / np.linalg.norm(vector)
-    x_axis = np.array([1, 0, 0])
+    # Normalize vectors
+    current_vector = current_vector / np.linalg.norm(current_vector)
+    target_vector = target_vector / np.linalg.norm(target_vector)
 
-    # Calculate rotation to align with x-axis
-    rotation_axis = np.cross(vector_norm, x_axis)
-    if np.all(rotation_axis == 0):
-        rotation2 = np.eye(3)
+    # Calculate rotation matrix using Rodrigues' formula
+    rotation_axis = np.cross(current_vector, target_vector)
+    if np.all(np.abs(rotation_axis) < 1e-10):
+        if np.dot(current_vector, target_vector) < 0:
+            # Vectors are antiparallel, rotate 180° around any perpendicular axis
+            rotation_axis = np.array([1, 0, 0]) if not np.allclose(current_vector, [1, 0, 0]) else np.array([0, 1, 0])
+            angle = np.pi
+        else:
+            # Vectors are parallel, no rotation needed
+            return FD2
     else:
         rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
-        cos_angle = np.dot(vector_norm, x_axis)
-        angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
-        K = np.array([[0, -rotation_axis[2], rotation_axis[1]],
-                      [rotation_axis[2], 0, -rotation_axis[0]],
-                      [-rotation_axis[1], rotation_axis[0], 0]])
-        rotation2 = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * np.dot(K, K)
+        cos_angle = np.clip(np.dot(current_vector, target_vector), -1.0, 1.0)
+        angle = np.arccos(cos_angle)
 
-    # Combine rotations and translation
-    rotation = np.dot(rotation2, rotation1)
-    translation = translation1
+    # Create rotation matrix using Rodrigues' formula
+    K = np.array([[0, -rotation_axis[2], rotation_axis[1]],
+                  [rotation_axis[2], 0, -rotation_axis[0]],
+                  [-rotation_axis[1], rotation_axis[0], 0]])
+    rotation_matrix = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * np.dot(K, K)
 
-    return rotation, translation
+    # Apply rotation
+    FD2.rotate(rotation_matrix)
+
+    # now translate FD2 such that FD2_coord is the specified distance from FD1_coord
+    FD2_coord = np.array(FD2.monomers[0].atoms[0].coordinates())
+    distance = np.linalg.norm(FD1_coord - FD2_coord)
+    translation_vector = FD1_coord + (objective_final_distance/distance)*(FD2_coord-FD1_coord) - FD2_coord
+    FD2.translate(translation_vector)
+
+    return FD2

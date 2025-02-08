@@ -59,6 +59,20 @@ class Atom:
         self.y_coord = y_coord
         self.z_coord = z_coord
     
+    def get_atom_mass(self):
+        if self.element == 'C':
+            return 12.011
+        elif self.element == 'N':
+            return 14.007
+        elif self.element == 'O':
+            return 15.999
+        elif self.element == 'H':
+            return 1.008
+        elif self.element == 'S':
+            return 32.06
+        else:
+            raise ValueError(f'Unknown element {self.element}')
+    
 class Monomer:
     __slots__ = ['monomer_number', 'monomer_name', 'occupancy', 
                  'b_factor', 'charge', 'atoms', '_coord_cache']
@@ -130,20 +144,75 @@ class Monomer:
         """Invalidate coordinate cache when atoms change"""
         self._coord_cache = None
 
+    def calculate_center_of_mass(self):
+        """
+        Calculate the center of mass (COM) for a molecule.
+        
+        Returns:
+            numpy.ndarray: A 1D array with the [x, y, z] coordinates of the COM.
+        """
+        # Define atomic masses (in atomic mass units, amu) for the elements of interest.
+        atomic_masses = {
+            'H': 1.008,
+            'C': 12.01,
+            'N': 14.01,
+            'O': 16.00,
+            'S': 32.07,
+            'Se': 78.96,  # For selenocysteine or other selenium-containing compounds
+            # Add more elements here as needed.
+        }
+        
+        total_mass = 0.0
+        weighted_position = np.array([0.0, 0.0, 0.0])
+        
+        # get atoms in monomer
+        atom_data = [(atom.element, atom.x_coord, atom.y_coord, atom.z_coord) for atom in self.atoms]
+
+        for atom in atom_data:
+            element, x, y, z = atom
+            mass = atomic_masses.get(element)
+            if mass is None:
+                raise ValueError(f"Mass for element '{element}' is not defined in the atomic_masses dictionary.")
+            
+            # Update the total mass and the weighted sum of positions
+            total_mass += mass
+            weighted_position += mass * np.array([x, y, z])
+        
+        # Calculate the center of mass as the weighted average of positions
+        com = weighted_position / total_mass
+        return com
+
+    def coarse_grain(self, method='CA'):
+        ''' coarse grain the monomer by alpha carbon position or center of mass'''
+        if method == 'CA':
+            ca = self.get_atom('CA')
+            if ca is not None:
+                self.atoms = [ca]
+            else:
+                raise ValueError('No alpha carbon found in monomer, could not coarse grain by CA!')
+        elif method == 'COM':
+            com = self.calculate_center_of_mass()
+            self.atoms = [Atom(atom_id=0, atom_name='CA', x_coord=com[0], y_coord=com[1], z_coord=com[2], element='C')]
+        else:
+            raise ValueError('Invalid coarse graining method, must be CA or COM')
+        
+
 class Domain:
-    __slots__ = ['domain_id', 'domain_type', 'monomers', 'loop_indices', '_coord_cache', '_spatial_index']
+    __slots__ = ['domain_id', 'domain_type', 'monomers', 'loop_indices', 'sequence', '_coord_cache', '_spatial_index']
     
     def __init__(self, 
                  domain_id=None, 
                  domain_type=None, 
-                 monomers=[]):
+                 monomers=[],
+                 sequence=None):
         self.domain_id = domain_id
         self.domain_type = domain_type
         self.monomers = monomers
         self.loop_indices = []
+        self.sequence = sequence
         self._coord_cache = None
         self._spatial_index = None
-    
+
     def __str__(self):
         return f'Domain: {self.domain_id} {self.domain_type} ({len(self.monomers)} monomers)'
     
@@ -161,10 +230,11 @@ class Domain:
         """Cache and return numpy array of coordinates"""
         if self._coord_cache is None:
             coords = []
-            for mon in self.monomers:
-                coords.extend(mon.get_coordinates_array())
+            for monomer in self.monomers:
+                for atom in monomer.atoms:
+                    coords.append([atom.x_coord, atom.y_coord, atom.z_coord])
             self._coord_cache = np.array(coords)
-        return self._coord_cache
+        return self._coord_cache.copy()  # Return a copy to prevent unintended modifications
     
     def build_spatial_index(self):
         """Build KD-tree for spatial queries"""
@@ -172,23 +242,55 @@ class Domain:
         self._spatial_index = cKDTree(coords)
     
     def rotate(self, rotation_matrix):
-        """Rotate domain by rotation matrix"""
+        """
+        Rotate domain around its center of mass using the given rotation matrix.
+        
+        Parameters
+        ----------
+        rotation_matrix : np.ndarray
+            3x3 rotation matrix
+        """
+        # Get center of mass before rotation
+        com = self.identify_center_of_mass()
+        
+        # Get coordinates and center them at origin
         coords = self.get_coordinates_array()
-        rotated_coords = np.dot(coords, rotation_matrix.T)
-        self._update_coordinates(rotated_coords)
+        centered_coords = coords - com
+        
+        # Apply rotation to centered coordinates
+        rotated_coords = np.dot(centered_coords, rotation_matrix.T)
+        
+        # Move back to original center of mass
+        final_coords = rotated_coords + com
+        
+        # Update coordinates
+        self._update_coordinates(final_coords)
     
     def translate(self, translation_vector):
         """Translate domain by vector"""
-        coords = self.get_coordinates_array()
-        translated_coords = coords + translation_vector
-        self._update_coordinates(translated_coords)
+        if not isinstance(translation_vector, np.ndarray):
+            translation_vector = np.array(translation_vector)
+        
+        # Update coordinates for each atom directly
+        for monomer in self.monomers:
+            for atom in monomer.atoms:
+                current_coords = np.array([atom.x_coord, atom.y_coord, atom.z_coord])
+                new_coords = current_coords + translation_vector
+                atom.x_coord, atom.y_coord, atom.z_coord = new_coords
+
+        # Invalidate caches to ensure they're rebuilt with new coordinates
+        self.invalidate_cache()
     
     def _update_coordinates(self, new_coords):
         """Update atomic coordinates in domain"""
         idx = 0
         for monomer in self.monomers:
             for atom in monomer.atoms:
-                atom.x_coord, atom.y_coord, atom.z_coord = new_coords[idx]
+                atom.set_coordinates(
+                    float(new_coords[idx][0]),
+                    float(new_coords[idx][1]),
+                    float(new_coords[idx][2])
+                )
                 idx += 1
         self.invalidate_cache()
     
@@ -208,15 +310,39 @@ class Domain:
 
     def translate_domain_to_origin(self, point=(0, 0, 0)):
         '''
-        translates the domain such that
-        the center of mass of the domain is 
-        located at a specific point. 
-        Default is the origin.
+        Translate such that the COM is a the origin.
         '''
-        center_of_mass = self.identify_center_of_mass()
-        translation_vector = np.array(point) - center_of_mass
+        coords = self.get_coordinates_array()
+        com = np.mean(coords, axis=0)
+        translation_vector = point - com
         self.translate(translation_vector)
 
+
+    def get_sequence(self):
+        if self.sequence is not None:
+            return self.sequence
+        sequence = ''
+        for monomer in self.monomers:
+            sequence+=amino_acid_3_to_1(monomer.get_monomer_name())
+        return sequence
+    
+    def coarse_grain(self, method='CA'):
+        ''' coarse grain the domain by alpha carbon position or center of mass'''
+        for monomer in self.monomers:
+            monomer.coarse_grain(method)
+
+    def identify_center_of_mass(self):
+        """Identify the center of mass of the domain"""
+        coords = self.get_coordinates_array()
+        return np.mean(coords, axis=0)
+    
+    def get_all_atom_coords(self):
+        coords = []
+        for monomer in self.monomers:
+            coords.extend(monomer.get_coordinates_array())
+        return coords
+    
+        
 
 class Chain:
     __slots__ = ['chain_id', 'domains', '_coord_cache', '_spatial_index', 'uniprot_ID', 'full_sequence']
@@ -343,10 +469,44 @@ class Chain:
             if aa != sequence[i]:
                 missing_residues.append((i, aa))
         return missing_residues
+    
+    def check_if_domain_clashes(self, domain_index, distance_threshold=3.0):
+        """
+        Check if a domain clashes with any other domain in the chain.
+        Uses KD-tree for efficient spatial queries.
 
+        Parameters
+        ----------
+        domain_index : int
+            Index of the domain to check for clashes
+        distance_threshold : float, optional
+            Minimum distance allowed between atoms before considering it a clash.
+            Default is 2.0 Angstroms.
 
+        Returns
+        -------
+        bool
+            True if clashes exist, False otherwise
+        """
+        target_domain = self.domains[domain_index]
+        target_coords = target_domain.get_coordinates_array()
+        target_tree = cKDTree(target_coords)
 
-
+        for i, other_domain in enumerate(self.domains):
+            if i == domain_index:
+                continue
+                
+            other_coords = other_domain.get_coordinates_array()
+            other_tree = cKDTree(other_coords)
+            
+            # Find all pairs of points within distance_threshold
+            # sparse_matrix=True is more memory efficient
+            pairs = target_tree.count_neighbors(other_tree, distance_threshold, cumulative=False)
+            
+            if pairs > 0:
+                return True
+                
+        return False
     
 
 class Complex:
@@ -499,8 +659,5 @@ class Complex:
             chain_to_uniprot_id_dict[chain.chain_id] = chain.uniprot_ID
         return chain_to_uniprot_id_dict
 
-    
     def return_filepath(self):
         return self.filepath
-    
- 

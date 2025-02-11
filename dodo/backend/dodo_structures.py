@@ -112,6 +112,9 @@ class Monomer:
     def get_atoms_dict(self):
         return {atom.get_atom_id(): {'coords':atom.coordinates(), 'name':atom.get_atom_name()} for atom in self.atoms}
     
+    def get_atoms_dict_name_to_coords(self):
+        return {atom.get_atom_name() :atom.coordinates() for atom in self.atoms}
+    
     def get_chain_id(self):
         return self.chain_id
     
@@ -186,7 +189,7 @@ class Monomer:
         ''' coarse grain the monomer by alpha carbon position or center of mass'''
         if method == 'CA':
             ca = self.get_atom('CA')
-            if ca is not None:
+            if (ca is not None):
                 self.atoms = [ca]
             else:
                 raise ValueError('No alpha carbon found in monomer, could not coarse grain by CA!')
@@ -198,30 +201,46 @@ class Monomer:
         
 
 class Domain:
-    __slots__ = ['domain_id', 'domain_type', 'monomers', 'loop_indices', 'sequence', '_coord_cache', '_spatial_index']
+    __slots__ = ['domain_id', 'domain_type', 'monomers', 'loop_indices', 'sequence', 'rebuilt', 'monomer_ind_to_aa', '_coord_cache', '_spatial_index']
     
     def __init__(self, 
                  domain_id=None, 
                  domain_type=None, 
-                 monomers=[],
+                 monomers=None,  # Changed from {} to None
                  sequence=None):
         self.domain_id = domain_id
         self.domain_type = domain_type
-        self.monomers = monomers
+        self.monomers = {} if monomers is None else monomers  # Initialize empty dict if None
         self.loop_indices = []
         self.sequence = sequence
+        self.rebuilt = False
+        self.monomer_ind_to_aa = None
         self._coord_cache = None
         self._spatial_index = None
+    
+    def add_monomer(self, monomer):
+        """
+        Add a monomer to the domain using its monomer number as the key.
+        
+        Parameters
+        ----------
+        monomer : Monomer
+            The monomer object to add to the domain
+        """
+        monomer_number = monomer.get_monomer_number()
+        if monomer_number is None:
+            raise ValueError("Monomer must have a monomer number")
+        self.monomers[monomer_number] = monomer
+        # sort monomers by monomer number
+        self.monomers = dict(sorted(self.monomers.items()))
+        self.invalidate_cache()  # Ensure cache is invalidated
+
 
     def __str__(self):
         return f'Domain: {self.domain_id} {self.domain_type} ({len(self.monomers)} monomers)'
     
     def __repr__(self):
         return self.__str__()
-    
-    def add_monomer(self, monomer):
-        self.monomers.append(monomer)
-        self.invalidate_cache()
     
     def get_monomers(self):
         return self.monomers
@@ -230,11 +249,21 @@ class Domain:
         """Cache and return numpy array of coordinates"""
         if self._coord_cache is None:
             coords = []
-            for monomer in self.monomers:
+            for monomer in self.monomers.values():
                 for atom in monomer.atoms:
                     coords.append([atom.x_coord, atom.y_coord, atom.z_coord])
             self._coord_cache = np.array(coords)
         return self._coord_cache.copy()  # Return a copy to prevent unintended modifications
+    
+    def get_monomer_to_aa_inds(self):
+        if self.monomer_ind_to_aa is None:
+            self.monomer_ind_to_aa = {}
+            for monomer_number, monomer in self.monomers.items():
+                self.monomer_ind_to_aa[monomer_number] = monomer.monomer_name
+        return self.monomer_ind_to_aa
+
+    def set_domain_as_rebuilt(self):
+        self.rebuilt = True
     
     def build_spatial_index(self):
         """Build KD-tree for spatial queries"""
@@ -272,7 +301,7 @@ class Domain:
             translation_vector = np.array(translation_vector)
         
         # Update coordinates for each atom directly
-        for monomer in self.monomers:
+        for monomer in self.monomers.values():
             for atom in monomer.atoms:
                 current_coords = np.array([atom.x_coord, atom.y_coord, atom.z_coord])
                 new_coords = current_coords + translation_vector
@@ -284,7 +313,7 @@ class Domain:
     def _update_coordinates(self, new_coords):
         """Update atomic coordinates in domain"""
         idx = 0
-        for monomer in self.monomers:
+        for monomer in self.monomers.values():
             for atom in monomer.atoms:
                 atom.set_coordinates(
                     float(new_coords[idx][0]),
@@ -307,6 +336,31 @@ class Domain:
 
     def get_loop_indices(self):
         return self.loop_indices
+        
+    def remove_monomer(self, monomer_index):
+        '''
+        Removes a monomer from the domain by index.
+        '''
+        if monomer_index in self.monomers:
+            del self.monomers[monomer_index]
+            self.invalidate_cache()  # Add cache invalidation
+
+    def remove_all_loop_monomers(self):
+        '''
+        Removes all monomers that are part of a loop.
+        '''
+        for loop_indices in self.loop_indices:
+            start, end = loop_indices
+            for i in range(start, end+1):
+                self.remove_monomer(i)  # Use remove_monomer to ensure proper cache invalidation
+        self.invalidate_cache()  # Add final cache invalidation
+
+    def remove_all_domain_monomers(self):
+        '''
+        Removes all monomers in a specific domain.
+        '''
+        self.monomers = {}
+        self.invalidate_cache()  # Add cache invalidation
 
     def translate_domain_to_origin(self, point=(0, 0, 0)):
         '''
@@ -322,13 +376,13 @@ class Domain:
         if self.sequence is not None:
             return self.sequence
         sequence = ''
-        for monomer in self.monomers:
+        for monomer in self.monomers.values():
             sequence+=amino_acid_3_to_1(monomer.get_monomer_name())
         return sequence
     
     def coarse_grain(self, method='CA'):
         ''' coarse grain the domain by alpha carbon position or center of mass'''
-        for monomer in self.monomers:
+        for monomer in self.monomers.values():
             monomer.coarse_grain(method)
 
     def identify_center_of_mass(self):
@@ -338,11 +392,68 @@ class Domain:
     
     def get_all_atom_coords(self):
         coords = []
-        for monomer in self.monomers:
+        for monomer in self.monomers.values():
             coords.extend(monomer.get_coordinates_array())
         return coords
     
+    def get_coords_by_monomer_index_with_atom_dict(self):
+        coords = {}
+        for monomer in self.monomers.values():
+            coords[monomer.get_monomer_number()]=monomer.get_atoms_dict_name_to_coords()
+        return coords
+    
+    def return_coordinates_of_clashing_residues(self, other_domain, clash_dist=2):
+        '''
+        Returns the pairs of clashing residues between two domains.
+
+        Parameters
+        ----------
+        other_domain : Domain
+            The domain to check for clashes against
+        clash_dist : float
+            Distance threshold for considering atoms to be clashing (in Angstroms)
+
+        Returns
+        -------
+        list of tuples
+            Each tuple contains (monomer1, monomer2) that have atoms within clash_dist
+        '''
+        clashing_residues = set()  # Use set to avoid duplicates
         
+        # Get coordinates and corresponding monomers
+        coords1 = []
+        monomer_idx1 = []
+        for i, monomer in enumerate(list(self.monomers.values())):
+            for atom in monomer.atoms:
+                coords1.append([atom.x_coord, atom.y_coord, atom.z_coord])
+                monomer_idx1.append(i)
+        
+        coords2 = []
+        monomer_idx2 = []
+        for i, monomer in enumerate(list(other_domain.monomers.values())):
+            for atom in monomer.atoms:
+                coords2.append([atom.x_coord, atom.y_coord, atom.z_coord])
+                monomer_idx2.append(i)
+
+        # Convert to numpy arrays for efficient computation
+        coords1 = np.array(coords1)
+        coords2 = np.array(coords2)
+
+        # Build KD-trees for efficient spatial queries
+        tree1 = cKDTree(coords1)
+        tree2 = cKDTree(coords2)
+
+        # Find all pairs of points within clash_dist
+        clashing_pairs = tree1.query_ball_tree(tree2, clash_dist)
+
+        # Convert atom indices to monomer pairs
+        for atom1_idx, nearby_atoms in enumerate(clashing_pairs):
+            for atom2_idx in nearby_atoms:
+                monomer1 = self.monomers[monomer_idx1[atom1_idx]]
+                monomer2 = other_domain.monomers[monomer_idx2[atom2_idx]]
+                clashing_residues.add((monomer1, monomer2))
+
+        return list(clashing_residues)
 
 class Chain:
     __slots__ = ['chain_id', 'domains', '_coord_cache', '_spatial_index', 'uniprot_ID', 'full_sequence']
@@ -470,6 +581,16 @@ class Chain:
                 missing_residues.append((i, aa))
         return missing_residues
     
+    def get_rebuilt_domains(self):
+        return [domain for domain in self.domains if domain.rebuilt]
+    
+    def get_coords_of_rebuilt_domains(self):
+        coords = []
+        for domain in self.domains:
+            if domain.rebuilt:
+                coords.extend(domain.get_coordinates_array())
+        return coords
+    
     def check_if_domain_clashes(self, domain_index, distance_threshold=3.0):
         """
         Check if a domain clashes with any other domain in the chain.
@@ -493,7 +614,12 @@ class Chain:
         target_tree = cKDTree(target_coords)
 
         for i, other_domain in enumerate(self.domains):
+            # Skip the target domain
             if i == domain_index:
+                continue
+            
+            # if we have not yet rebuilt the domain, we don't need to check for clashes.
+            if other_domain.rebuilt==False:
                 continue
                 
             other_coords = other_domain.get_coordinates_array()
@@ -504,9 +630,21 @@ class Chain:
             pairs = target_tree.count_neighbors(other_tree, distance_threshold, cumulative=False)
             
             if pairs > 0:
-                return True
+                return other_domain.domain_id
                 
         return False
+    
+    def remove_domain_monomers(self, domain_index):
+        '''
+        Removes all monomers in a specific domain.
+        '''
+        self.domains[domain_index].remove_all_domain_monomers()
+
+    def remove_domain_loop_monomers(self, domain_index):
+        '''
+        Removes all monomers that are part of a loop in a specific domain.
+        '''
+        self.domains[domain_index].remove_all_loop_monomers()
     
 
 class Complex:

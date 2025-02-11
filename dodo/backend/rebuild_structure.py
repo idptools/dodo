@@ -17,11 +17,12 @@ import os
 
 from dodo.backend.generate_alpha_carbon_points import generate_ca_points
 import idr_construction_utils as idr_utils
-import position_fds
+import dodo.backend.fd_positioning_utils as fd_positioning_utils
 import utils
 from dodo_readers import Reader
 from dodo_structures import Atom, Monomer, Domain, Chain, Complex
 from dodo.backend.domain_identification import get_fds_loops_idrs, assign_domains_from_dict
+from dodo.backend.loop_construction_utils import build_loops
 
 def rebuild_structure(path_to_pdb, num_conformations=1,
                       idr_expansion = 'standard',
@@ -74,17 +75,18 @@ def rebuild_structure(path_to_pdb, num_conformations=1,
     else:
         DodoComplex = assign_domains_from_dict(DodoComplex, manual_domain_assignment)
 
-    # DELETE NEW_COORDS LATER!
-    new_coords=[]    
-
     # now we want to iterate over the chains of the domain. 
     for chain in DodoComplex.get_chains():
         # get current domains
         all_domains = chain.get_domains()
+        # get the sequences for all domains so we can 
+        # get them back after we nuke some monomers during rebuild.
+        domain_to_seq_dict = {d.domain_id:d.get_monomer_to_aa_inds() for d in all_domains}
+
         # get domains that are fds, regardless of if they have loops. 
         fd_indices = [d.domain_id for d in all_domains if d.domain_type=='FD' or d.domain_type=='FD_with_loop']
         # get the loop indices
-        loop_indices = [d.domain_id for d in all_domains if d.domain_type=='loop']
+        domains_loop_indices = [d.domain_id for d in all_domains if d.domain_type=='FD_with_loop']
         # get the IDR indices
         idr_indices = [d.domain_id for d in all_domains if d.domain_type=='IDR']
         # if we only have 1 FD, we don't need to do anything.
@@ -95,14 +97,7 @@ def rebuild_structure(path_to_pdb, num_conformations=1,
             # get FD1, translate it such that the final coord in FD1 is at the origin. 
             FD1 = chain.get_domain(fd_indices[0])
             FD1.translate_domain_to_origin()
-
-
-            # DELETE LATER
-            # DELETE LATER
-            # DELETE LATER
-            # DELETE LATER
-            # DELETE NEW_COORDS LATER!
-            new_coords.extend(list(FD1.get_coordinates_array()))
+            FD1.set_domain_as_rebuilt()
             
             # iterate over FD indices. We always move the next FD relative to the previous FD,
             # so we need to make sure that we don't go out of bounds.
@@ -130,28 +125,34 @@ def rebuild_structure(path_to_pdb, num_conformations=1,
 
                 # reposition the FDs
                 if linear_positioning==False:
-                    position_fds.position_folded_domain(fd_indices[i], fd_indices[i+1], chain, distance)
+                    fd_positioning_utils.position_folded_domain(fd_indices[i], fd_indices[i+1], chain, distance)
                 else:
-                    position_fds.position_folded_domain_linear(fd_indices[i], fd_indices[i+1], chain, distance)
-
-                # calculate distance between the two FDs
-                # DELETE LATER
-                # DELETE LATER
-                # DELETE LATER
-                # DELETE LATER
-                FD1 = chain.get_domain(fd_indices[i])
-                FD2 = chain.get_domain(fd_indices[i+1])
-                new_coords.extend(list(FD2.get_coordinates_array()))
-
+                    fd_positioning_utils.position_folded_domain_linear(fd_indices[i], fd_indices[i+1], chain, distance)
+                chain.get_domain(fd_indices[i+1]).set_domain_as_rebuilt()
+    
         # now we need to build loops
-        if len(loop_indices) > 0:
-            for loop_index in loop_indices:
-                loop = chain.get_domain(loop_index)
-                # keep going from here!
-                loop.build_loop()
+        if len(domains_loop_indices) > 0:
+            # remove the loop monomers from all of the loop domains. 
+            for domain_ind in domains_loop_indices:
+                loop_chain = chain.get_domain(domain_ind)
+                loop_chain.remove_all_loop_monomers()
+            
+            
+            # now iterate through the loop domains to rebuild them. 
+            for domain_ind in domains_loop_indices:
+                build_loops(chain, domain_ind, num_conformations=num_conformations)
+
+        # now we need to rebuild the IDRs
+        if len(idr_indices) > 0:
+            # now iterate through the IDR domains to rebuild them.
+            for domain_ind in idr_indices:
+                idr_utils.build_IDR(chain, domain_ind, num_conformations=num_conformations)
 
         # write the new coordinates to a PDB file
-        utils.write_dumby_pdb(new_coords, f'{os.getcwd()}/dodo/data/testing_translation.pdb')
+        # get coords for all domains reubuilt
+        all_coords=[]
+        for domain in chain.get_rebuilt_domains():
+            all_coords.extend(domain.get_all_atom_coords())
+        utils.write_dumby_pdb(all_coords, f'{os.getcwd()}/dodo/data/testing_translation.pdb')
             
-
-rebuild_structure(f'{os.getcwd()}/dodo/data/p300.cif', linear_positioning=False)
+rebuild_structure('./dodo/data/arf19.pdb', num_conformations=1, idr_expansion='standard', linear_positioning=False)

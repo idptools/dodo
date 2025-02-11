@@ -58,7 +58,7 @@ def get_close_atoms(chain, thresh=8, loop_thresh=7):
     domain = chain.get_domain(0)
     
     # Build coordinates dictionary
-    for monomer in domain.get_monomers():
+    for number, monomer in domain.get_monomers().items():
         coords_dict[monomer.monomer_number] = monomer.get_atoms_dict()
     
     residue_numbers = list(coords_dict.keys())
@@ -212,13 +212,13 @@ def get_fds_loops_idrs(DodoComplex, threshold=480, gap_thresh=25,
                 next_fd = fds_bounds[fd_ind+1]
                 if next_fd[0]-cur_fd[1] > gap_thresh:
                     if cur_fd[1]-start_res>=gap_thresh:
-                        final_fds.append([start_res+1, cur_fd[1]-1])
-                        non_idr_coords.append([start_res+1, cur_fd[1]-1])
+                        final_fds.append([start_res, cur_fd[1]])
+                        non_idr_coords.append([start_res, cur_fd[1]])
                     start_res = next_fd[0]
             else:
                 if fds_bounds[-1][1]-start_res>=gap_thresh:
-                    final_fds.append([start_res+1, fds_bounds[-1][1]-1])
-                    non_idr_coords.append([start_res+1, fds_bounds[-1][1]-1])
+                    final_fds.append([start_res, fds_bounds[-1][1]])
+                    non_idr_coords.append([start_res, fds_bounds[-1][1]])
 
         # now get loops
         loops={}
@@ -285,32 +285,26 @@ def get_fds_loops_idrs(DodoComplex, threshold=480, gap_thresh=25,
         
         # iterate over regions
         for region in sorted(all_regions):
+            region_monomers = {number: monomer for number, monomer in monomers.items() if number in range(region[0], region[1])}
+            # get sequence for monomers
+            sequence = ''.join([amino_acid_3_to_1(monomer.get_monomer_name()) for number, monomer in region_monomers.items()])
+            # see what type of domain to add. 
             if region in final_fds:
-                # get monomers for region
-                region_monomers = [monomer for monomer in monomers if monomer.monomer_number in range(region[0], region[1])]
-                # make domain
-                cur_domain = Domain(domain_num, 'FD', region_monomers)
-                DodoComplex.get_chain(cur_chain_id).add_domain(cur_domain)
-                domain_num+=1
+                cur_domain = Domain(domain_num, 'FD', region_monomers, sequence=sequence)
+
             elif str(region) in loops.keys():
-                # get monomers for region
-                region_monomers = [monomer for monomer in monomers if monomer.monomer_number in range(region[0], region[1])]
+                # get loops
                 all_loops = loops[str(region)]
                 # make domain
-                cur_domain = Domain(domain_num, 'FD_with_loop', region_monomers)
+                cur_domain = Domain(domain_num, 'FD_with_loop', region_monomers, sequence=sequence)
                 for loop in all_loops:
                     cur_domain.add_loop_indices(loop)
-                DodoComplex.get_chain(cur_chain_id).add_domain(cur_domain)
-                domain_num+=1
             else:
-                # get monomers for region
-                region_monomers = [monomer for monomer in monomers if monomer.monomer_number in range(region[0], region[1])]
-                # get sequence for monomers
-                sequence = ''.join([amino_acid_3_to_1(monomer.get_monomer_name()) for monomer in region_monomers])
                 # make domain
                 cur_domain = Domain(domain_num, 'IDR', region_monomers, sequence=sequence)
-                DodoComplex.get_chain(cur_chain_id).add_domain(cur_domain)
-                domain_num+=1
+            # add domain to chain
+            DodoComplex.get_chain(cur_chain_id).add_domain(cur_domain)
+            domain_num+=1
     return DodoComplex
 
 

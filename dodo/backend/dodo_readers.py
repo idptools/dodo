@@ -141,7 +141,7 @@ class Reader:
             if chain_id in chain_to_uniprot:
                 uniprot_id = chain_to_uniprot[chain_id]
             chain = Chain(chain_id=chain_id, uniprot_ID=uniprot_id)
-            domain = Domain(domain_id=0, domain_type='unknown', monomers=[])
+            domain = Domain(domain_id=0, domain_type='unknown')
 
             # Map monomer numbers to their lines in one pass
             monomer_map = {}
@@ -193,7 +193,7 @@ class Reader:
 
         for chain_id, split_lines in chain_dict.items():
             chain = Chain(chain_id=chain_id)
-            domain = Domain(domain_id=0, domain_type='unknown', monomers=[])
+            domain = Domain(domain_id=0, domain_type='unknown')
 
             # Map monomer numbers to their lines in one pass
             monomer_map = {}

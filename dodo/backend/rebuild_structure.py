@@ -81,14 +81,14 @@ def rebuild_structure(path_to_pdb, num_conformations=1,
         all_domains = chain.get_domains()
         # get the sequences for all domains so we can 
         # get them back after we nuke some monomers during rebuild.
-        domain_to_seq_dict = {d.domain_id:d.get_monomer_to_aa_inds() for d in all_domains}
+        domain_to_seq_dict = {d.domain_id:d.get_monomer_to_aa_inds() for d in all_domains.values()}
 
         # get domains that are fds, regardless of if they have loops. 
-        fd_indices = [d.domain_id for d in all_domains if d.domain_type=='FD' or d.domain_type=='FD_with_loop']
+        fd_indices = [d.domain_id for d in all_domains.values() if d.domain_type=='FD' or d.domain_type=='FD_with_loop']
         # get the loop indices
-        domains_loop_indices = [d.domain_id for d in all_domains if d.domain_type=='FD_with_loop']
+        domains_loop_indices = [d.domain_id for d in all_domains.values() if d.domain_type=='FD_with_loop']
         # get the IDR indices
-        idr_indices = [d.domain_id for d in all_domains if d.domain_type=='IDR']
+        idr_indices = [d.domain_id for d in all_domains.values() if d.domain_type=='IDR']
         # if we only have 1 FD, we don't need to do anything.
         if len(fd_indices)<=1:
             continue
@@ -142,17 +142,23 @@ def rebuild_structure(path_to_pdb, num_conformations=1,
             for domain_ind in domains_loop_indices:
                 build_loops(chain, domain_ind, num_conformations=num_conformations)
 
+
+        '''
         # now we need to rebuild the IDRs
         if len(idr_indices) > 0:
             # now iterate through the IDR domains to rebuild them.
             for domain_ind in idr_indices:
                 idr_utils.build_IDR(chain, domain_ind, num_conformations=num_conformations)
-
+        '''
         # write the new coordinates to a PDB file
         # get coords for all domains reubuilt
         all_coords=[]
         for domain in chain.get_rebuilt_domains():
             all_coords.extend(domain.get_all_atom_coords())
         utils.write_dumby_pdb(all_coords, f'{os.getcwd()}/dodo/data/testing_translation.pdb')
-            
-rebuild_structure('./dodo/data/arf19.pdb', num_conformations=1, idr_expansion='standard', linear_positioning=False)
+
+pdb_path = './dodo/data/p300.pdb'
+rebuild_structure(pdb_path, 
+                   num_conformations=1, 
+                   idr_expansion='standard',
+                   linear_positioning=True)

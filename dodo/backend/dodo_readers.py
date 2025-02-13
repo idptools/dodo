@@ -158,7 +158,7 @@ class Reader:
                                   charge=monomer_tokens[0][78:80].strip()
                 )
                 
-                monomer.add_atoms([
+                monomer.add_atoms(
                     Atom(atom_id=int(t[6:11]), 
                         atom_name=t[12:16].strip(),
                         x_coord=float(t[30:38]), 
@@ -166,10 +166,10 @@ class Reader:
                         z_coord=float(t[46:54]), 
                         element=t[76:78].strip())
                     for t in monomer_tokens
-                ])
+                )
                 domain.add_monomer(monomer)
 
-            chain.add_domain(domain)
+            chain.add_domain(domain, domain_id = domain.domain_id)
             self.complex.add_chain(chain)
 
         return self.complex
@@ -216,7 +216,7 @@ class Reader:
                 ])
                 domain.add_monomer(monomer)
 
-            chain.add_domain(domain)
+            chain.add_domain(domain, domain_id = domain.domain_id)
             self.complex.add_chain(chain)
 
         return self.complex

@@ -21,6 +21,24 @@ def calculate_distance(coord1, coord2):
     '''
     return np.linalg.norm(coord1 - coord2)
 
+def calculate_distance_vectorized(coord_list1, coord_list2):
+    '''
+    This function calculates the Euclidean distance between two lists of points.
+    
+    Parameters
+    ----------
+    coord_list1 : np.array, shape=(N, 3)
+        coordinates of the first list of points
+    coord_list2 : np.array, shape=(M, 3)
+        coordinates of the second list of points
+    
+    Returns
+    -------
+    np.array, shape=(N, M)
+        Euclidean distance between each pair of points
+    '''
+    return np.linalg.norm(coord_list1[:, np.newaxis, :] - coord_list2[np.newaxis, :, :], axis=2)
+
 
 
 def find_furthest_coordinate(coord_list1, coord_list2):
@@ -81,6 +99,10 @@ def find_furthest_coordinate(coord_list1, coord_list2):
 
 
 def find_transform(coord1, coord2):
+    '''
+    This function finds the translation and rotation that
+    aligns coord1 to coord2.
+    '''
     p1 = np.asarray(coord1)
     p2 = np.asarray(coord2)
     
@@ -121,6 +143,9 @@ def apply_transform(coord, translation, rotation):
 def reverse_transform(coord, translation, rotation):
     return (rotation.T @ np.asarray(coord)) - translation
 
+
+
+
 def generate_circle_points(origin, center, radius, num_points):
     origin = np.asarray(origin)
     center = np.asarray(center)
@@ -145,33 +170,96 @@ def generate_circle_points(origin, center, radius, num_points):
     points = center + radius * (u[:, np.newaxis] * cos_theta + v[:, np.newaxis] * sin_theta).T
     return points
 
-def generate_random_point_by_distance(origin, distance):
+def generate_circle_points_vectorized(origins, centers, radii, num_points):
+    origins = np.asarray(origins)
+    centers = np.asarray(centers)
+    radii = np.asarray(radii)
+
+    normals = centers - origins
+    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+
+    angles = np.linspace(0, 2*np.pi, num_points, endpoint=False)
+
+    v1 = np.array([1., 0., 0.])
+    v1 = np.where(np.allclose(normals, v1), np.array([0., 1., 0.]), v1)
+
+    u = np.cross(normals, v1)
+    u /= np.linalg.norm(u, axis=1, keepdims=True)
+    v = np.cross(normals, u)
+
+    cos_theta = np.cos(angles)
+    sin_theta = np.sin(angles)
+
+    points = centers[:, np.newaxis, :] + radii[:, np.newaxis, np.newaxis] * (u[:, np.newaxis, :] * cos_theta + v[:, np.newaxis, :] * sin_theta)
+    return points
+
+
+
+
+def generate_random_points_by_distance(origins, distances):
     '''
-    Generates a random point that is a given distance away from the origin.
+    Generates random points that are given distances away from the origins.
     
     Parameters
     ----------
-    origin : np.array, shape=(3,)
-        coordinates of the origin
-    distance : float
-        distance from the origin
-    
+    origins : np.array, shape=(N, 3)
+        coordinates of the origins
+    distances : np.array, shape=(N,)
+        distances from the origins
+
     Returns
     -------
-    np.array, shape=(3,)
-        coordinates of the random point
+    np.array, shape=(N, 3)
+        coordinates of the random points
     '''
-    # Generate a random point on a unit sphere
-    point = np.random.normal(0, 1, 3)
-    point /= np.linalg.norm(point)
+    # Generate random points on a unit sphere
+    points = np.random.normal(0, 1, (len(origins), 3))
+    points /= np.linalg.norm(points, axis=1, keepdims=True)
 
-    # Scale the point to the desired distance
-    point *= distance
+    # Scale the points to the desired distances
+    points *= distances[:, np.newaxis]
 
-    # Translate the point to the origin
-    point += origin
+    # Translate the points to the origins
+    points += origins
 
-    return point
+    return points
+
+def generate_random_points_by_distance_mult(origins, distances, num_points):
+    '''
+    Generates multiple random points that are given distances away from the origins.
+    
+    Parameters
+    ----------
+    origins : np.array, shape=(N, 3)
+        coordinates of the origins
+    distances : np.array, shape=(N,)
+        distances from the origins
+    num_points : int
+        number of random points to generate per origin
+
+    Returns
+    -------
+    np.array, shape=(N, num_points, 3)
+        coordinates of the random points
+    '''
+    N = len(origins)
+    points = np.zeros((N, num_points, 3))
+    
+    for i in range(N):
+        # Generate random points on a unit sphere
+        rand_points = np.random.normal(0, 1, (num_points, 3))
+        rand_points /= np.linalg.norm(rand_points, axis=1, keepdims=True)
+
+        # Scale the points to the desired distances
+        rand_points *= distances[i]
+
+        # Translate the points to the origins
+        rand_points += origins[i]
+        
+        points[i] = rand_points
+
+    return points
+
 
 
 def find_points_within_sphere(points_of_interest, sphere_center, sphere_radius):
@@ -222,6 +310,8 @@ def find_points_within_sphere(points_of_interest, sphere_center, sphere_radius):
     
     # Return both the points and the mask
     return points[distances <= radius]
+
+
 
 def find_point_closest_to_sphere_surface(points_of_interest, 
                                          sphere_center, 
@@ -333,24 +423,36 @@ def find_points_not_clashing(potential_coords, coords_to_check, clash_distance=3
     
     Parameters
     ----------
-    potential_coords : np.array, shape=(N, 3)
-        points we want to check if they are clashing
+    potential_coords : np.array, shape=(N, P, 3)
+        Points to check for clashes. N is number of sets, P is points per set.
     coords_to_check : np.array, shape=(M, 3)
-        points we want to check against
+        Points to check against.
     clash_distance : float
-        distance at which two points are considered clashing
+        Distance at which two points are considered clashing.
     
     Returns
     -------
     np.array, shape=(K, 3)
-        points that are not clashing
+        Points that are not clashing.
     '''
-    # calculate distances
-    distances = np.linalg.norm(potential_coords[:, np.newaxis, :] - coords_to_check[np.newaxis, :, :], axis=2)
-
-    # find the points that are not clashing
-    non_clashing_points = potential_coords[np.all(distances > clash_distance, axis=1)]
+    # Reshape arrays for broadcasting
+    potential_coords = np.asarray(potential_coords)
+    coords_to_check = np.asarray(coords_to_check)
+    
+    # Calculate distances between all points
+    # Reshape arrays to allow broadcasting
+    distances = np.linalg.norm(
+        potential_coords[..., np.newaxis, :] - coords_to_check, 
+        axis=-1
+    )
+    
+    # Find points that don't clash with any point in coords_to_check
+    non_clashing_mask = np.all(distances > clash_distance, axis=-1)
+    non_clashing_points = potential_coords[non_clashing_mask]
+    
     return non_clashing_points
+
+
 
 def find_points_by_angle(points_to_check, coord_1, coord_2, angle):
     '''
@@ -406,3 +508,101 @@ def find_points_by_angle(points_to_check, coord_1, coord_2, angle):
     # Return points within allowed angle
     return points[angles <= allowed_rad]
 
+
+def get_starting_points(num_starting_points, starting_coordinate=[0,0,0], distance=3.8):
+    '''
+    get an arbitrary number of starting poinst
+    distance away from starting coordinate.
+    
+    Parameters
+    ----------
+    num_starting_points : int
+        number of starting points to generate
+    starting_coordinate : np.array, shape=(3,)
+        starting coordinate
+    
+    Returns
+    -------
+    np.array, shape=(num_starting_points, 2, 3)
+        array of starting points
+    '''
+    # Convert starting_coordinate to numpy array
+    starting_coordinate = np.array(starting_coordinate)
+    
+    # Generate coordinates on sphere surface
+    coords = get_random_coordinates_on_sphere_surface(starting_coordinate, distance, num_starting_points)
+    
+    # Create output array with shape (num_starting_points, 2, 3)
+    # Each point pair consists of the starting coordinate and a random point
+    result = np.zeros((num_starting_points, 2, 3))
+    result[:, 0] = starting_coordinate
+    result[:, 1] = coords
+    
+    return np.array(result)
+
+def get_ending_points(start_points, distances, 
+                      clash_points=None, clash_dist=3,
+                      num_points_to_check=1000):
+    '''
+    Get ending points based on start points, distance, and any points to 
+    check clashes with. 
+    This is used to generate IDRs.
+
+    Parameters
+    ----------
+    start_points : np.array, shape=(N, 3)
+        array of starting points
+    distances : np.array, shape=(N,)
+        array of distances that generated ending points
+        will be from the starting points
+    clash_points : np.array, shape=(M, 3)
+        array of points to check for clashes
+    clash_dist : float
+        the distance to use to consider something as clashing with something else. 
+    num_points_to_check : int
+        number of points to generate per end point that will be checked for clashes.
+    
+    Returns
+    -------
+    ending_points : np.array, shape=(N, 3)
+        array of ending points
+    '''
+    # Extract origins from start_points
+    origins = start_points
+    N = len(start_points)
+    
+    # Initialize an array to hold the final ending points
+    ending_points = np.zeros((N, 3))
+
+    # Generate points for each origin separately
+    for i in range(N):
+        # Generate multiple random points for this origin
+        origin_repeated = np.tile(origins[i], (num_points_to_check, 1))
+        potential_coords = generate_random_points_by_distance(
+            origin_repeated, 
+            np.full(num_points_to_check, distances[i])
+        )
+
+        if clash_points is not None:
+            # Reshape potential coords for clash checking
+            potential_coords_reshaped = potential_coords[np.newaxis, :, :]
+            clash_points_reshaped = clash_points[np.newaxis, :, :]
+
+            # Find non-clashing points
+            non_clashing_coords = find_points_not_clashing(
+                potential_coords_reshaped,
+                clash_points_reshaped,
+                clash_dist
+            )
+
+            # If there are any non-clashing points, select the first one
+            if len(non_clashing_coords) > 0:
+                ending_points[i] = non_clashing_coords[0]
+            else:
+                # If all points clash, use the first potential coordinate
+                ending_points[i] = potential_coords[0]
+        else:
+            # If no clash points are provided, use the first generated point
+            ending_points[i] = potential_coords[0]
+
+    return ending_points

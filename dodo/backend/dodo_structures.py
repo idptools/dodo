@@ -20,9 +20,9 @@ from utils import amino_acid_3_to_1
 class Atom:
     __slots__ = ['atom_id', 'atom_name', 'x_coord', 'y_coord', 'z_coord', 'element']
     
-    def __init__(self, atom_id=None, atom_name=None, 
-                 x_coord=None, y_coord=None, z_coord=None, 
-                 element=None):
+    def __init__(self, atom_id, atom_name, 
+                 x_coord, y_coord, z_coord, 
+                 element):
         self.atom_id = atom_id
         self.atom_name = atom_name
         self.x_coord = float(x_coord)
@@ -70,6 +70,8 @@ class Atom:
             return 1.008
         elif self.element == 'S':
             return 32.06
+        elif self.element == 'P':
+            return 30.974
         else:
             raise ValueError(f'Unknown element {self.element}')
     
@@ -78,8 +80,8 @@ class Monomer:
                  'b_factor', 'charge', 'atoms', '_coord_cache']
     
     def __init__(self, 
-                 monomer_number=None, 
-                 monomer_name=None,
+                 monomer_number, 
+                 monomer_name,
                  occupancy=None,
                  b_factor=None,
                  charge=None):
@@ -88,7 +90,7 @@ class Monomer:
         self.occupancy = occupancy
         self.b_factor = b_factor
         self.charge = charge
-        self.atoms = []
+        self.atoms = {}
         self._coord_cache = None
     
     def __str__(self):
@@ -100,6 +102,10 @@ class Monomer:
     def __eq__(self, other):
         return self.monomer_number == other.monomer_number and self.monomer_name == other.monomer_name and self.atoms == other
     
+    def invalidate_cache(self):
+        """Invalidate coordinate cache when atoms change"""
+        self._coord_cache = None
+
     def get_monomer_number(self):
         return self.monomer_number
     
@@ -110,42 +116,35 @@ class Monomer:
         return self.atoms
     
     def get_atoms_dict(self):
-        return {atom.get_atom_id(): {'coords':atom.coordinates(), 'name':atom.get_atom_name()} for atom in self.atoms}
+        return {atom.get_atom_id(): {'coords':atom.coordinates(), 'name':atom.get_atom_name()} for atom in self.atoms.values()}    
     
     def get_atoms_dict_name_to_coords(self):
-        return {atom.get_atom_name() :atom.coordinates() for atom in self.atoms}
-    
-    def get_chain_id(self):
-        return self.chain_id
-    
+        return {atom.get_atom_name() :atom.coordinates() for atom in self.atoms.values()}
+
     def add_atom(self, atom):
-        self.atoms.append(atom)
+        self.atoms[atom.atom_id] = atom
         self.invalidate_cache()
 
     def add_atoms(self, atoms):
-        self.atoms.extend(atoms)
+        for atom in atoms:
+            self.atoms[atom.atom_id] = atom
         self.invalidate_cache()
     
     def remove_atom(self, atom):
-        self.atoms.remove(atom)
+        del self.atoms[atom.atom_id]
         self.invalidate_cache()
     
     def get_atom(self, atom_id):
-        for atom in self.atoms:
-            if atom.atom_id == atom_id:
-                return atom
-        return None
+        return self.atoms[atom_id]
+
 
     def get_coordinates_array(self):
         """Cache and return numpy array of coordinates"""
         if self._coord_cache is None:
             self._coord_cache = np.array([[atom.x_coord, atom.y_coord, atom.z_coord] 
-                                        for atom in self.atoms])
+                                        for atom in self.atoms.values()])
         return self._coord_cache
     
-    def invalidate_cache(self):
-        """Invalidate coordinate cache when atoms change"""
-        self._coord_cache = None
 
     def calculate_center_of_mass(self):
         """
@@ -162,14 +161,14 @@ class Monomer:
             'O': 16.00,
             'S': 32.07,
             'Se': 78.96,  # For selenocysteine or other selenium-containing compounds
-            # Add more elements here as needed.
+            'P': 30.97
         }
         
         total_mass = 0.0
         weighted_position = np.array([0.0, 0.0, 0.0])
         
         # get atoms in monomer
-        atom_data = [(atom.element, atom.x_coord, atom.y_coord, atom.z_coord) for atom in self.atoms]
+        atom_data = [(atom.element, atom.x_coord, atom.y_coord, atom.z_coord) for atom in list(self.atoms.values())]
 
         for atom in atom_data:
             element, x, y, z = atom
@@ -187,17 +186,23 @@ class Monomer:
 
     def coarse_grain(self, method='CA'):
         ''' coarse grain the monomer by alpha carbon position or center of mass'''
+        cg_atoms={}
         if method == 'CA':
-            ca = self.get_atom('CA')
-            if (ca is not None):
-                self.atoms = [ca]
-            else:
-                raise ValueError('No alpha carbon found in monomer, could not coarse grain by CA!')
+            for atom in self.atoms.values():
+                if atom.atom_name == 'CA':
+                    cg_atoms[atom.atom_id] = atom
+                    break
+            self.atoms = cg_atoms
+
         elif method == 'COM':
             com = self.calculate_center_of_mass()
-            self.atoms = [Atom(atom_id=0, atom_name='CA', x_coord=com[0], y_coord=com[1], z_coord=com[2], element='C')]
+            # get atom id for first atom in atoms. 
+            atom_id = list(self.atoms.keys())[0]
+            self.atoms = [Atom(atom_id=atom_id, atom_name='CA', x_coord=com[0], y_coord=com[1], z_coord=com[2], element='C')]
         else:
             raise ValueError('Invalid coarse graining method, must be CA or COM')
+        # invalidate cache
+        self.invalidate_cache()
         
 
 class Domain:
@@ -218,6 +223,15 @@ class Domain:
         self._coord_cache = None
         self._spatial_index = None
     
+    def __str__(self):
+        return f'Domain: {self.domain_id} {self.domain_type} ({len(self.monomers)} monomers)'
+    
+    def __repr__(self):
+        return self.__str__()
+    
+    def get_monomers(self):
+        return self.monomers
+
     def add_monomer(self, monomer):
         """
         Add a monomer to the domain using its monomer number as the key.
@@ -228,29 +242,15 @@ class Domain:
             The monomer object to add to the domain
         """
         monomer_number = monomer.get_monomer_number()
-        if monomer_number is None:
-            raise ValueError("Monomer must have a monomer number")
         self.monomers[monomer_number] = monomer
-        # sort monomers by monomer number
-        self.monomers = dict(sorted(self.monomers.items()))
         self.invalidate_cache()  # Ensure cache is invalidated
 
-
-    def __str__(self):
-        return f'Domain: {self.domain_id} {self.domain_type} ({len(self.monomers)} monomers)'
-    
-    def __repr__(self):
-        return self.__str__()
-    
-    def get_monomers(self):
-        return self.monomers
-    
     def get_coordinates_array(self):
         """Cache and return numpy array of coordinates"""
         if self._coord_cache is None:
             coords = []
             for monomer in self.monomers.values():
-                for atom in monomer.atoms:
+                for atom in monomer.atoms.values():
                     coords.append([atom.x_coord, atom.y_coord, atom.z_coord])
             self._coord_cache = np.array(coords)
         return self._coord_cache.copy()  # Return a copy to prevent unintended modifications
@@ -302,7 +302,7 @@ class Domain:
         
         # Update coordinates for each atom directly
         for monomer in self.monomers.values():
-            for atom in monomer.atoms:
+            for atom in monomer.atoms.values():
                 current_coords = np.array([atom.x_coord, atom.y_coord, atom.z_coord])
                 new_coords = current_coords + translation_vector
                 atom.x_coord, atom.y_coord, atom.z_coord = new_coords
@@ -314,7 +314,7 @@ class Domain:
         """Update atomic coordinates in domain"""
         idx = 0
         for monomer in self.monomers.values():
-            for atom in monomer.atoms:
+            for atom in monomer.atoms.values():
                 atom.set_coordinates(
                     float(new_coords[idx][0]),
                     float(new_coords[idx][1]),
@@ -341,9 +341,8 @@ class Domain:
         '''
         Removes a monomer from the domain by index.
         '''
-        if monomer_index in self.monomers:
-            del self.monomers[monomer_index]
-            self.invalidate_cache()  # Add cache invalidation
+        del self.monomers[monomer_index]
+        self.invalidate_cache()  # Add cache invalidation
 
     def remove_all_loop_monomers(self):
         '''
@@ -384,6 +383,7 @@ class Domain:
         ''' coarse grain the domain by alpha carbon position or center of mass'''
         for monomer in self.monomers.values():
             monomer.coarse_grain(method)
+        self.invalidate_cache()
 
     def identify_center_of_mass(self):
         """Identify the center of mass of the domain"""
@@ -424,14 +424,14 @@ class Domain:
         coords1 = []
         monomer_idx1 = []
         for i, monomer in enumerate(list(self.monomers.values())):
-            for atom in monomer.atoms:
+            for atom in monomer.atoms.values():
                 coords1.append([atom.x_coord, atom.y_coord, atom.z_coord])
                 monomer_idx1.append(i)
         
         coords2 = []
         monomer_idx2 = []
         for i, monomer in enumerate(list(other_domain.monomers.values())):
-            for atom in monomer.atoms:
+            for atom in monomer.atoms.values():
                 coords2.append([atom.x_coord, atom.y_coord, atom.z_coord])
                 monomer_idx2.append(i)
 
@@ -458,13 +458,14 @@ class Domain:
 class Chain:
     __slots__ = ['chain_id', 'domains', '_coord_cache', '_spatial_index', 'uniprot_ID', 'full_sequence']
     
-    def __init__(self, chain_id=None, uniprot_ID=None):
+    def __init__(self, chain_id, uniprot_ID=None):
         self.chain_id = chain_id
-        self.domains = []
-        self._coord_cache = None
-        self._spatial_index = None
+        self.domains = {}
         self.uniprot_ID = uniprot_ID
         self.full_sequence = None
+        self._coord_cache = None
+        self._spatial_index = None
+
     
     def __str__(self):
         return f'Chain: {self.chain_id} {self.domains}'
@@ -481,19 +482,16 @@ class Chain:
     def get_domains(self):
         return self.domains
     
-    def add_domain(self, domain):
-        self.domains.append(domain)
+    def add_domain(self, domain, domain_id):
+        self.domains[domain_id]=domain
         self.invalidate_cache()
     
-    def remove_domain(self, domain):
-        self.domains.remove(domain)
+    def remove_domain(self, domain_id):
+        del self.domains[domain_id]
         self.invalidate_cache()
     
     def get_domain(self, domain_id):
-        for domain in self.domains:
-            if domain.domain_id == domain_id:
-                return domain
-        return None
+        return self.domains[domain_id]
 
     def build_spatial_index(self):
         """Build KD-tree for spatial queries"""
@@ -504,7 +502,7 @@ class Chain:
         """Cache and return numpy array of all coordinates in chain"""
         if self._coord_cache is None:
             coords = []
-            for domain in self.domains:
+            for domain in list(self.domains.values()):
                 coords.extend(domain.get_coordinates_array())
             self._coord_cache = np.array(coords)
         return self._coord_cache
@@ -521,9 +519,9 @@ class Chain:
         if self._coord_cache is None:
             coordinates = []
             atom_info = []
-            for domain in self.domains:
+            for domain in list(self.domains.values()):
                 for monomer in domain.monomers:
-                    for atom in monomer.atoms:
+                    for atom in monomer.atoms.values():
                         coordinates.append([atom.x_coord, atom.y_coord, atom.z_coord])
                         atom_info.append((atom, monomer, domain))
 
@@ -582,11 +580,11 @@ class Chain:
         return missing_residues
     
     def get_rebuilt_domains(self):
-        return [domain for domain in self.domains if domain.rebuilt]
+        return [domain for domain in self.domains.values() if domain.rebuilt]
     
     def get_coords_of_rebuilt_domains(self):
         coords = []
-        for domain in self.domains:
+        for domain in self.domains.values():
             if domain.rebuilt:
                 coords.extend(domain.get_coordinates_array())
         return coords
@@ -613,9 +611,9 @@ class Chain:
         target_coords = target_domain.get_coordinates_array()
         target_tree = cKDTree(target_coords)
 
-        for i, other_domain in enumerate(self.domains):
+        for other_domain in self.domains.values():
             # Skip the target domain
-            if i == domain_index:
+            if other_domain.domain_id == domain_index:
                 continue
             
             # if we have not yet rebuilt the domain, we don't need to check for clashes.
@@ -631,7 +629,6 @@ class Chain:
             
             if pairs > 0:
                 return other_domain.domain_id
-                
         return False
     
     def remove_domain_monomers(self, domain_index):
@@ -730,7 +727,7 @@ class Complex:
         for chain in self.chains:
             for domain in chain.domains:
                 for monomer in domain.monomers:
-                    for atom in monomer.atoms:
+                    for atom in monomer.atoms.values():
                         atom.x_coord, atom.y_coord, atom.z_coord = new_coords[idx]
                         idx += 1
         self._coord_cache = None
@@ -745,7 +742,7 @@ class Complex:
             for chain in self.chains:
                 for domain in chain.domains:
                     for monomer in domain.monomers:
-                        for atom in monomer.atoms:
+                        for atom in monomer.atoms.values():
                             coordinates.append([atom.x_coord, atom.y_coord, atom.z_coord])
                             atom_info.append((atom, monomer, domain, chain))
             

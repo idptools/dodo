@@ -84,8 +84,8 @@ def position_folded_domain(FD1_index, FD2_index, chain_obj,
 
     # get the coord that needs to be facing towards the 
     # other FD and be a specified distance away
-    FD1_coord = np.array(FD1.monomers[list(FD1.monomers.keys())[-1]].atoms[-1].coordinates())
-    FD2_coord = np.array(FD2.monomers[list(FD2.monomers.keys())[0]].atoms[0].coordinates())
+    FD1_coord = FD1.get_coordinates_array()[-1]
+    FD2_coord = FD2.get_coordinates_array()[0]
 
     # Try random positions on sphere surface until we find one without clashes
     potential_coordinates = get_random_coordinates_on_sphere_surface(FD1_coord, objective_final_distance, 500)
@@ -120,7 +120,7 @@ def position_folded_domain(FD1_index, FD2_index, chain_obj,
 
     # finally do the last translation of FD2 to make sure that FD2_coord
     # is the specified distance from FD1_coord
-    FD2_coord = np.array(FD2.monomers[list(FD2.monomers.keys())[0]].atoms[0].coordinates())
+    FD2_coord = FD2.get_coordinates_array()[0]
     distance = np.linalg.norm(FD1_coord - FD2_coord)
     translation_vector = FD1_coord + (objective_final_distance/distance)*(FD2_coord-FD1_coord) - FD2_coord
     FD2.translate(translation_vector)
@@ -162,13 +162,13 @@ def position_folded_domain_linear(FD1_index, FD2_index, chain_obj,
 
     # Translate FD2 along x-axis by the objective distance
     # with respect to FD1_coord
-    FD1_coord = np.array(FD1.monomers[list(FD1.monomers.keys())[-1]].atoms[-1].coordinates())
-    FD2_coord = np.array(FD2.monomers[list(FD2.monomers.keys())[0]].atoms[0].coordinates())
+    FD1_coord = FD1.get_coordinates_array()[-1]
+    FD2_coord = FD2.get_coordinates_array()[0]
     translation_vector = FD1_coord + np.array([objective_final_distance, 0, 0]) - FD2_coord
     FD2.translate(translation_vector)
     
     # get new FD2 coord, FD2_COM, and FD1_coord
-    FD2_coord = np.array(FD2.monomers[list(FD2.monomers.keys())[0]].atoms[0].coordinates())
+    FD2_coord = FD2.get_coordinates_array()[0]
     FD2_COM = FD2.identify_center_of_mass()
     
     # get rot matrix for rotation
@@ -180,7 +180,7 @@ def position_folded_domain_linear(FD1_index, FD2_index, chain_obj,
         FD2.rotate(rotation_matrix)
 
     # now translate FD2 such that FD2_coord is the specified distance from FD1_coord
-    FD2_coord = np.array(FD2.monomers[list(FD2.monomers.keys())[0]].atoms[0].coordinates())
+    FD2_coord = FD2.get_coordinates_array()[0]
     distance = np.linalg.norm(FD1_coord - FD2_coord)
     translation_vector = FD1_coord + (objective_final_distance/distance)*(FD2_coord-FD1_coord) - FD2_coord
     FD2.translate(translation_vector)

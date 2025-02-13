@@ -277,7 +277,7 @@ def get_fds_loops_idrs(DodoComplex, threshold=480, gap_thresh=25,
         # delete the old domain 0
         # get domain
         cur_dom = DodoComplex.get_chain(cur_chain_id).get_domain(0)
-        DodoComplex.get_chain(cur_chain_id).remove_domain(cur_dom)
+        DodoComplex.get_chain(cur_chain_id).remove_domain(cur_dom.domain_id)
 
         # organize regions, the sort.
         all_regions = non_idr_coords
@@ -303,7 +303,7 @@ def get_fds_loops_idrs(DodoComplex, threshold=480, gap_thresh=25,
                 # make domain
                 cur_domain = Domain(domain_num, 'IDR', region_monomers, sequence=sequence)
             # add domain to chain
-            DodoComplex.get_chain(cur_chain_id).add_domain(cur_domain)
+            DodoComplex.get_chain(cur_chain_id).add_domain(cur_domain, domain_id=cur_domain.domain_id)
             domain_num+=1
     return DodoComplex
 

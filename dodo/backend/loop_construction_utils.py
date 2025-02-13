@@ -137,7 +137,9 @@ def build_loops(chain, loop_domain_index, num_conformations=1, num_attempts=10):
         # now we repopulate the monomers in the chain.
         # for index in loop_indices:
         # first get the last atom in the previous monomer
-        next_atom_id = int(loop_domain.monomers[loop_indices[0]-1].atoms[-1].atom_id)
+        last_monomer = loop_domain.monomers[loop_indices[0]-1]
+        last_atoms = last_monomer.atoms
+        next_atom_id = last_atoms[list(last_atoms.keys())[-1]].atom_id
 
         loop_ind_num_to_monomer_id = loop_domain.monomer_ind_to_aa
         for index in loop_indices:

@@ -55,3 +55,24 @@ def amino_acid_3_to_1(three_letter_code):
         'VAL': 'V'
     }
     return amino_acid_dict[three_letter_code]
+
+
+def write_multiple_conformations_to_pdb(conformations, save_path):
+    '''
+    function to write multiple conformations to a pdb file.
+
+    Parameters
+    ---------
+    conformations : Np.array 
+        Np.array of shape N,L,3 where N is the number of conformations,
+        L is the length of the IDR and 3 is the X, Y, Z coordinates.
+
+    save_path : str
+        path to save pdb file
+
+    Returns
+    -------
+    None
+    '''
+    
+   

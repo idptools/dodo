@@ -607,30 +607,30 @@ def save_pdb_from_PDBParserObj(PDBParserObj, out_path,
                     if atom=='CA':
                         xyz_list.append(all_coords[aa][atom])
                         residue_names.append(PDBParserObj.sequence_3aa_by_index[aa]['CA'])
-                        residue_indices.append(aa)
-                        atom_indices.append(aa)
+                        residue_indices.append(aa + 1)
+                        atom_indices.append(len(atom_indices) + 1)
                         atom_names.append('CA')
                         beta_vals.append(PDBParserObj.beta_vals_by_index[aa])
-                        if aa < len(PDBParserObj.sequence)-1:
-                            CONECT_COORDS.append([aa, aa+1])
+                        if aa != aa_range[-1]:
+                            CONECT_COORDS.append([len(atom_indices), len(atom_indices) + 1])
             else:
                 cur_atoms = all_coords[aa]
                 for atom in cur_atoms:
 
                     xyz_list.append(all_coords[aa][atom])
                     residue_names.append(PDBParserObj.sequence_3aa_by_index[aa][atom])
-                    residue_indices.append(aa)
-                    atom_indices.append(atom_count)
+                    residue_indices.append(aa + 1)
+                    atom_indices.append(atom_count + 1)
                     atom_names.append(atom)
                     beta_vals.append(PDBParserObj.beta_vals_by_index[aa])
                     # only conect N-CA-C because this is for the IDR. 
                     if atom_count < PDBParserObj.number_atoms:
                         if atom == 'CA':
-                            all_connect_atoms[atom_count]=atom
+                            all_connect_atoms[atom_count + 1]=atom
                         if atom == 'C':
-                            all_connect_atoms[atom_count]=atom
+                            all_connect_atoms[atom_count + 1]=atom
                         if atom=='N':
-                            all_connect_atoms[atom_count]=atom
+                            all_connect_atoms[atom_count + 1]=atom
                     atom_count+=1
 
             
@@ -666,4 +666,3 @@ def save_pdb_from_PDBParserObj(PDBParserObj, out_path,
                     atom_names=atom_names, residue_indices=residue_indices,
                     residue_names=residue_names, beta=beta_vals,CONECT_LINES=None, 
                     add_mode='w', model_num=1, last_model=True)
-

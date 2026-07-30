@@ -1,6 +1,0 @@
-Notes for myself for thinknig of how best to build the IDRs. 
-
-1) read in everything, identify domains. 
-2) build IDRs at necessary lengths.
-3) position FDs to IDRs
-4) build loops?

@@ -1,0 +1,40 @@
+# Run with: pre-commit install (once), then automatically on every commit.
+# Or across the whole tree: pre-commit run --all-files
+#
+# Kept deliberately short. A hook set nobody runs is worse than none, because it
+# creates the impression of enforcement without the fact of it.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        # The repository already carries 19 MB of structure fixtures. That was a
+        # deliberate choice for the regression corpus, but new multi-megabyte files
+        # should be a conscious decision rather than an accident.
+        args: [--maxkb=2000]
+        exclude: ^tests/data/structures/
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+      - id: debug-statements
+      - id: check-case-conflict
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.14.0
+    hooks:
+      - id: mypy
+        files: ^src/dodo/
+        additional_dependencies: [numpy>=1.24]
+        # scipy ships no usable stubs for strict mode; pyproject already excludes it.
+        args: [--config-file=pyproject.toml]

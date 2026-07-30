@@ -1,64 +1,166 @@
 name: CI
 
-off:
-  # GitHub has started calling new repo's first branch "main" https://github.com/github/renaming
-  # The cookiecutter uses the "--initial-branch" flag when it runs git-init
+# This key was `off:` for the entire life of the repository. YAML 1.1 parses a bare
+# `off` as boolean false, so it was not even a misspelled string key -- GitHub saw a
+# workflow with no triggers and never ran it. Zero CI signal on a 3,800-line numerics
+# package, which is the direct reason bugs survived verbatim from v1 into v2 and an
+# engine-less 12.7 KB wheel went unnoticed for months.
+#
+# Quoted deliberately: "on" cannot then be re-interpreted as a boolean.
+"on":
   push:
-    branches:
-      - "main"
+    branches: [main, v2_nuke_repave]
   pull_request:
-    branches:
-      - "main"
+    branches: [main, v2_nuke_repave]
   schedule:
-    # Weekly tests run on main by default:
-    #   Scheduled workflows run on the latest commit on the default or base branch.
-    #   (from https://help.github.com/en/actions/reference/events-that-trigger-workflows#scheduled-events-schedule)
-    - cron: "0 0 * * 0"
+    # Weekly, to catch upstream breakage in the scientific stack rather than
+    # discovering it mid-release. Exactly this would have caught the AlphaFold DB
+    # retiring its model_v4 file URLs.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_COLOR: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
+  # The single most valuable job here, and the one that was missing: prove a built
+  # wheel installs into a clean environment and imports. Everything else is secondary,
+  # because a package that does not import cannot be tested at all.
+  install:
+    name: Wheel installs and imports
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # hatch-vcs derives the version from git history; a shallow clone yields the
+          # wrong version or none at all.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Install the wheel into a clean environment
+        run: |
+          python -m venv /tmp/clean
+          /tmp/clean/bin/python -m pip install dist/*.whl
+
+      - name: Import it
+        run: |
+          /tmp/clean/bin/python -c "
+          import dodo
+          from dodo.structure import Structure
+          from dodo import constants, exceptions
+          print('dodo', dodo.__version__, 'imported cleanly')
+          "
+
+      - name: Check the CLI entry point resolves
+        run: /tmp/clean/bin/dodo --help
+
+      - name: Verify metadata is publishable
+        run: |
+          python -m pip install --upgrade twine
+          python -m twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
   test:
-    name: Test on ${{ matrix.os }}, Python ${{ matrix.python-version }}
+    name: Test ${{ matrix.os }} / Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [macOS-latest, ubuntu-latest, windows-latest]
-        python-version: [3.8, 3.9, "3.10"]
+        # 3.10 is the floor (3.8 and 3.9 are end-of-life). 3.13 is included so upstream
+        # breakage surfaces before it reaches users. The old matrix was 3.8/3.9/3.10.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.12", "3.13"]
+        exclude:
+          # Trim the matrix: the middle version on non-Linux adds little signal.
+          - os: macos-latest
+            python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.12"
 
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Additional info about the build
-        shell: bash
-        run: |
-          uname -a
-          df -h
-          ulimit -a
-
-      # More info on options: https://github.com/marketplace/actions/provision-with-micromamba
-      - uses: mamba-org/provision-with-micromamba@main
+      - uses: actions/checkout@v4
         with:
-          environment-file: devtools/conda-envs/test_env.yaml
-          environment-name: test
-          channels: conda-forge,defaults
-          extra-specs: |
-            python=${{ matrix.python-version }}
+          fetch-depth: 0
 
-      - name: Install package
-        # conda setup requires this special shell
-        shell: bash -l {0}
-        run: |
-          python -m pip install . --no-deps
-          micromamba list
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install the package and test dependencies
+        # With dependencies, unlike the old workflow which ran
+        # `pip install . --no-deps` against a conda env that declared no runtime
+        # dependencies -- so the one existing test could never have passed.
+        run: python -m pip install -e ".[test]"
 
       - name: Run tests
-        # conda setup requires this special shell
-        shell: bash -l {0}
-        run: |
-          pytest -v --cov=dodo --cov-report=xml --color=yes dodo/tests/
+        # Network tests are deselected here and run in a dedicated job, so a flaky
+        # connection or an upstream outage does not redden the whole matrix.
+        run: >-
+          python -m pytest
+          -m "not network"
+          --cov=dodo
+          --cov-report=xml
+          --cov-report=term-missing
+          -v
 
-      - name: CodeCov
-        uses: codecov/codecov-action@v1
+      - uses: codecov/codecov-action@v5
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         with:
-          file: ./coverage.xml
+          files: ./coverage.xml
           flags: unittests
-          name: codecov-${{ matrix.os }}-py${{ matrix.python-version }}
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  lint:
+    name: Lint and type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e ".[dev]"
+      - name: ruff check
+        run: python -m ruff check src tests
+      - name: ruff format
+        run: python -m ruff format --check src tests
+      - name: mypy
+        run: python -m mypy
+
+  network:
+    name: Network-dependent tests
+    runs-on: ubuntu-latest
+    # Only on the default branch and on a schedule. These hit the AlphaFold DB, RCSB
+    # and UniProt, so they are inherently flaky and must not gate pull requests.
+    if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e ".[test,lookup]"
+      - name: Run network tests
+        run: python -m pytest -m network -v

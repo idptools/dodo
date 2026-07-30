@@ -1,1 +1,13 @@
-dodo/_version.py export-subst
+# Structure files are text but large and never meaningfully diffed. Marking them stops
+# `git diff` from trying to render a 72,000-line mmCIF.
+*.pdb -diff
+*.cif -diff
+*.ent -diff
+
+# Normalize line endings for source, so the Windows CI leg sees no spurious diffs.
+*.py text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.rst text eol=lf

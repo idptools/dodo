@@ -61,18 +61,33 @@ _LAZY_ATTRS: dict[str, str] = {
     "fetch_alphafold": "dodo.io",
     "fetch_pdb": "dodo.io",
     "resolve_uniprot_accession": "dodo.io",
+    # Region identification
+    "assign_regions": "dodo.regions",
+    "Strategy": "dodo.regions",
+    "RegionAssignment": "dodo.regions",
+    # Target dimensions
+    "target_dimensions": "dodo.construct",
+    "predict_end_to_end": "dodo.construct",
+    "albatross_available": "dodo.construct",
 }
 
 _LAZY_MODULES: tuple[str, ...] = (
     "constants",
+    "construct",
     "exceptions",
     "io",
+    "regions",
     "structure",
 )
 
 if TYPE_CHECKING:
     # Give type checkers and IDEs the real thing; this branch never runs.
-    from . import constants, exceptions, io, structure
+    from . import constants, construct, exceptions, io, regions, structure
+    from .construct import (
+        albatross_available,
+        predict_end_to_end,
+        target_dimensions,
+    )
     from .exceptions import (
         BuildError,
         DodoError,
@@ -90,6 +105,7 @@ if TYPE_CHECKING:
         resolve_uniprot_accession,
         write_pdb,
     )
+    from .regions import RegionAssignment, Strategy, assign_regions
     from .structure import Chain, Domain, DomainKind, Span, Structure
 
 

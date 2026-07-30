@@ -11,6 +11,7 @@ import os
 
 
 # import dodo math stuff
+from dodo.backend import dodo_math
 from dodo.backend.dodo_math import find_points_within_sphere, find_point_closest_to_sphere_surface, calculate_distance, find_furthest_coordinate, find_points_not_clashing
 # import CA generation code.
 from dodo.backend.generate_alpha_carbon_points import generate_ca_points
@@ -106,6 +107,7 @@ def build_loops(chain, loop_domain_index, num_conformations=1, num_attempts=10):
             # get the CA for the previous 2 monomers
             previous_2_CA = np.array(coords_by_index[index-2]['CA'])
             previous_CA = np.array(coords_by_index[index-1]['CA'])
+            print(cur_sphere_radius)
 
 
             # get possible alpha carbon positions
@@ -128,7 +130,11 @@ def build_loops(chain, loop_domain_index, num_conformations=1, num_attempts=10):
                 raise ValueError('No non-clashing points found for loop monomer!')
 
             # if this isn't the final coord we are building, choose a random coord.
-            chosen_coord = find_point_closest_to_sphere_surface(potential_coords, sphere_center, cur_sphere_radius)
+            chosen_coord = dodo_math.find_points_closest_to_sphere_surface(potential_coords, sphere_center, cur_sphere_radius)
+            if len(chosen_coord)>1:
+                chosen_coord = chosen_coord[np.random.randint(0, len(chosen_coord))]
+            else:
+                chosen_coord = chosen_coord[0]
 
             # add the coord to coords_by_index
             coords_by_index[index]['CA'] = chosen_coord
@@ -140,8 +146,8 @@ def build_loops(chain, loop_domain_index, num_conformations=1, num_attempts=10):
         last_monomer = loop_domain.monomers[loop_indices[0]-1]
         last_atoms = last_monomer.atoms
         next_atom_id = last_atoms[list(last_atoms.keys())[-1]].atom_id
-
         loop_ind_num_to_monomer_id = loop_domain.monomer_ind_to_aa
+        
         for index in loop_indices:
             next_atom_id+=1
             # get the CA coord

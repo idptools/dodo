@@ -124,6 +124,7 @@ def position_folded_domain(FD1_index, FD2_index, chain_obj,
     distance = np.linalg.norm(FD1_coord - FD2_coord)
     translation_vector = FD1_coord + (objective_final_distance/distance)*(FD2_coord-FD1_coord) - FD2_coord
     FD2.translate(translation_vector)
+    chain_obj.update_domain(FD2, FD2_index)
 
     return FD2
 
@@ -184,5 +185,6 @@ def position_folded_domain_linear(FD1_index, FD2_index, chain_obj,
     distance = np.linalg.norm(FD1_coord - FD2_coord)
     translation_vector = FD1_coord + (objective_final_distance/distance)*(FD2_coord-FD1_coord) - FD2_coord
     FD2.translate(translation_vector)
+    chain_obj.update_domain(FD2, FD2_index)
 
     return FD2

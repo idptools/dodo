@@ -224,6 +224,9 @@ def generate_random_points_by_distance(origins, distances):
 
     return points
 
+
+
+
 def generate_random_points_by_distance_mult(origins, distances, num_points):
     '''
     Generates multiple random points that are given distances away from the origins.
@@ -380,6 +383,7 @@ def find_points_closest_to_sphere_surface(points_of_interest,
         else:
             raise ValueError('No points found within allowed error')
     return points_within_error
+
 
 def get_random_coordinates_on_sphere_surface(starting_coordinate, radius, num_coordinates):
     '''

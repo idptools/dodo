@@ -135,24 +135,50 @@ OMEGA_TRANS: Final[float] = 180.0
 # Region identification
 # ---------------------------------------------------------------------------
 
-#: All-atom contact radius in Angstroms for the folded/disordered score. TUNED.
-#: Larger values merge folded domains that AF2 happens to park close in space.
-CONTACT_RADIUS: Final[float] = 8.0
+#: CA-CA contact radius in Angstroms for the folded/disordered score.
+#:
+#: MEASURED. Chosen by sweeping 8-16 A against three real structures (arf19, dnmt3a,
+#: p300) and scoring how well the resulting counts separate known folded domains from
+#: known IDRs. Balanced accuracy by radius:
+#:
+#:     8 A: 86 / 99 / 90 %      12 A: 96 / 100 / 95 %
+#:    10 A: 93 / 100 / 93 %     14 A: 99 / 100 / 96 %
+#:
+#: Accuracy keeps climbing past 12, but so does the risk of merging folded domains that
+#: happen to sit close together in space -- and the per-structure optimal *threshold*
+#: starts diverging (at 14 A the three want 15, 6 and 20; at 12 A the two informative
+#: ones agree on 10 and 11). 12 A is where accuracy is high and the threshold is stable.
+CONTACT_RADIUS: Final[float] = 12.0
 
 #: CA-only contact radius in Angstroms for the loop-detection score. TUNED.
+#: Deliberately tighter than CONTACT_RADIUS: a loop is about local backbone packing,
+#: not about how much of the domain is nearby.
 LOOP_CONTACT_RADIUS: Final[float] = 7.0
 
-#: Folded/disordered cutoff for the *normalized* contact score.
+#: Folded/disordered cutoff: number of non-local CA neighbours within CONTACT_RADIUS.
 #:
-#: CHOICE, and a deliberate departure from the pre-rewrite code. v1 and v2 both
-#: thresholded a raw atom-*pair* count at 480, which scales with a residue's own
-#: heavy-atom count: measured within a single folded domain, the correlation between
-#: heavy-atom count and score was r = 0.65, every glycine fell below 480 (mean 292)
-#: and 94% of Trp/Phe/Tyr sat above it (mean 943). That systematically calls
-#: glycine-rich folded segments disordered and aromatic-rich disordered segments
-#: folded. We normalize per heavy atom instead, so this threshold is contacts per
-#: atom, not pairs. See regions/contact.py for the conversion rationale.
-CONTACT_SCORE_THRESHOLD: Final[float] = 26.0
+#: MEASURED, and a deliberate departure from the pre-rewrite code in two ways.
+#:
+#: First, v1 and v2 both thresholded a raw atom-*pair* count at 480, which scales with a
+#: residue's own heavy-atom count. Measured within a single folded domain, the correlation
+#: between heavy-atom count and score was r = 0.65: every glycine fell below the cutoff
+#: (mean 292) while 94% of Trp/Phe/Tyr sat above it (mean 943). That systematically calls
+#: glycine-rich folded segments disordered and aromatic-rich disordered segments folded.
+#: Counting neighbouring *residues* by their alpha carbons removes the bias completely,
+#: because every residue has exactly one CA regardless of composition.
+#:
+#: Second, an all-atom score is not comparable across inputs. Measured on arf19, the
+#: same structure stripped to CA-only scored 0.26x its all-atom value, so one threshold
+#: cannot serve both. That matters because DODO must handle full AF2 models, experimental
+#: structures with unmodelled side chains, and its own partly-CA-only output. A CA-only
+#: score is scale-invariant by construction: measured ratio 1.000.
+#:
+#: The value 10 is the lower of the two per-structure optima (10 and 11), chosen
+#: deliberately because the two errors are not symmetric. Calling a folded domain
+#: disordered replaces real structure with a random walk; calling an IDR folded merely
+#: leaves AlphaFold's own coordinates in place. So err toward folded, which means the
+#: lower threshold.
+CONTACT_SCORE_THRESHOLD: Final[float] = 10.0
 
 #: Smoothing window (residues) applied to the contact score before thresholding.
 #: CHOICE. The raw per-residue score is noisy enough to fragment a single domain
@@ -233,12 +259,31 @@ DEFAULT_MODE: Final[str] = "predicted"
 #: for chemically denatured proteins, and Re = sqrt(6) * Rg for an ideal chain, giving
 #: a prefactor of sqrt(6) * 2.54 = 6.22.
 #:
-#: This is an approximation and it is not ALBATROSS. It tracks the prediction well at
-#: short-to-moderate N and underestimates it for long, expanded sequences, and it is
-#: blind to sequence composition entirely -- two 200-residue IDRs of very different
-#: charge patterning get the same answer. It exists so the lite install produces
-#: physically sane dimensions rather than a linear-in-N guess, not so anyone can
-#: skip installing sparrow for real work.
+#: HOW GOOD IS IT? Benchmarked against ALBATROSS over 72 sequences spanning six
+#: compositional classes and N = 20-1000. Ratio of this estimate to the prediction:
+#: mean 0.97, and per class at N = 500 --
+#:
+#:     polar          0.95x       polyampholyte  0.92x
+#:     proline-rich   0.74x       polyanionic    0.62x
+#:     polycationic   0.64x       hydrophobic    2.62x
+#:
+#: So for genuine IDR compositions it lands within roughly 0.6-0.95x, erring compact.
+#: The charged classes are the worst of those because polyelectrolyte expansion pushes
+#: their scaling exponent to 0.60-0.64, well above the 0.52 baked in here.
+#:
+#: The 2.62x outlier is instructive and is NOT a fitting failure: a sequence drawn
+#: uniformly from all 20 amino acids is hydrophobic-rich, and ALBATROSS correctly
+#: predicts a collapsed globule (measured scaling exponent 0.20, Re = 61 A at N = 500).
+#: Such a sequence is not disordered at all, so no length-only law can describe it.
+#:
+#: The lesson: the irreducible error here is COMPOSITIONAL, not a matter of tuning. At
+#: N = 500 the true Re spans 3.4x across compositions at fixed length, so refitting the
+#: exponent cannot help -- it was tried, and a global refit (6.32 * N^0.537) came out
+#: worse-centred (mean ratio 1.06). These values stay because they are citable and
+#: better-centred.
+#:
+#: Use this to keep the dependency-light install functional and physically sane, not to
+#: avoid installing sparrow for real work.
 FLORY_RE_PREFACTOR: Final[float] = 6.22
 FLORY_RE_EXPONENT: Final[float] = 0.522
 

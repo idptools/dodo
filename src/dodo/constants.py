@@ -1,0 +1,478 @@
+"""Single source of truth for every physical and algorithmic constant in DODO.
+
+Nothing in this package should hardcode a distance, angle, or threshold. v1 and the
+first v2 attempt both accumulated several divergent copies of the same numbers -- at
+one point three different values of ``super_compact`` and three different CA-CA bond
+lengths were live simultaneously -- and reconciling them after the fact was the
+single most expensive part of the rewrite. Everything lands here instead, with its
+provenance recorded, so a future reader can tell a measured value from a tuned knob
+from a guess.
+
+Provenance tags used in comments below:
+  MEASURED  -- derived from structural data; the source is named.
+  TUNED     -- fit empirically against AF2 structures by the original author. The
+               tuning dataset was not preserved, so these should not be changed
+               without re-tuning.
+  DERIVED   -- computed from other constants in this file.
+  CHOICE    -- an arbitrary but deliberate engineering decision.
+"""
+
+from __future__ import annotations
+
+from typing import Final
+
+import numpy as np
+
+# ---------------------------------------------------------------------------
+# Backbone geometry
+# ---------------------------------------------------------------------------
+
+#: Virtual CA(i)-CA(i+1) distance in Angstroms.
+#:
+#: MEASURED. The trans-peptide CA-CA virtual bond length is 3.80-3.81 A and is
+#: remarkably rigid (cis-proline, at ~2.9 A, is the only common exception and DODO
+#: does not model it).
+#:
+#: This value was inconsistent across the pre-rewrite code: v1's ``parameters.py``
+#: said 3.8, v2's cone generator used 3.856, and one distance table used 3.89. 3.8
+#: is both the most common and the most defensible, so it wins and the others are
+#: gone. Note that the CA-CA-CA angle schedules were tuned against 3.856, so if
+#: rebuilt geometry looks subtly off, this is the first thing to suspect.
+CA_CA_BOND_LENGTH: Final[float] = 3.80
+
+#: Acceptable spread on the CA-CA bond when closing onto a fixed anchor, in A.
+#: CHOICE. Wide enough that closure is achievable, tight enough that a viewer still
+#: draws the bond.
+CA_CA_BOND_TOLERANCE: Final[float] = 0.10
+
+#: Minimum non-bonded CA-CA approach distance in Angstroms.
+#:
+#: TUNED. v1's ``parameters.py`` established 3.2 and that is what we keep. It is
+#: permissive: two CAs in a real packed core rarely come closer than ~4.5 A. But
+#: DODO builds compact coils into cavities left by folded domains, and a 4.5 A
+#: exclusion makes many closures geometrically impossible. 3.2 is the compromise.
+CA_CLASH_DISTANCE: Final[float] = 3.20
+
+#: Relaxation ladder applied when no candidate satisfies CA_CLASH_DISTANCE.
+#:
+#: CHOICE. Tried in order; the first value yielding a non-empty candidate set wins.
+#: Accepting a mild clash is strictly better than aborting the build, but the caller
+#: is told which rung was used so it can be reported rather than hidden.
+CLASH_RELAXATION_LADDER: Final[tuple[float, ...]] = (3.20, 2.80, 2.50, 2.00)
+
+#: Residue separation below which a CA pair is exempt from clash checking.
+#:
+#: DERIVED from chain connectivity: |i-j| == 1 are covalently bonded at 3.8 A and
+#: |i-j| == 2 are geometrically constrained by the backbone angle to 5.0-7.5 A.
+#: Neither is a clash. The pre-rewrite code had no such exclusion, which is why
+#: its whole-structure clash check reported every peptide bond as a violation.
+CLASH_EXCLUDE_WITHIN_RESIDUES: Final[int] = 2
+
+# ---------------------------------------------------------------------------
+# CA-CA-CA pseudo-angle model
+# ---------------------------------------------------------------------------
+#
+# MEASURED from AlphaFold2 structures by the original author: the CA(i-1)-CA(i)-CA(i+1)
+# pseudo-angle has mean ~125 deg and standard deviation ~26 deg, with an observed
+# range of 75-179 deg.
+#
+# Restricting generated angles to a window is what keeps a backbone from folding back
+# on itself: the pre-rewrite IDR builder had no angle constraint at all and produced
+# measured angles as sharp as 47 deg, which no real trace exhibits and which cannot be
+# reconstructed to all-atom.
+
+BACKBONE_ANGLE_MEAN: Final[float] = 125.0  # MEASURED
+BACKBONE_ANGLE_SD: Final[float] = 26.0  # MEASURED
+BACKBONE_ANGLE_OBSERVED_MIN: Final[float] = 75.0  # MEASURED
+BACKBONE_ANGLE_OBSERVED_MAX: Final[float] = 179.0  # MEASURED
+
+#: Sampling window for generated backbones, in degrees.
+#:
+#: TUNED. Carried over from the original author's generator. Relative to the measured
+#: distribution this is mean -1.31 sd to mean +1.38 sd, so it covers roughly the central
+#: 80% of observed angles -- deliberately tighter than the full observed 75-179 range,
+#: to keep sampling away from the rare extremes while still spanning helix-like (~91 deg)
+#: through extended (~161 deg) geometry.
+#:
+#: Note it is *not* symmetric about the mean and not a round number of standard
+#: deviations, so do not "tidy" it into mean +/- 1 sd: that would narrow the window to
+#: 99-151 and exclude helical geometry.
+BACKBONE_ANGLE_MIN: Final[float] = 91.0
+BACKBONE_ANGLE_MAX: Final[float] = 161.0
+
+#: Preferred angle. Candidates are ordered by |angle - ideal| so that a
+#: first-non-clashing search naturally prefers realistic geometry.
+BACKBONE_ANGLE_IDEAL: Final[float] = BACKBONE_ANGLE_MEAN
+
+#: Candidate positions generated per angle in the cone template. CHOICE: 10 x 71
+#: angles = 710 candidates per step, which empirically finds a non-clashing option
+#: on the first pass in the overwhelming majority of cases.
+CANDIDATES_PER_ANGLE: Final[int] = 10
+
+# ---------------------------------------------------------------------------
+# All-atom backbone geometry
+# ---------------------------------------------------------------------------
+#
+# MEASURED (standard peptide geometry). v1 declared correct values in parameters.py
+# and then never imported them: its all-atom module added unit vectors without
+# scaling by bond length, producing CA-C at exactly 1.000 A and peptide bonds at
+# 2.87 A. These are the real numbers and they are used.
+
+N_CA_BOND_LENGTH: Final[float] = 1.458  # MEASURED
+CA_C_BOND_LENGTH: Final[float] = 1.525  # MEASURED
+C_O_BOND_LENGTH: Final[float] = 1.231  # MEASURED
+C_N_PEPTIDE_BOND_LENGTH: Final[float] = 1.329  # MEASURED
+
+N_CA_C_ANGLE: Final[float] = 111.0  # MEASURED, degrees
+CA_C_N_ANGLE: Final[float] = 116.2  # MEASURED, degrees
+C_N_CA_ANGLE: Final[float] = 121.7  # MEASURED, degrees
+CA_C_O_ANGLE: Final[float] = 120.8  # MEASURED, degrees
+
+#: Backbone omega dihedral for a trans peptide, in degrees. MEASURED.
+OMEGA_TRANS: Final[float] = 180.0
+
+# ---------------------------------------------------------------------------
+# Region identification
+# ---------------------------------------------------------------------------
+
+#: All-atom contact radius in Angstroms for the folded/disordered score. TUNED.
+#: Larger values merge folded domains that AF2 happens to park close in space.
+CONTACT_RADIUS: Final[float] = 8.0
+
+#: CA-only contact radius in Angstroms for the loop-detection score. TUNED.
+LOOP_CONTACT_RADIUS: Final[float] = 7.0
+
+#: Folded/disordered cutoff for the *normalized* contact score.
+#:
+#: CHOICE, and a deliberate departure from the pre-rewrite code. v1 and v2 both
+#: thresholded a raw atom-*pair* count at 480, which scales with a residue's own
+#: heavy-atom count: measured within a single folded domain, the correlation between
+#: heavy-atom count and score was r = 0.65, every glycine fell below 480 (mean 292)
+#: and 94% of Trp/Phe/Tyr sat above it (mean 943). That systematically calls
+#: glycine-rich folded segments disordered and aromatic-rich disordered segments
+#: folded. We normalize per heavy atom instead, so this threshold is contacts per
+#: atom, not pairs. See regions/contact.py for the conversion rationale.
+CONTACT_SCORE_THRESHOLD: Final[float] = 26.0
+
+#: Smoothing window (residues) applied to the contact score before thresholding.
+#: CHOICE. The raw per-residue score is noisy enough to fragment a single domain
+#: into dozens of blocks, which is what masked v1's two domain-merge bugs.
+CONTACT_SCORE_SMOOTHING_WINDOW: Final[int] = 7
+
+#: A residue is "loop-like" if fewer than this many other CAs lie within
+#: LOOP_CONTACT_RADIUS. TUNED. Physical basis: a packed-core CA has ~6-10 CA
+#: neighbours within 7 A; an extended loop has 2-4.
+LOOP_CONTACT_CUTOFF: Final[int] = 6
+
+#: Minimum length in residues of a rebuildable loop inside a folded domain.
+#:
+#: TUNED at 10, but note the pre-rewrite code compared with strict ``>``, making the
+#: effective minimum 11 while the docs said 10. We compare with ``>=`` so the
+#: constant means what it says. That is a deliberate one-residue behaviour change.
+MIN_LOOP_LENGTH: Final[int] = 10
+
+#: Longest run of low-contact residues that stays *inside* one folded domain.
+#:
+#: TUNED at 25. The pre-rewrite code used a single ``gap_thresh`` knob for this AND
+#: for the minimum acceptable folded-domain length, which are unrelated quantities.
+#: They are split here.
+MAX_INTERNAL_GAP: Final[int] = 25
+
+#: Shortest run of folded residues that counts as a folded domain. Split from
+#: MAX_INTERNAL_GAP, above; TUNED to the same starting value.
+MIN_FOLDED_DOMAIN_LENGTH: Final[int] = 25
+
+#: Minimum number of consecutive above-threshold residues to seed a folded block.
+MIN_FOLDED_SEED_RUN: Final[int] = 2
+
+#: Shortest IDR worth rebuilding. Below this, leave the input coordinates alone --
+#: there is no meaningful polymer statistics to impose on 3 residues.
+MIN_IDR_LENGTH: Final[int] = 4
+
+#: pLDDT below which an AF2 residue is treated as disordered. CHOICE, following the
+#: widely used AF2 confidence bands (<50 very low, 50-70 low, 70-90 confident).
+#: pLDDT is already in the B-factor column and the pre-rewrite code never looked at
+#: it, re-deriving confidence geometrically from coordinates instead.
+PLDDT_DISORDER_THRESHOLD: Final[float] = 70.0
+
+# ---------------------------------------------------------------------------
+# Chain dimension targets
+# ---------------------------------------------------------------------------
+
+#: Named build modes, as multipliers on the predicted end-to-end distance.
+#:
+#: This is the substantive scientific change in v2. v1 expressed these as Angstroms
+#: *per residue*, i.e. linear in N, but real IDR end-to-end distance scales as
+#: roughly N^0.52. A fixed A/residue multiplier can therefore only agree with the
+#: prediction at one chain length: v1's "normal" (0.8 A/res) gives 80 A at N=100
+#: (about right) and 400 A at N=500, where the prediction is closer to 200 A.
+#:
+#: Rebasing onto the prediction makes every knob length-independent: "expanded"
+#: means 1.3x whatever this sequence's predicted dimension is, at any length.
+#:
+#: DERIVED from v1's multipliers by dividing through by v1's "normal" (0.8), then
+#: rounded. Note this makes "normal" and "predicted" synonyms, which they were
+#: not in v1 -- a deliberate, documented break.
+MODES: Final[dict[str, float]] = {
+    "super_compact": 0.4,
+    "compact": 0.7,
+    "normal": 1.0,
+    "predicted": 1.0,
+    "expanded": 1.3,
+    "super_expanded": 1.6,
+    "max_expansion": 2.0,
+}
+
+#: Default mode when the caller does not specify one.
+DEFAULT_MODE: Final[str] = "predicted"
+
+#: Analytical fallback for end-to-end distance when ALBATROSS is unavailable
+#: (the dependency-light "lite" install), as Re = PREFACTOR * N ** EXPONENT in A.
+#:
+#: MEASURED, indirectly: Kohn et al. (2004) PNAS 101:12491 report Rg = 2.54 * N^0.522
+#: for chemically denatured proteins, and Re = sqrt(6) * Rg for an ideal chain, giving
+#: a prefactor of sqrt(6) * 2.54 = 6.22.
+#:
+#: This is an approximation and it is not ALBATROSS. It tracks the prediction well at
+#: short-to-moderate N and underestimates it for long, expanded sequences, and it is
+#: blind to sequence composition entirely -- two 200-residue IDRs of very different
+#: charge patterning get the same answer. It exists so the lite install produces
+#: physically sane dimensions rather than a linear-in-N guess, not so anyone can
+#: skip installing sparrow for real work.
+FLORY_RE_PREFACTOR: Final[float] = 6.22
+FLORY_RE_EXPONENT: Final[float] = 0.522
+
+#: Sequence length below which sparrow's ALBATROSS networks need their "scaled"
+#: variant. Mirrors ``sparrow.data.configs.MIN_LENGTH_ALBATROSS_RE_RG``. Most loops
+#: DODO rebuilds are shorter than this, so it matters more than it looks.
+#: Re-read from sparrow at runtime when available rather than trusted blindly.
+ALBATROSS_MIN_LENGTH: Final[int] = 35
+
+# ---------------------------------------------------------------------------
+# Conformation engines
+# ---------------------------------------------------------------------------
+
+#: Hard cap on sequence length for the STARLING engine, in residues.
+#:
+#: Observed against STARLING 2.0.2. Longer IDRs are handled by hierarchical segment
+#: assembly (see engines/hierarchical.py) rather than by erroring out. Queried from
+#: STARLING at runtime where it exposes the limit; this is the fallback.
+STARLING_MAX_LENGTH: Final[int] = 380
+
+#: Residues of overlap between adjacent STARLING segments in hierarchical assembly.
+#: CHOICE. Splicing inside an overlap preserves locally correct backbone statistics
+#: across the junction; butt-joining two independently generated segments does not.
+SEGMENT_SPLICE_OVERLAP: Final[int] = 10
+
+# ---------------------------------------------------------------------------
+# Sampling budgets
+# ---------------------------------------------------------------------------
+
+#: Candidate positions evaluated per residue before the step is declared failed.
+MAX_CANDIDATES_PER_RESIDUE: Final[int] = 1000
+
+#: Restarts of a whole region before the build is declared failed.
+MAX_ATTEMPTS_PER_REGION: Final[int] = 40
+
+#: Candidate placements tried when positioning a folded domain.
+MAX_FD_PLACEMENT_ATTEMPTS: Final[int] = 500
+
+#: Conformers generated per batch in the vectorized walk.
+WALK_BATCH_SIZE: Final[int] = 50
+
+# ---------------------------------------------------------------------------
+# Output formatting
+# ---------------------------------------------------------------------------
+
+#: CRYST1 box dimensions in Angstroms. Purely cosmetic -- DODO does not do periodic
+#: boundaries -- but some viewers want the record present.
+DEFAULT_BOX_DIMENSIONS: Final[tuple[float, float, float]] = (500.0, 500.0, 500.0)
+
+#: Residues per SEQRES line, per the PDB format specification.
+RESIDUES_PER_SEQRES_LINE: Final[int] = 13
+
+#: B-factor values written when annotating regions for visualization.
+#:
+#: Note the polarity: folded = 100, disordered = 0, so that colouring by B-factor in
+#: a viewer highlights the folded core. v1's docstrings claimed the opposite in three
+#: places while its README and CLI help were correct; the code did this.
+BETA_FOLDED: Final[float] = 100.0
+BETA_DISORDERED: Final[float] = 0.0
+
+#: Largest residue number representable in the PDB format's 4-column resSeq field.
+MAX_PDB_RESIDUE_NUMBER: Final[int] = 9999
+
+#: Largest atom serial representable in the PDB format's 5-column serial field.
+#: Beyond this, real files switch to hybrid-36 encoding.
+MAX_PDB_ATOM_SERIAL: Final[int] = 99999
+
+# ---------------------------------------------------------------------------
+# Element data
+# ---------------------------------------------------------------------------
+
+#: Atomic masses in unified atomic mass units, for centre-of-mass calculations.
+#:
+#: The pre-rewrite code carried two disagreeing copies of this table -- one if/elif
+#: ladder and one dict, differing on C, O, S and P and on whether Se existed at all.
+#: This is the only copy.
+ATOMIC_MASSES: Final[dict[str, float]] = {
+    "H": 1.008,
+    "C": 12.011,
+    "N": 14.007,
+    "O": 15.999,
+    "S": 32.06,
+    "P": 30.974,
+    "SE": 78.971,  # selenomethionine
+}
+
+#: Three-letter to one-letter residue codes, including the modified residues that
+#: appear in real deposited structures as HETATM records.
+THREE_TO_ONE: Final[dict[str, str]] = {
+    "ALA": "A",
+    "ARG": "R",
+    "ASN": "N",
+    "ASP": "D",
+    "CYS": "C",
+    "GLN": "Q",
+    "GLU": "E",
+    "GLY": "G",
+    "HIS": "H",
+    "ILE": "I",
+    "LEU": "L",
+    "LYS": "K",
+    "MET": "M",
+    "PHE": "F",
+    "PRO": "P",
+    "SER": "S",
+    "THR": "T",
+    "TRP": "W",
+    "TYR": "Y",
+    "VAL": "V",
+    # Modified residues that are part of the polymer backbone and must not be
+    # dropped. Discarding MSE in particular fabricates a phantom chain break,
+    # which the pre-rewrite reader did.
+    "MSE": "M",  # selenomethionine
+    "SEC": "U",  # selenocysteine
+    "PYL": "O",  # pyrrolysine
+    "HYP": "P",  # hydroxyproline
+    "SEP": "S",  # phosphoserine
+    "TPO": "T",  # phosphothreonine
+    "PTR": "Y",  # phosphotyrosine
+    "MLY": "K",  # methyllysine
+    "CSO": "C",  # oxidized cysteine
+    "CME": "C",  # modified cysteine
+    "UNK": "X",
+}
+
+ONE_TO_THREE: Final[dict[str, str]] = {
+    "A": "ALA",
+    "R": "ARG",
+    "N": "ASN",
+    "D": "ASP",
+    "C": "CYS",
+    "Q": "GLN",
+    "E": "GLU",
+    "G": "GLY",
+    "H": "HIS",
+    "I": "ILE",
+    "L": "LEU",
+    "K": "LYS",
+    "M": "MET",
+    "F": "PHE",
+    "P": "PRO",
+    "S": "SER",
+    "T": "THR",
+    "W": "TRP",
+    "Y": "TYR",
+    "V": "VAL",
+    "X": "UNK",
+}
+
+#: Backbone atom names, in the canonical order they appear within a residue.
+BACKBONE_ATOMS: Final[tuple[str, ...]] = ("N", "CA", "C", "O")
+
+#: Heavy-atom counts per residue, used to normalize the contact score. DERIVED by
+#: counting non-hydrogen atoms in each standard residue.
+HEAVY_ATOM_COUNTS: Final[dict[str, int]] = {
+    "GLY": 4,
+    "ALA": 5,
+    "SER": 6,
+    "CYS": 6,
+    "PRO": 7,
+    "VAL": 7,
+    "THR": 7,
+    "MET": 8,
+    "ASN": 8,
+    "LEU": 8,
+    "ILE": 8,
+    "ASP": 8,
+    "LYS": 9,
+    "GLU": 9,
+    "GLN": 9,
+    "HIS": 10,
+    "PHE": 11,
+    "TYR": 12,
+    "ARG": 11,
+    "TRP": 14,
+}
+
+
+def flory_end_to_end(n_residues: int) -> float:
+    """Analytical end-to-end distance estimate in Angstroms.
+
+    The dependency-free fallback used when sparrow/ALBATROSS is not installed. See
+    :data:`FLORY_RE_PREFACTOR` for provenance and limitations -- in particular this
+    is blind to sequence composition and underestimates long expanded chains.
+
+    Parameters
+    ----------
+    n_residues
+        Number of residues in the disordered region. Must be positive.
+
+    Returns
+    -------
+    float
+        Estimated mean end-to-end distance in Angstroms.
+    """
+    if n_residues <= 0:
+        raise ValueError(f"n_residues must be positive, got {n_residues}")
+    return float(FLORY_RE_PREFACTOR * n_residues**FLORY_RE_EXPONENT)
+
+
+def contour_length(n_residues: int) -> float:
+    """Fully extended CA-trace length in Angstroms.
+
+    The physical ceiling on any end-to-end distance: a target above this is
+    unsatisfiable and callers should clamp to it rather than spin.
+    """
+    if n_residues <= 0:
+        raise ValueError(f"n_residues must be positive, got {n_residues}")
+    return float((n_residues - 1) * CA_CA_BOND_LENGTH)
+
+
+def resolve_mode(mode: str) -> float:
+    """Map a named build mode to its multiplier on predicted end-to-end distance.
+
+    Raises
+    ------
+    ValueError
+        If ``mode`` is not a recognized mode name. The message lists the valid
+        options, since this is the most common user-facing input error.
+    """
+    try:
+        return MODES[mode]
+    except KeyError:
+        valid = ", ".join(sorted(MODES))
+        raise ValueError(f"Unknown mode {mode!r}. Valid modes are: {valid}") from None
+
+
+def backbone_angle_grid() -> np.ndarray:
+    """Integer-degree CA-CA-CA angles to sample, ordered by preference.
+
+    Ordered by distance from :data:`BACKBONE_ANGLE_IDEAL` so that a caller taking
+    the first non-clashing candidate automatically prefers realistic geometry. The
+    pre-rewrite vectorized generator lost this ordering (it emitted 91, 92, 93...),
+    silently discarding the bias toward physically likely angles.
+    """
+    angles = np.arange(BACKBONE_ANGLE_MIN, BACKBONE_ANGLE_MAX + 1.0)
+    return angles[np.argsort(np.abs(angles - BACKBONE_ANGLE_IDEAL), kind="stable")]

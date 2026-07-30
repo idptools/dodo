@@ -53,17 +53,26 @@ _LAZY_ATTRS: dict[str, str] = {
     "RegionIdentificationError": "dodo.exceptions",
     "StructureFileError": "dodo.exceptions",
     "MissingDependencyError": "dodo.exceptions",
+    # Structure I/O
+    "read_structure": "dodo.io",
+    "read_pdb": "dodo.io",
+    "read_cif": "dodo.io",
+    "write_pdb": "dodo.io",
+    "fetch_alphafold": "dodo.io",
+    "fetch_pdb": "dodo.io",
+    "resolve_uniprot_accession": "dodo.io",
 }
 
 _LAZY_MODULES: tuple[str, ...] = (
     "constants",
     "exceptions",
+    "io",
     "structure",
 )
 
 if TYPE_CHECKING:
     # Give type checkers and IDEs the real thing; this branch never runs.
-    from . import constants, exceptions, structure
+    from . import constants, exceptions, io, structure
     from .exceptions import (
         BuildError,
         DodoError,
@@ -71,6 +80,15 @@ if TYPE_CHECKING:
         MissingDependencyError,
         RegionIdentificationError,
         StructureFileError,
+    )
+    from .io import (
+        fetch_alphafold,
+        fetch_pdb,
+        read_cif,
+        read_pdb,
+        read_structure,
+        resolve_uniprot_accession,
+        write_pdb,
     )
     from .structure import Chain, Domain, DomainKind, Span, Structure
 

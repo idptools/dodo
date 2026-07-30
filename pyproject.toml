@@ -184,6 +184,9 @@ markers = [
 line-length = 100
 src = ["src", "tests"]
 target-version = "py310"
+# _version.py is written by hatch-vcs at build time. Linting it means every regeneration
+# can reintroduce a violation nobody can fix in source.
+extend-exclude = ["src/dodo/_version.py"]
 
 [tool.ruff.lint]
 select = [

@@ -23,7 +23,8 @@ def build_candidate_idrs(num_residues, num_idrs, idr_expansion='standard',
                          points_to_check_clashing=None,
                          end_point_dist_range=(3.7, 4.0),
                          batch_size=50,
-                         max_attempts=10):
+                         max_attempts=10, 
+                         chain=None):
     """
     build a bunch of candidate IDRs using the generate_alpha_carbon_points
     functionality. Uses vectorized numpy magic to keep things fast.
@@ -51,6 +52,8 @@ def build_candidate_idrs(num_residues, num_idrs, idr_expansion='standard',
         number of IDRs to try generating in each batch
     max_attempts : int
         maximum number of attempts to generate the requested number of IDRs
+    chain : Chain
+        Chain object that we are building IDRs for
 
     Returns
     -------
@@ -61,7 +64,7 @@ def build_candidate_idrs(num_residues, num_idrs, idr_expansion='standard',
         raise NotImplementedError('Only standard IDR expansion is supported for now.')
 
     # set total distance for end-to-end
-    total_distance = 1.4 * num_residues
+    total_distance = 1 * num_residues
     
     # Initialize array to store successful IDRs
     successful_idrs = []
@@ -124,6 +127,14 @@ def build_candidate_idrs(num_residues, num_idrs, idr_expansion='standard',
                     clash_points_per_idr[j],
                     3.0
                 )
+                
+                # if chain is not none, use the check_if_coords_clash chain method
+                if chain is not None:
+                    clashing_indices = chain.check_if_coords_clash(non_clashing)
+                    clashing_indices = [i for i in range(0, len(clashing_indices)) if len(clashing_indices[i]) != 0]
+                    # delete clashing indices, these are anything where the length of the list is not 0
+                    non_clashing = np.delete(non_clashing, clashing_indices, axis=0)
+
 
                 if len(non_clashing) == 0:
                     continue
@@ -140,11 +151,20 @@ def build_candidate_idrs(num_residues, num_idrs, idr_expansion='standard',
                 if len(valid_points) == 0:
                     continue
 
-                best_point = dodo_math.find_point_closest_to_sphere_surface(
+                best_point = dodo_math.find_points_closest_to_sphere_surface(
                     valid_points, 
                     cur_sphere_center, 
                     cur_sphere_radius
                 )
+                
+                # choose a random point if there are multiple
+                if len(best_point) > 1:
+                    best_point = best_point[np.random.randint(0, len(best_point))]
+                else:
+                    # make sure shape of best_point is (3,)
+                    best_point=best_point[0]
+                    best_point = best_point.reshape(3)
+
 
                 if i > 1:
                     dist_to_prev = np.linalg.norm(best_point - all_coords[j, i-1])
@@ -181,3 +201,82 @@ def build_candidate_idrs(num_residues, num_idrs, idr_expansion='standard',
 
     # Convert to numpy array and return only the requested number of IDRs
     return np.array(successful_idrs[:num_idrs])
+
+
+
+
+
+
+
+def build_idrs(chain, domain_ind, num_conformations=1, idr_expansion='standard'):
+    """
+    Build IDRs for a given domain in a chain.
+
+    Parameters
+    ----------
+    chain : Chain
+        Chain object containing the domain to build IDRs for
+    domain_ind : int
+        Index of the domain to build IDRs for
+    num_conformations : int
+        Number of conformations to generate for the IDRs
+    idr_expansion : str
+        How expanded we want the IDR to be. Options are 'compact',
+        'standard', 'expanded'. Default is 'standard'.
+    """
+    # get the domain
+    domain = chain.get_domain(domain_ind)
+    # get num residues
+    num_residues = len(domain.sequence)
+
+    if domain_ind==0:
+        end_coord = chain.get_domain(domain_ind+1).get_start_coord()
+        # now get coords that are a sphere from end coord radius 1.4*num_residues
+        potential_coords = dodo_math.get_random_coordinates_on_sphere_surface(end_coord, 1*num_residues, 100)
+        # find coordinates that do not clash with the chain
+        not_clashing = dodo_math.find_points_not_clashing(potential_coords, chain.get_coordinates_array(), 3.0)
+        # choose a random coordinate
+        start_coord = not_clashing[np.random.randint(0, len(not_clashing))]
+        
+    elif domain_ind==len(chain.domains)-1:
+        start_coord = chain.get_domain(domain_ind-1).get_end_coord()
+        # now get coords that are a sphere from start coord radius 1.4*num_residues
+        potential_coords = dodo_math.get_random_coordinates_on_sphere_surface(start_coord, 1*num_residues, 100)
+        # find coordinates that do not clash with the chain
+        not_clashing = dodo_math.find_points_not_clashing(potential_coords, chain.get_coordinates_array(), 3.0)
+        # choose a random coordinate
+        end_coord = not_clashing[np.random.randint(0, len(not_clashing))]
+    
+    else:
+        start_coord = chain.get_domain(domain_ind-1).get_end_coord()
+        end_coord = chain.get_domain(domain_ind+1).get_start_coord()
+
+
+    # Force cache invalidation and rebuild before getting coordinates
+    domain.invalidate_cache()
+
+    
+    # build the IDRs
+    idrs = build_candidate_idrs(num_residues, num_conformations, idr_expansion,
+                                start_coord, end_coord,
+                                batch_size=1,
+                                max_attempts=10, 
+                                chain=chain)
+    
+    # Coarse grain the domain to CA-only before updating coordinates
+    domain.coarse_grain()
+    
+    # Get the reshaped coordinates (num_residues x 3)
+    coords = idrs.reshape(num_residues, 3)
+    
+    # Update coordinates one monomer at a time
+    for idx, (monomer_number, monomer) in enumerate(domain.monomers.items()):
+        if idx < len(coords):  # Make sure we don't exceed the coords array
+            for atom in monomer.atoms.values():
+                if atom.atom_name == 'CA':  # Only update CA atoms
+                    atom.x_coord = float(coords[idx][0])
+                    atom.y_coord = float(coords[idx][1])
+                    atom.z_coord = float(coords[idx][2])
+    
+    # Invalidate the domain's coordinate cache
+    domain.invalidate_cache()

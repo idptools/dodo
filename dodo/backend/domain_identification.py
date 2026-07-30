@@ -279,7 +279,7 @@ def get_fds_loops_idrs(DodoComplex, threshold=480, gap_thresh=25,
         cur_dom = DodoComplex.get_chain(cur_chain_id).get_domain(0)
         DodoComplex.get_chain(cur_chain_id).remove_domain(cur_dom.domain_id)
 
-        # organize regions, the sort.
+        # organize regions, then sort
         all_regions = non_idr_coords
         all_regions.extend(idr_coords)
         
@@ -288,10 +288,9 @@ def get_fds_loops_idrs(DodoComplex, threshold=480, gap_thresh=25,
             region_monomers = {number: monomer for number, monomer in monomers.items() if number in range(region[0], region[1])}
             # get sequence for monomers
             sequence = ''.join([amino_acid_3_to_1(monomer.get_monomer_name()) for number, monomer in region_monomers.items()])
-            # see what type of domain to add. 
+            # see what type of domain to add
             if region in final_fds:
                 cur_domain = Domain(domain_num, 'FD', region_monomers, sequence=sequence)
-
             elif str(region) in loops.keys():
                 # get loops
                 all_loops = loops[str(region)]
@@ -302,11 +301,16 @@ def get_fds_loops_idrs(DodoComplex, threshold=480, gap_thresh=25,
             else:
                 # make domain
                 cur_domain = Domain(domain_num, 'IDR', region_monomers, sequence=sequence)
+
+            # add domain to chain and set parent chain reference
+            cur_domain.set_parent_chain(DodoComplex.get_chain(cur_chain_id))
+            # build the sequence to monomer index dictionary
+            cur_domain.build_monomer_ind_to_aa()
             # add domain to chain
             DodoComplex.get_chain(cur_chain_id).add_domain(cur_domain, domain_id=cur_domain.domain_id)
-            domain_num+=1
-    return DodoComplex
+            domain_num += 1
 
+    return DodoComplex
 
 def assign_domains_from_dict(DodoComplex, 
                              dictionary_of_domains):
@@ -346,5 +350,7 @@ def assign_domains_from_dict(DodoComplex,
                 sequence+=amino_acid_3_to_1(monomer.get_monomer_name())
                 monomers.append(monomer)
             domain = Domain(domain_num, domain_type, monomers, sequence=sequence)
+            # Set parent chain before adding domain
+            domain.set_parent_chain(chain)
             chain.add_domain(domain)
     return DodoComplex

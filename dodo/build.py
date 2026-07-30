@@ -1,5 +1,5 @@
 # user facing stuff for making AF2 structures look less silly.
-"""
+
 import os
 
 from dodo.dodo_exceptions import dodoException
@@ -421,4 +421,3 @@ def pdb_from_sequence(sequence, out_path='', mode='predicted',
 
 
 
-"""

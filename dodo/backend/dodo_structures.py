@@ -206,7 +206,8 @@ class Monomer:
         
 
 class Domain:
-    __slots__ = ['domain_id', 'domain_type', 'monomers', 'loop_indices', 'sequence', 'rebuilt', 'monomer_ind_to_aa', '_coord_cache', '_spatial_index']
+    __slots__ = ['domain_id', 'domain_type', 'monomers', 'loop_indices', 'sequence', 
+                 'rebuilt', 'monomer_ind_to_aa', '_coord_cache', '_spatial_index', 'parent_chain']
     
     def __init__(self, 
                  domain_id=None, 
@@ -222,6 +223,7 @@ class Domain:
         self.monomer_ind_to_aa = None
         self._coord_cache = None
         self._spatial_index = None
+        self.parent_chain = None  # Add parent chain reference
     
     def __str__(self):
         return f'Domain: {self.domain_id} {self.domain_type} ({len(self.monomers)} monomers)'
@@ -255,15 +257,16 @@ class Domain:
             self._coord_cache = np.array(coords)
         return self._coord_cache.copy()  # Return a copy to prevent unintended modifications
     
-    def get_monomer_to_aa_inds(self):
+    def build_monomer_ind_to_aa(self):
         if self.monomer_ind_to_aa is None:
             self.monomer_ind_to_aa = {}
             for monomer_number, monomer in self.monomers.items():
                 self.monomer_ind_to_aa[monomer_number] = monomer.monomer_name
-        return self.monomer_ind_to_aa
 
     def set_domain_as_rebuilt(self):
         self.rebuilt = True
+        self.invalidate_cache()
+
     
     def build_spatial_index(self):
         """Build KD-tree for spatial queries"""
@@ -300,12 +303,16 @@ class Domain:
         if not isinstance(translation_vector, np.ndarray):
             translation_vector = np.array(translation_vector)
         
-        # Update coordinates for each atom directly
+        # Update coordinates for each atom directly using set_coordinates
         for monomer in self.monomers.values():
             for atom in monomer.atoms.values():
                 current_coords = np.array([atom.x_coord, atom.y_coord, atom.z_coord])
                 new_coords = current_coords + translation_vector
-                atom.x_coord, atom.y_coord, atom.z_coord = new_coords
+                atom.set_coordinates(
+                    float(new_coords[0]),
+                    float(new_coords[1]),
+                    float(new_coords[2])
+                )
 
         # Invalidate caches to ensure they're rebuilt with new coordinates
         self.invalidate_cache()
@@ -324,9 +331,15 @@ class Domain:
         self.invalidate_cache()
     
     def invalidate_cache(self):
-        """Invalidate coordinate cache"""
+        """Invalidate coordinate cache and parent chain cache if it exists"""
         self._coord_cache = None
         self._spatial_index = None
+        if self.parent_chain is not None:
+            self.parent_chain.invalidate_cache()
+
+    def set_parent_chain(self, chain):
+        """Set the parent chain reference"""
+        self.parent_chain = chain
 
     def assign_domain_type(self, domain_type):
         self.domain_type = domain_type
@@ -395,6 +408,30 @@ class Domain:
         for monomer in self.monomers.values():
             coords.extend(monomer.get_coordinates_array())
         return coords
+
+    def get_start_coord(self, atom_name='CA'):
+        '''
+        Get the coordinates of the first atom in the chain.
+        '''
+        # Force cache invalidation to ensure fresh coordinates
+        self.invalidate_cache()
+        
+        cur_monomers = list(self.monomers.values())
+        for atom in cur_monomers[0].atoms.values():
+            if atom.atom_name == atom_name:
+                return np.array(atom.coordinates())
+                    
+    def get_end_coord(self, atom_name='CA'):
+        '''
+        Get the coordinates of the last atom in the chain.
+        '''
+        # Force cache invalidation to ensure fresh coordinates
+        self.invalidate_cache()
+        
+        cur_monomers = list(self.monomers.values())
+        for atom in cur_monomers[-1].atoms.values():
+            if atom.atom_name == atom_name:
+                return np.array(atom.coordinates())
     
     def get_coords_by_monomer_index_with_atom_dict(self):
         coords = {}
@@ -484,6 +521,12 @@ class Chain:
     
     def add_domain(self, domain, domain_id):
         self.domains[domain_id]=domain
+        domain.set_parent_chain(self)  # Set the parent chain reference
+        self.invalidate_cache()
+
+    def update_domain(self, domain, domain_id):
+        self.domains[domain_id]=domain
+        domain.set_parent_chain(self)
         self.invalidate_cache()
     
     def remove_domain(self, domain_id):
@@ -493,21 +536,23 @@ class Chain:
     def get_domain(self, domain_id):
         return self.domains[domain_id]
 
-    def build_spatial_index(self):
+    def build_spatial_index(self, rebuilt_only=True):
         """Build KD-tree for spatial queries"""
-        coords = self.get_coordinates_array()
+        coords = self.get_coordinates_array(rebuilt_only=rebuilt_only)
         self._spatial_index = cKDTree(coords)
         
-    def get_coordinates_array(self):
+    def get_coordinates_array(self, rebuilt_only=False):
         """Cache and return numpy array of all coordinates in chain"""
         if self._coord_cache is None:
             coords = []
             for domain in list(self.domains.values()):
+                if rebuilt_only and not domain.rebuilt:
+                    continue
                 coords.extend(domain.get_coordinates_array())
             self._coord_cache = np.array(coords)
         return self._coord_cache
     
-
+    
     def invalidate_cache(self):
         """Invalidate coordinate cache when domains change"""
         self._coord_cache = None
@@ -589,6 +634,7 @@ class Chain:
                 coords.extend(domain.get_coordinates_array())
         return coords
     
+    
     def check_if_domain_clashes(self, domain_index, distance_threshold=3.0):
         """
         Check if a domain clashes with any other domain in the chain.
@@ -630,6 +676,19 @@ class Chain:
             if pairs > 0:
                 return other_domain.domain_id
         return False
+    
+    def check_if_coords_clash(self, coords, distance_threshold=3.0):
+        '''
+        function that uses the spatial index to check if some coordinates clash with the chain.
+        '''
+        if self._spatial_index is None:
+            self.build_spatial_index()
+        
+        # Find all pairs of points within distance_threshold
+        pairs = self._spatial_index.query_ball_point(coords, distance_threshold)
+
+        return pairs
+        
     
     def remove_domain_monomers(self, domain_index):
         '''

@@ -34,11 +34,14 @@ import numpy as np
 #: does not model it).
 #:
 #: This value was inconsistent across the pre-rewrite code: v1's ``parameters.py``
-#: said 3.8, v2's cone generator used 3.856, and one distance table used 3.89. 3.8
-#: is both the most common and the most defensible, so it wins and the others are
-#: gone. Note that the CA-CA-CA angle schedules were tuned against 3.856, so if
-#: rebuilt geometry looks subtly off, this is the first thing to suspect.
-CA_CA_BOND_LENGTH: Final[float] = 3.80
+#: said 3.8, v2's cone generator used 3.856, and one distance table used 3.89. There is
+#: now exactly one, on Ryan's instruction: 3.81. It applies everywhere, including as the
+#: target that generative-model output is projected onto -- see
+#: :mod:`dodo.geometry.regularize`, since a diffusion model does not produce exact bonds.
+#:
+#: Do not introduce a second value for any specific consumer. Reconciling the three that
+#: were live at once was among the most expensive parts of this rewrite.
+CA_CA_BOND_LENGTH: Final[float] = 3.81
 
 #: Acceptable spread on the CA-CA bond when closing onto a fixed anchor, in A.
 #: CHOICE. Wide enough that closure is achievable, tight enough that a viewer still
@@ -88,17 +91,41 @@ BACKBONE_ANGLE_OBSERVED_MAX: Final[float] = 179.0  # MEASURED
 
 #: Sampling window for generated backbones, in degrees.
 #:
-#: TUNED. Carried over from the original author's generator. Relative to the measured
-#: distribution this is mean -1.31 sd to mean +1.38 sd, so it covers roughly the central
-#: 80% of observed angles -- deliberately tighter than the full observed 75-179 range,
-#: to keep sampling away from the rare extremes while still spanning helix-like (~91 deg)
-#: through extended (~161 deg) geometry.
+#: The lower bound is TUNED, carried over from the original author's generator: mean
+#: -1.31 sd, which spans helix-like geometry. It is comfortably inside what all-atom
+#: reconstruction can represent (measured boundary 81.1 deg), so it stands.
 #:
-#: Note it is *not* symmetric about the mean and not a round number of standard
-#: deviations, so do not "tidy" it into mean +/- 1 sd: that would narrow the window to
-#: 99-151 and exclude helical geometry.
+#: The upper bound is DERIVED, and it is a deliberate reduction from the tuned 161.0.
+#:
+#: A CA pseudo-angle is not free: for a trans peptide it is coupled to the N-CA-C angle
+#: (tau) through the backbone geometry, so demanding a wide CA angle forces tau away from
+#: its ideal 111 deg. Measured against this package's own reconstruction
+#: (:func:`dodo.construct.backbone.max_reconstructable_ca_angle`, evaluated at that module's
+#: own N-CA-C tolerance), the boundary is 160.5 deg -- above that, no trans backbone exists
+#: with tau inside tolerance:
+#:
+#:     CA 150 deg -> reconstructs        CA 161 deg -> implied tau 125.4 deg
+#:     CA 155 deg -> implied tau 119.4   CA 179 deg -> implied tau 143.4 deg
+#:
+#: Generating an angle DODO cannot then turn into a valid backbone makes its own CA-only
+#: output un-reconstructable, which defeats the all-atom feature. Measured before this
+#: cap: 11 of 12 generated 40-residue traces were refused by ``place_backbone``.
+#:
+#: 150.0 sits inside that boundary with margin for the variation across sequences and for the
+#: 3.80 -> 3.81 bond-length change. It was chosen against a boundary of 154.6 deg, which is
+#: what the same function returned when the reconstruction's N-CA-C tolerance was 8.0 rather
+#: than the re-measured 14.0 degrees, and it stays there: the extra headroom does not make
+#: 161.0 safe again, because the per-residue ceiling is not a per-*trace* one. Adjacent wide
+#: angles compete for one peptide unit's angular budget, and measured on self-avoiding walks
+#: sampled to this window's own upper bound, 2 of 8 traces are still refused on N-CA-C.
+#:
+#: This also says something about the measured range below. A 179 deg CA pseudo-angle
+#: implies tau = 143 deg, and no real residue has that (real tau spans 105-125, rarely to
+#: 130). So the observed 75-179 range is very unlikely to be all trans backbone geometry:
+#: it most plausibly includes chain breaks, where consecutive "CA neighbours" are not
+#: actually bonded and the pseudo-angle between them means nothing.
 BACKBONE_ANGLE_MIN: Final[float] = 91.0
-BACKBONE_ANGLE_MAX: Final[float] = 161.0
+BACKBONE_ANGLE_MAX: Final[float] = 150.0
 
 #: Preferred angle. Candidates are ordered by |angle - ideal| so that a
 #: first-non-clashing search naturally prefers realistic geometry.

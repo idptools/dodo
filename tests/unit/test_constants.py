@@ -113,17 +113,41 @@ class TestBackboneAngles:
         assert C.BACKBONE_ANGLE_OBSERVED_MIN <= C.BACKBONE_ANGLE_MIN
         assert C.BACKBONE_ANGLE_MAX <= C.BACKBONE_ANGLE_OBSERVED_MAX
 
-    def test_window_brackets_the_mean_by_at_least_one_sd(self) -> None:
+    def test_window_brackets_the_mean_on_both_sides(self) -> None:
         """The window spans the bulk of the distribution but not its tails.
 
-        Asserted as a range rather than an exact multiple of sd: the tuned window is
-        asymmetric (-1.31 sd, +1.38 sd), and narrowing it to a tidy mean +/- 1 sd would
-        exclude helical geometry at ~91 deg.
+        The two bounds have DIFFERENT provenance, so they are asserted differently:
+
+        * the lower bound is tuned against the measured distribution (mean -1.31 sd) and
+          spans helical geometry;
+        * the upper bound is derived from what all-atom reconstruction can represent, not
+          from the distribution. A CA pseudo-angle is coupled to N-CA-C for a trans
+          peptide, so a wide pseudo-angle forces tau away from ideal -- generating an angle
+          DODO cannot reconstruct would make its own output unusable.
+
+        So do not reinstate a symmetric sd-based assertion here; it would be asserting the
+        wrong property of the upper bound.
         """
         low_sd = (C.BACKBONE_ANGLE_MEAN - C.BACKBONE_ANGLE_MIN) / C.BACKBONE_ANGLE_SD
-        high_sd = (C.BACKBONE_ANGLE_MAX - C.BACKBONE_ANGLE_MEAN) / C.BACKBONE_ANGLE_SD
         assert 1.0 <= low_sd <= 2.0
-        assert 1.0 <= high_sd <= 2.0
+        assert C.BACKBONE_ANGLE_MIN < C.BACKBONE_ANGLE_MEAN < C.BACKBONE_ANGLE_MAX
+
+    def test_upper_bound_is_reconstructable_to_all_atom(self) -> None:
+        """Every angle DODO generates must be representable as a trans backbone.
+
+        This is the constraint that sets the upper bound, and the boundary it has to sit
+        under is the one the reconstruction actually builds with -- ``place_backbone``'s own
+        ``_N_CA_C_TOLERANCE``, not an ideal tau. Measured boundary is 160.5 deg at that
+        tolerance (154.6 when it was 8.0 rather than 14.0 degrees); the window stops below it
+        with margin. Asserting against ``max_reconstructable_ca_angle()`` with its default
+        zero tolerance would be asserting a *different* property: that the window sits under
+        the ideal-tau ceiling of 146.5, which it deliberately does not -- see
+        TestClosure.test_max_reconstructable_ca_angle_is_below_the_sampling_window.
+        """
+        from dodo.construct.backbone import _N_CA_C_TOLERANCE, max_reconstructable_ca_angle
+
+        ceiling = max_reconstructable_ca_angle(n_ca_c_tolerance=_N_CA_C_TOLERANCE)
+        assert ceiling > C.BACKBONE_ANGLE_MAX
 
     def test_ideal_angle_is_inside_the_window(self) -> None:
         assert C.BACKBONE_ANGLE_MIN <= C.BACKBONE_ANGLE_IDEAL <= C.BACKBONE_ANGLE_MAX

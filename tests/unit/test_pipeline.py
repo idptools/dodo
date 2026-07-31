@@ -114,6 +114,97 @@ class TestRebuild:
             "no loop appears in the outcomes; loops are not being rebuilt"
         )
 
+    def test_rebuilt_regions_contain_only_alpha_carbons(self) -> None:
+        """A rebuilt region is CA-only; a folded domain keeps every atom.
+
+        Regression test for a bug that was visible in a viewer. set_ca_xyz() writes only alpha
+        carbons, so the N/C/O and side-chain atoms of a rebuilt residue stayed at their original
+        AlphaFold positions while the CA moved. Measured on p300, that left each rebuilt residue
+        split across ~93 A: the writer then emitted a CONECT record bonding N to CA over that
+        distance, which renders as a long spurious straight line, and the orphaned atoms trailed
+        along the region's old path as disconnected dots.
+        """
+        report = rebuild(DNMT3A, seed=0)
+        structure = report.models[0]
+        for domain in structure.domains:
+            atoms = structure.atom_slice_for_residues(domain.span.start, domain.span.stop)
+            names = set(structure.atom_name[atoms].tolist())
+            if domain.kind is DomainKind.IDR and domain.rebuilt:
+                assert names == {"CA"}, f"{domain!r} kept non-CA atoms: {sorted(names)}"
+            elif domain.kind is DomainKind.FOLDED and not domain.loops:
+                assert len(names) > 4, f"{domain!r} lost its side chains: {sorted(names)}"
+
+    def test_no_residue_is_split_across_two_locations(self) -> None:
+        """Every atom stays near its own alpha carbon.
+
+        The direct assertion of the defect above: a residue's furthest heavy atom is ~6-7 A from
+        its CA (arginine's terminal nitrogens). Anything in the tens or hundreds means the
+        residue's atoms did not move together.
+        """
+        report = rebuild(DNMT3A, seed=0)
+        structure = report.models[0]
+        worst = 0.0
+        for residue in range(structure.n_residues):
+            atoms = structure.atom_slice_for_residues(residue, residue + 1)
+            names = structure.atom_name[atoms]
+            if "CA" not in names:
+                continue
+            coords = structure.xyz[atoms]
+            ca = coords[list(names).index("CA")]
+            worst = max(worst, float(np.linalg.norm(coords - ca, axis=1).max()))
+        assert worst < 10.0, f"a residue's atoms are {worst:.1f} A apart; it was split"
+
+    def test_conect_records_are_all_physical_bonds(self, tmp_path: Path) -> None:
+        """No CONECT record may span more than a real bond.
+
+        CA-CA is 3.81 A and every other bond DODO writes is shorter, so anything much above
+        that means CONECT is bonding the wrong atoms -- which is what a split residue produced.
+        """
+        from dodo.io import write_pdb
+
+        report = rebuild(DNMT3A, seed=0)
+        out = tmp_path / "conect.pdb"
+        write_pdb(report.models, out, conect=True)
+
+        positions: dict[int, np.ndarray] = {}
+        bonds: list[tuple[int, int]] = []
+        for line in out.read_text().splitlines():
+            if line.startswith(("ATOM", "HETATM")):
+                positions[int(line[6:11])] = np.array(
+                    [float(line[30:38]), float(line[38:46]), float(line[46:54])]
+                )
+            elif line.startswith("CONECT"):
+                origin = int(line[6:11])
+                for column in range(11, min(len(line), 31), 5):
+                    field = line[column : column + 5].strip()
+                    if field:
+                        bonds.append((origin, int(field)))
+
+        assert bonds, "no CONECT records were written"
+        lengths = np.array(
+            [
+                np.linalg.norm(positions[a] - positions[b])
+                for a, b in bonds
+                if a in positions and b in positions
+            ]
+        )
+        assert lengths.max() < 4.5, (
+            f"longest CONECT bond is {lengths.max():.1f} A; CONECT is bonding distant atoms"
+        )
+
+    def test_regions_are_not_reassigned_after_repositioning(self) -> None:
+        """The reported assignment must match the model's actual domains.
+
+        Region identification reads the coordinates, and repositioning moves folded domains
+        apart -- which changes their contact density. Re-assigning afterwards shifted a p300
+        domain's bounds from 569-650 to 570-644, so the anchors that drove the placement were
+        no longer the anchors built against.
+        """
+        report = rebuild(DNMT3A, seed=0)
+        reported = [(d.kind, d.span.start, d.span.stop) for d in report.assignments[0].domains]
+        actual = [(d.kind, d.span.start, d.span.stop) for d in report.models[0].domains]
+        assert reported == actual
+
     def test_rebuilt_regions_are_physically_valid(self) -> None:
         """Every rebuilt region passes the clash-aware gate, junctions included.
 

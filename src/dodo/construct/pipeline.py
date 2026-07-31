@@ -183,6 +183,41 @@ def _obstacles_for(structure: Structure, domain: Domain) -> np.ndarray | None:
     return coords
 
 
+def _drop_non_ca_from_rebuilt(structure: Structure) -> Structure:
+    """Return a copy holding only alpha carbons in rebuilt regions, all atoms elsewhere.
+
+    Rebuilt regions are CA-only. Their other atoms cannot be left in place: the region's alpha
+    carbons have moved, and the rest have not, so every residue ends up split between two
+    locations. Measured on p300, that split was ~93 A per residue -- the CA at its new position
+    and N/C/O/side chain still on AlphaFold's original path. The writer then emits a CONECT
+    record bonding N to CA across that gap, which renders as a long spurious straight line, and
+    the orphaned atoms trail along the old path as disconnected dots. Both artefacts are visible
+    in a viewer and neither is a rendering problem.
+
+    This is also simply what DODO produces and always has: all atoms in folded domains, alpha
+    carbons only in rebuilt regions. Placing real backbone atoms for those residues is the next
+    priority, not this one.
+
+    Loops inside folded domains count as rebuilt too, so they are stripped as well.
+    """
+    keep = np.ones(structure.n_atoms, dtype=bool)
+    is_ca = structure.atom_name == "CA"
+
+    def strip(start: int, stop: int) -> None:
+        atoms = structure.atom_slice_for_residues(start, stop)
+        keep[atoms] = is_ca[atoms]
+
+    for domain in structure.domains:
+        if domain.kind is DomainKind.IDR and domain.rebuilt:
+            strip(domain.span.start, domain.span.stop)
+        for loop in domain.loops:
+            strip(loop.start, loop.stop)
+
+    if keep.all():
+        return structure
+    return structure.select_atoms(keep)
+
+
 def _build_region(
     structure: Structure,
     *,
@@ -534,8 +569,15 @@ def rebuild(
     for model_number in range(1, n_models + 1):
         # Each model starts from the REPOSITIONED coordinates, so every model shares one domain
         # arrangement and a failed region in one cannot contaminate the next.
+        # Regions are NOT re-assigned here. They were assigned once on the input geometry and
+        # carried through by copy(), which rebinds every Domain view to the new structure.
+        #
+        # Re-assigning would be wrong, not merely wasteful: the density metric reads the
+        # coordinates, and repositioning has just moved the folded domains apart, which changes
+        # their contact density and shifts the boundaries. Measured on p300, re-assigning after
+        # repositioning moved a folded domain's bounds from 569-650 to 570-644 -- so the anchors
+        # that drove the placement would no longer be the anchors used to build against it.
         working = base.copy()
-        assign_regions(working, strategy=strategy)
 
         with warnings.catch_warnings():
             # The pipeline supplies outer anchors, so the engine's warning about missing ones
@@ -554,7 +596,8 @@ def rebuild(
                 model_targets=model_targets,
             )
         report.outcomes.extend(outcomes)
-        report.models.append(working)
+        # Rebuilt regions are CA-only, so drop the atoms that did not move with them.
+        report.models.append(_drop_non_ca_from_rebuilt(working))
 
     return report
 

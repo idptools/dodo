@@ -690,6 +690,92 @@ class Structure:
     # Copying and validation
     # ------------------------------------------------------------------
 
+    def select_atoms(self, keep: np.ndarray) -> Structure:
+        """Return a copy containing only the atoms selected by a boolean mask.
+
+        Residues and chains are preserved -- this drops ATOMS, not residues -- so every
+        :class:`Domain` and :class:`Chain` span stays valid and is rebound to the new structure.
+        A residue that loses every atom would break that invariant, so it is rejected rather
+        than silently collapsing the residue numbering.
+
+        Why this exists
+        ---------------
+        A rebuilt region is CA-only. Its side-chain and other backbone atoms cannot simply be
+        left where they were: they belong to residues whose alpha carbon has moved, so each
+        residue ends up split between two locations tens or hundreds of Angstroms apart. The
+        writer then dutifully emits a CONECT record bonding N to CA across that gap, which
+        renders as a long spurious line, and the orphaned atoms trail along the region's old
+        path as disconnected dots. Dropping them is the fix, and it matches what DODO has always
+        produced: all atoms in folded domains, alpha carbons only in rebuilt regions.
+
+        Parameters
+        ----------
+        keep
+            Boolean mask over atoms, length ``n_atoms``.
+
+        Returns
+        -------
+        Structure
+            A new structure. The original is unchanged.
+
+        Raises
+        ------
+        GeometryError
+            If the mask is the wrong length, or would leave a residue with no atoms.
+        """
+        keep = np.asarray(keep, dtype=bool)
+        if keep.shape != (self.n_atoms,):
+            raise GeometryError(
+                f"keep must be a boolean mask of length n_atoms ({self.n_atoms}), got "
+                f"shape {keep.shape}."
+            )
+        if not keep.any():
+            raise GeometryError("keep would remove every atom.")
+
+        surviving_per_residue = np.bincount(self.residue_index[keep], minlength=self.n_residues)
+        empty = np.flatnonzero(surviving_per_residue == 0)
+        if empty.size:
+            preview = ", ".join(self.residue_label(int(i)) for i in empty[:5])
+            more = f" (and {empty.size - 5} more)" if empty.size > 5 else ""
+            raise GeometryError(
+                f"keep would leave {empty.size} residue(s) with no atoms at all: {preview}"
+                f"{more}. Dropping a residue entirely would invalidate every Domain and Chain "
+                f"span, so select_atoms only removes atoms from residues that keep at least one."
+            )
+
+        offsets = np.empty(self.n_residues + 1, dtype=np.int64)
+        offsets[0] = 0
+        np.cumsum(surviving_per_residue, out=offsets[1:])
+
+        new = Structure(
+            xyz=self.xyz[keep].copy(),
+            atom_name=self.atom_name[keep].copy(),
+            element=self.element[keep].copy(),
+            residue_index=self.residue_index[keep].copy(),
+            residue_name=self.residue_name.copy(),
+            residue_number=self.residue_number.copy(),
+            insertion_code=self.insertion_code.copy(),
+            b_factor=self.b_factor.copy(),
+            occupancy=self.occupancy.copy(),
+            chain_index=self.chain_index.copy(),
+            residue_atom_offsets=offsets,
+            source=self.source,
+            notes=list(self.notes),
+        )
+        for chain in self.chains:
+            new_chain = Chain(
+                structure=new,
+                span=chain.span,
+                chain_id=chain.chain_id,
+                uniprot_id=chain.uniprot_id,
+                full_sequence=chain.full_sequence,
+            )
+            new_chain.domains = [replace(domain, structure=new) for domain in chain.domains]
+            new.chains.append(new_chain)
+
+        new.validate()
+        return new
+
     def copy(self) -> Structure:
         """Deep copy, with domain and chain views rebound to the new structure.
 

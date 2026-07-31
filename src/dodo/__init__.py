@@ -69,6 +69,10 @@ _LAZY_ATTRS: dict[str, str] = {
     "target_dimensions": "dodo.construct",
     "predict_end_to_end": "dodo.construct",
     "albatross_available": "dodo.construct",
+    # End-to-end rebuilding
+    "rebuild": "dodo.construct",
+    "build_from_sequence": "dodo.construct",
+    "RebuildReport": "dodo.construct",
 }
 
 _LAZY_MODULES: tuple[str, ...] = (
@@ -84,8 +88,11 @@ if TYPE_CHECKING:
     # Give type checkers and IDEs the real thing; this branch never runs.
     from . import constants, construct, exceptions, io, regions, structure
     from .construct import (
+        RebuildReport,
         albatross_available,
+        build_from_sequence,
         predict_end_to_end,
+        rebuild,
         target_dimensions,
     )
     from .exceptions import (

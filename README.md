@@ -1,309 +1,431 @@
-DODO: re<ins>D</ins>esign AlphaF<ins>O</ins>ld2 <ins>D</ins>isorered regi<ins>O</ins>ns  
+DODO: re<ins>D</ins>esign AlphaF<ins>O</ins>ld <ins>D</ins>isordered regi<ins>O</ins>ns
 ==============================
 
-## What is DODO?  
+## What is DODO?
 
-DODO is a Python package and command-line utility for taking an AF2 structure and redesigning the disordered regions to make them look more like IDRs. To be clear, the work done by DeepMind to make AlphaFold2 is **AMAZING**, and I do not mean to take away from that in *ANY WAY*. However, for visualizing proteins for presentations, etc. it would be nifty to be able to make the IDRs look more 'IDR-like'. DODO does just that! What it does is identify the IDRs in the structure, predict the end-to-end distance for each IDR from its sequence using ALBATROSS (see https://github.com/idptools/sparrow) and rebuild the structure such that the IDRs are the approximate correct overall dimensions (see example below). If that visualization doesn't work for you, there are other options to make the IDRs more compact or expanded than is predicted from sequence. In addition, you can make a PDB with multiple IDRs in a single 'structure' and keep the folded domains fixed, which when opened in VMD makes something that looks *like* a simulation trajectroy (to be very clear, it is **NOT** the equivalent to an actual simulation trajectory but is really nice for visualizations).  
+DODO takes a predicted protein structure, works out which parts are folded domains and which
+are intrinsically disordered regions, and rebuilds the disordered parts so they adopt realistic
+polymer dimensions instead of AlphaFold's characteristic extended spaghetti.
+
+To be clear: the work DeepMind did on AlphaFold is **amazing**, and none of this takes away
+from it in *any way*. AlphaFold simply isn't trying to represent a disordered region as an
+ensemble — an IDR has no single structure to predict. But for figures and presentations it's
+useful to have those regions *look* like what they are. DODO does that.
+
+It identifies each disordered region, predicts its end-to-end distance from sequence with
+ALBATROSS ([sparrow](https://github.com/idptools/sparrow)), and rebuilds it to those
+dimensions. You can also ask for regions more compact or more expanded than predicted. And you
+can generate several conformers into one multi-model PDB, which in VMD looks *like* a
+simulation trajectory — to be very clear, it is **not** equivalent to a simulation, but it's
+nice for visualization.
 
 ![DODO_EXAMPLE](https://github.com/idptools/dodo/blob/main/images/DODO_example.png)
 
-### Current Limitations  
+> **DODO 2.0 is a rewrite and it breaks the 1.x API.** The `build.pdb_from_name()` /
+> `pdb_from_pdb()` / `pdb_from_sequence()` functions and the three `pdb-from-*` console
+> scripts are gone, replaced by `dodo.rebuild()` / `dodo.build_from_sequence()` and a single
+> `dodo` command. See [Migrating from 1.x](#migrating-from-1x). The scientific behaviour also
+> changed in ways worth reading about: build modes are now length-independent, and a
+> multi-model run produces a genuine ensemble rather than one conformation repeated.
 
-1. Rebuilding employs a simple random walk approach, so the actual IDR conformation is completely random *and not scientifically useful*. However, it is still quite useful for visualization of the protein overall.  
+## Installation
 
-2. At this moment, the rebuilt IDRs only contain alpha carbons whereas folded regions contain all atoms. This is mainly to do with the trickiness of placing all the atoms back after dramatically changing the IDR. I'm working on all-atom IDR generation, which I'm hoping to bring in the future (but this is not a gaurantee because it's tricky business and for visualization is not really necessary to be honest).  
+Requires Python 3.10 or newer.
 
-3. Because some IDRs only have alpha carbons, the order of bonds result in an 'unusual bond' warning in VMD.
-
-4. Some visualization modes don't work in VMD. Licorice seems to work fine, tube and trace do not. I'm working on this.  
-
-### How can you use DODO?
-
-DODO is currently usable in Python and from the command-line.  
-
-### Installation
-
-If you are having any issues installing DODO, we have a few known potential install issues, so please keep reading this section! If you're having a problem that we don't have listed here, please let me know!  
-
-
-**Note** - to install DODO, you first need to have cython and numpy installed. To install cython and numpy, simpy run:  
-
-```console
-pip install cython numpy
-  ```
-
-Once you have cython and numpy installed, you should be able to install DODO. 
-
-To install DODO, run the following command from terminal:  
-```console
+```bash
 pip install git+https://github.com/idptools/dodo.git
 ```
-  
-#### Additional known install failures
-  
-Over time we have discovered some ways that installing DODO can fail. One is related to your version of **setuptools**. Try running the following and then attempt to install DODO:
 
-```console
-pip install setuptools --upgrade
-```
-  
-Another fail that we are aware of involves **wheel**. To fix this, run the following:  
+The base install depends only on **numpy and scipy**, so it's fast and light. It gets you
+structure reading and writing, region identification, and IDR rebuilding with the random-walk
+engine. Without ALBATROSS it falls back to an analytical polymer scaling law for target
+dimensions — see [Dimension prediction](#dimension-prediction) for how good that actually is.
 
-```console
-pip install wheel --upgrade
-```
-
-## DODO Python Functions
-
-First import build from DODO.  
-
-```python
-from dodo import build
-```
-
-You can build new structures from from an existing PDB or just have DODO download the structure from the AF2 database. You can also generate PDBs of IDRs from sequence alone!  
-  
-### Generating a structure from the name alone
-
-To have DODO download a structure from a protein name and alter the disordered regions, you can use the ``pdb_from_name()`` function. There are two required arguments unless you set ``graph=True``: 1. the protein name as a string, 2. the out_path for where to save the PDB. If you set ``graph=True``, you don't need to specify the outpath and DODO will just show your PDB in a 3D graph using matplotlib. 
-
-```python
-build.pdb_from_name('human p53', out_path='/Users/your_user_name/Desktop/my_cool_proteins/my_protein.pdb')
-```
-**Additional usage:**  
-
-All arguments for ``build.pdb_from_name()`` are as follows:  
-**protein_name** - required. The name of your protein as a string. Specifying the organism increases your chance of success.  
-  
-**out_path** - optional if you set graph=True. Otherwise raises an exception. Where to save your protein structure file. Specify the file name here.  
-
-**mode** - optional. Default: 'predicted'. The ``predicted`` option predicts the end-to-end distance of your disordered regions from sequence and then makes the IDRs fit within that distance. Additional options are ``super_compact``, ``compact``, ``normal``, ``expanded``, ``super_expanded``, ``max_expansion``. These are pretty self explanatory.  
-
-**num_models** - optional. Default: 1. ``num_models`` lets you choose the number of models of IDRs to make for your protein. The folded domains are left in the same location for all models wherease the IDRs vary.  
-
-**linear_placement** - optional. Default: False. Whether to place the folded domains linearly for visualization.  
-
-**just_fds** - optional. Default: False. Setting ``just_fds`` to True will save out folded domains as individual PDBs with the name of your protein as specified in out_path with the coordinates of the fd in the file name. Formatted as protname_resStart_resEnd.pdb for each FD.   
-
-**beta_for_FD_IDR** - optional. Default: False. Whether to set beta values such that all IDRs = 0 and FDs=100 for visualization.  
-  
-**include_FD_atoms** - optional. Default: True. Whether to include all atoms for the FDs. Only CA for IDRs for now.  
-
-**CONECT_lines** - optional. Default: True. Whether to included CONECT lines in the generated PDB. Makes visualization generally better.  
-
-**verbose** - optional. Default: True. Whether to show progress as structure is being made.  
-
-**use_metapredict** - optional. Default: False. This option lets you use metapredict to predicte the IDRs and folded regions. Although *fairly accurate*, it doesn't get the exact cutoffs for some regions and fails to predict small loops within large folded regions. The default is to use the number of atoms neighboring each atom in the AF2 structure. The default behavior is slower but works better.  
-
-**graph** - optional. Default: False. Setting this to True will pull up a really rough looking structure of your protein using the 3D graphing functionality in matplotlib. This is something I made when developing this to quickly look at structures. You shouldn't use this, but you can if you want. It's kind of fun TBH.  
-   
-**attempts_per_region** - optional. Default: 20. Number of times to try and make each region.  
-
-**attempts_per_coord** - optional. Default: 2000. Number of times to try to generate each coordinate for each alpha carbon in the structure.  
-  
-
-### Modifying the IDR from an existing PDB file
-
-You can also have DODO alter a pre-existing AF2 pdb file. The AF2 file should have all atom information (though this isn't required). There are two required arguments if not graphing: ``path_to_pdb`` : the path to your pdb file as a string and ``out_path`` : the path and filename of where to save your file. If you set ``graph=True``, you don't need to specify the out_path.
-
-```python
-build.pdb_from_pdb('/Users/your_user_name/Desktop/my_AF2_pdb.pdb', out_path='/Users/your_user_name/Desktop/my_AF2_PDB_DODO.pdb')
-```
-**Additional usage:**  
-
-All arguments for ``build.pdb_from_pdb()`` are as follows:  
-**path_to_pdb** - required. The filepath to your pdb as a string.  
-  
-**out_path** - optional if you set graph=True. Otherwise raises an exception. Where to save your protein structure file. Specify the file name here.  
-
-**mode** - optional. Default: 'predicted'. The ``predicted`` option predicts the end-to-end distance of your disordered regions from sequence and then makes the IDRs fit within that distance. Additional options are ``super_compact``, ``compact``, ``normal``, ``expanded``, ``super_expanded``, ``max_expansion``. These are pretty self explanatory.  
-
-**num_models** - optional. Default: 1. ``num_models`` lets you choose the number of models of IDRs to make for your protein. The folded domains are left in the same location for all models wherease the IDRs vary.  
-
-**linear_placement** - optional. Default: False. Whether to place the folded domains linearly for visualization.  
-
-**just_fds** - optional. Default: False. Setting ``just_fds`` to True will save out folded domains as individual PDBs with the name of your protein as specified in out_path with the coordinates of the fd in the file name. Formatted as protname_resStart_resEnd.pdb for each FD.  
-
-**beta_for_FD_IDR** - optional. Default: False. Whether to set beta values such that all IDRs = 0 and FDs=100 for visualization.  
-  
-**include_FD_atoms** - optional. Default: True. Whether to include all atoms for the FDs. Only CA for IDRs for now.  
-
-**CONECT_lines** - optional. Default: True. Whether to included CONECT lines in the generated PDB. Makes visualization generally better.  
-
-**verbose** - optional. Default: True. Whether to show progress as structure is being made.  
-
-**use_metapredict** - optional. Default: False. This option lets you use metapredict to predicte the IDRs and folded regions. Although *fairly accurate*, it doesn't get the exact cutoffs for some regions and fails to predict small loops within large folded regions. The default is to use the number of atoms neighboring each atom in the AF2 structure. The default behavior is slower but works better.  
-
-**graph** - optional. Default: False. Setting this to True will pull up a really rough looking structure of your protein using the 3D graphing functionality in matplotlib. This is something I made when developing this to quickly look at structures. You shouldn't use this, but you can if you want. It's kind of fun TBH.  
-   
-**attempts_per_region** - optional. Default: 20. Number of times to try and make each region.  
-  
-**attempts_per_coord** - optional. Default: 2000. Number of times to try to generate each coordinate for each alpha carbon in the structure.  
-
-
-### Making a PDB for an IDR just from sequence.
-
-If you just have an IDR sequence, you can also generate coordinates for that. Just like before, you can save it or you can graph it in matplotlib.
-
-```python
-build.pdb_from_sequence('VQQQGIYNNGTIAVANQVSCQSPNQ', out_path='/Users/your_user_name/Desktop/my_AF2_PDB_DODO.pdb')
-```
-**Additional usage:**  
-
-All arguments for ``build.pdb_from_sequence()`` are as follows:  
-  
-**sequence** - The sequence of the IDR as a string.
-  
-**out_path** - optional if you set ``graph=True``. Otherwise raises an exception. Where to save your protein structure file. Specify the file name here.  
-  
-**mode** - optional. Default: 'predicted'. The ``predicted`` option predicts the end-to-end distance of your disordered regions from sequence and then makes the IDRs fit within that distance. For IDRs between folded domains, the folded domains are moved apart from each other to accomodate the IDR length. For terminal IDRs, they will just adopt a configuration within the distance equal to the end to end distance. Additional options are ``super_compact``, ``compact``, ``normal``, ``expanded``, ``super_expanded``, ``max_expansion``. These are pretty self explanatory.  
- 
-**CONECT_LINES** - optional. Default: True. Writes CONECT lines to the PDB so that all alpha carbons are connected.  
-
-**graph** - optional. Default: False. Setting this to True will pull up a really rough looking structure of your protein using the 3D graphing functionality in matplotlib. This is something I made when developing this to quickly look at structures. You shouldn't use this, but you can if you want. It's kind of fun TBH.  
-  
-**verbose** optional. Default: False. Set to True to get more info on what is happening as your structure is being made.  
-  
-**attempts_per_idr** - optional. Default: 50. Number of attempts to IDR. Basically if number of attempts per coordinate reaches max and it still hasn't succeeded, this is the number of times it tries again.  
-  
-**attempts_per_res** - optional. Number of attempts to make each coordinate fit without clashing.  
-  
-**end_coord** - optional. Default: (0,0,0). The end coordinate for the IDR as a tuple.
-
-  
-
-## DODO command-line functions
-
-Just like in Python, you can generate AF2 structures with re-designed IDRs from the command-line using an existing AF2 PDB file or the name of a protein, and you can also generate PDBs for coordinates of IDRs from sequence alone. The only thing missing from the command-line is the graphing functionality.  
-
-### Generating a structure from a protein name from the command-line
-
-To have DODO download a structure using a protein name and alter the disordered regions, you can use the ``pdb-from-name`` command. There are two required arguments: 1. the protein name, 2. the out_path for where to save the PDB.
+For sequence-specific predictions, install the extra you need:
 
 ```bash
-pdb-from-name human p53 -o /Users/your_user_name/Desktop/my_cool_proteins/my_protein.pdb
+pip install "dodo[albatross]"    # ALBATROSS dimension prediction via sparrow
+pip install "dodo[predictors]"   # metapredict, for sequence-only region identification
+pip install "dodo[lookup]"       # resolve protein names to UniProt accessions
+pip install "dodo[starling]"     # STARLING generative IDR ensembles (large: ~2.4 GB of weights)
+pip install "dodo[viz]"          # matplotlib debug plotting
+pip install "dodo[all]"          # everything above
 ```
-**Additional usage:**  
 
-All arguments for ``pdb-from-name`` are as follows:  
-``-o`` or ``--out_path`` : **required**. Where to save your protein structure file. Specify the file name here.  
-  
-``-m`` or ``--mode`` : optional. Default: **predicted**. ``--mode`` lets you specify how to build the IDR. The default **predicted** option predicts the end-to-end distance of your disordered regions from sequence and then makes the IDRs fit within that distance. Additional options are ``super_compact``, ``compact``, ``normal``, ``expanded``, ``super_expanded``, ``max_expansion``. These are pretty self explanatory.  
-  
-``-n`` or ``--num_models`` : optional. Default: 1. ``--num_models`` lets you choose the number of models of IDRs to make for your protein. The folded domains are left in the same location for all models wherease the IDRs vary.   
+`dodo[albatross]` is the one most users want. It's a separate extra because sparrow pulls in
+torch, and a visualization tool shouldn't force that on someone who just wants to read a PDB.
 
-``-l`` or ``--linear_placement`` : optional. Default: False. The ``--linear_placement`` flag lets you place the IDRs linearly across a vector for visualization.  
-  
-``-j`` or ``--just_fds`` : optional. Default: False. The ``--just_fds`` flag will save out folded domains as individual PDBs with the name of your protein as specified in out_path with the coordinates of the fd in the file name. Formatted as protname_resStart_resEnd.pdb for each FD.  
+## Command line
 
-``-b`` or ``--beta_for_FD_IDR`` : optional. Default: False. Whether to set beta values such that all IDRs = 0 and FDs=100 for visualization.  
-  
-``-c`` or ``--no_CONECT_lines`` : optional. Default: False. The ``--no_CONECT_lines`` flag lets you make files without CONECT lines.  
-  
-``-f`` or ``--no_FD_atoms`` : optional. Default: False. The ``--no_FD_atoms`` flag lets you make structures with ONLY alpha carbon atoms. By default, the IDRs are only alpha carbons and the FDs are all atom.  
-  
-``-u`` or ``--use_metapredict`` : optional. Default: False. The ``--use_metapredict`` flag lets use metapredict V2-ff to predict the disordered regions in your structure. By default, the location of all atoms in the structure are used to infer the location of the IDRs.  
-  
-``-s`` or ``--silent`` : optional. Default: False. The ``--silent`` flag lets you silent most print output to your terminal.  
-  
-``-apr`` or ``--attempts_per_region`` : optional. Default: 40. ``--attempts_per_region`` lets you specify the number of attempts to make each region of the structure.  
-  
-``-apc`` or ``--attempts_per_coord`` : optional. Default: 2000. ``--attempts_per_coord`` lets you specify the number of attempts to make to generate each coordinate in your structure.  
-  
-  
-### Modifying the IDR from an existing AF2 PDB file from the command-line
-  
-To have DODO redesign the disordered regions using an AF2 PDB you have saved locally, you can use the ``pdb-from-pdb`` command. There are two required arguments: 1. The path to your PDB file including the filename and extension and, 2. the out_path for where to save the final PDB.
+One command with subcommands.
 
 ```bash
-pdb-from-pdb /Users/your_user_name/Desktop/my_AF2_proteins/AF2_protein.pdb -o /Users/your_user_name/Desktop/my_cool_proteins/my_protein_with_a_new_IDR.pdb
+# Rebuild a local structure
+dodo rebuild AF-P04637-F1-model_v6.pdb -o p53_dodo.pdb
+
+# Download from the AlphaFold database and rebuild
+dodo fetch P04637 -o p53_dodo.pdb
+dodo fetch "human p53" -o p53_dodo.pdb        # needs dodo[lookup]
+
+# Build a disordered region from sequence alone
+dodo sequence GRNQNGGGYQNYNNQGYQGHGGQHQNNYNQYPCNYFGPGYNN -o my_idr.pdb
+
+# Just tell me what you think my structure looks like
+dodo regions AF-P04637-F1-model_v6.pdb
 ```
-**Additional usage:**  
 
-All arguments for ``pdb-from-pdb`` are as follows:  
-``-o`` or ``--out_path`` : **required**. Where to save your protein structure file. Specify the file name here.  
-  
-``-m`` or ``--mode`` : optional. Default: **predicted**. ``--mode`` lets you specify how to build the IDR. The default **predicted** option predicts the end-to-end distance of your disordered regions from sequence and then makes the IDRs fit within that distance. Additional options are ``super_compact``, ``compact``, ``normal``, ``expanded``, ``super_expanded``, ``max_expansion``. These are pretty self explanatory.  
-  
-``-n`` or ``--num_models`` : optional. Default: 1. ``--num_models`` lets you choose the number of models of IDRs to make for your protein. The folded domains are left in the same location for all models wherease the IDRs vary.   
+### Shared flags
 
-``-l`` or ``--linear_placement`` : optional. Default: False. The ``--linear_placement`` flag lets you place the IDRs linearly across a vector for visualization.  
-  
-``-j`` or ``--just_fds`` : optional. Default: False. The ``--just_fds`` flag will save out folded domains as individual PDBs with the name of your protein as specified in out_path with the coordinates of the fd in the file name. Formatted as protname_resStart_resEnd.pdb for each FD.  
+| Flag | Default | Meaning |
+|---|---|---|
+| `-o`, `--out` | *required* | Output PDB path |
+| `-m`, `--mode` | `predicted` | Target dimension as a multiplier on the predicted end-to-end distance |
+| `-n`, `--models` | `1` | Number of conformers. Folded domains stay put; each model draws its own IDR dimensions |
+| `-e`, `--engine` | `walk` | `walk` or `starling` |
+| `-s`, `--strategy` | `auto` | How to identify regions: `auto`, `contact`, `plddt`, `metapredict` |
+| `--all-atom` | off | Place N, C and O for rebuilt regions ([caveat](#all-atom-output)) |
+| `--sidechains` | off | Also place CB; only with `--all-atom` |
+| `--seed` | none | Makes output reproducible |
+| `--no-conect` | off | Omit CONECT records — **not recommended**, see [below](#why-conect-records-matter) |
+| `-q`, `--quiet` | off | Suppress the per-region report |
 
-``-b`` or ``--beta_for_FD_IDR`` : optional. Default: False. Whether to set beta values such that all IDRs = 0 and FDs=100 for visualization.  
-  
-``-c`` or ``--no_CONECT_lines`` : optional. Default: False. The ``--no_CONECT_lines`` flag lets you make files without CONECT lines.  
-  
-``-f`` or ``--no_FD_atoms`` : optional. Default: False. The ``--no_FD_atoms`` flag lets you make structures with ONLY alpha carbon atoms. By default, the IDRs are only alpha carbons and the FDs are all atom.  
-  
-``-u`` or ``--use_metapredict`` : optional. Default: False. The ``--use_metapredict`` flag lets use metapredict V2-ff to predict the disordered regions in your structure. By default, the location of all atoms in the structure are used to infer the location of the IDRs.  
-  
-``-s`` or ``--silent`` : optional. Default: False. The ``--silent`` flag lets you silent most print output to your terminal.  
-  
-``-apr`` or ``--attempts_per_region`` : optional. Default: 40. ``--attempts_per_region`` lets you specify the number of attempts to make each region of the structure.  
-  
-``-apc`` or ``--attempts_per_coord`` : optional. Default: 2000. ``--attempts_per_coord`` lets you specify the number of attempts to make to generate each coordinate in your structure.
-   
+Exit status is `0` on success, `2` if some regions could not be built, `1` on error.
 
-### Making a PDB for an IDR just from sequence from the command-line.
+## Python API
 
-If you just have an IDR sequence, you can also generate coordinates for that.
+```python
+import dodo
+
+report = dodo.rebuild("AF-P04637-F1-model_v6.pdb", mode="expanded", n_models=10, seed=0)
+print(report.summary())
+dodo.write_pdb(report.models, "p53_dodo.pdb")
+```
+
+`rebuild()` returns a `RebuildReport` rather than writing a file, so you can inspect what
+happened before committing to output:
+
+```python
+report.ok            # True if every region in every model was rebuilt
+report.models        # list[Structure] -- the conformers
+report.failures      # regions that could not be built, each with a reason
+report.assignments   # what DODO decided was folded vs disordered, with the evidence
+report.outcomes      # per region per model: target, achieved dimension, or why it failed
+```
+
+From sequence alone:
+
+```python
+report = dodo.build_from_sequence("GRNQNGGGYQNYNNQGYQGHGG", n_models=5, seed=0)
+```
+
+### Working with the pieces directly
+
+Every stage is separately usable, which is the point of the rewrite:
+
+```python
+from dodo.io import read_structure, write_pdb
+from dodo.regions import assign_regions, Strategy
+from dodo.construct import target_dimensions
+
+structure = read_structure("model.cif")          # PDB or mmCIF, gzip fine
+assignment = assign_regions(structure, strategy=Strategy.PLDDT)[0]
+print(assignment.describe())                     # chain A: IDR 1-31; FD 32-290; ...
+print(assignment.score, assignment.threshold)    # the evidence behind every boundary
+
+target = target_dimensions("GSGSGSGS...", mode="compact")
+print(target)   # 62.6 A (compact, 0.7x of 89.4 A) via albatross over 144 residues
+```
+
+The core `Structure` is a struct-of-arrays type: one coordinate array, with `Domain` and
+`Chain` as zero-copy views into it. Indices are 0-based positional throughout; PDB numbering is
+carried as data and never used as an index. Spans are half-open `[start, stop)`.
+
+## Build modes
+
+Modes are **multipliers on the predicted end-to-end distance**:
+
+| Mode | Factor |
+|---|---|
+| `super_compact` | 0.4× |
+| `compact` | 0.7× |
+| `normal` / `predicted` | 1.0× |
+| `expanded` | 1.3× |
+| `super_expanded` | 1.6× |
+| `max_expansion` | 2.0× |
+
+**This changed from 1.x, and it matters.** v1 expressed modes as Ångströms *per residue* —
+`normal` was 0.8 Å/residue. That's linear in chain length, but real IDR end-to-end distance
+scales as roughly $N^{0.52}$, so a fixed per-residue multiplier can only agree with the
+prediction at one length. `normal` gave 80 Å at N=100 (about right) and 400 Å at N=500, where
+the prediction is nearer 190 Å — and the error grew without bound.
+
+Now a mode means the same thing at every length. One consequence: `normal` and `predicted` are
+now synonyms, which they weren't in 1.x.
+
+A target that exceeds what the chain can physically span is clamped to 95% of contour length
+rather than being chased fruitlessly, and the clamping is reported.
+
+## Dimension prediction
+
+With `dodo[albatross]` installed, targets come from ALBATROSS. Without it, DODO falls back to
+an analytical scaling law, $R_e = 6.22\,N^{0.522}$ (from Kohn *et al.* 2004), and **warns you**
+that it did — a silent downgrade would make two runs of the same command disagree with no
+visible cause.
+
+How good is the fallback? Benchmarked against ALBATROSS over 72 sequences across six
+compositional classes, its ratio to the prediction is 0.97 on average. Per class at N=500:
+
+| | ratio | | ratio |
+|---|---|---|---|
+| polar | 0.95× | polyampholyte | 0.92× |
+| proline-rich | 0.74× | polyanionic | 0.62× |
+| polycationic | 0.64× | hydrophobic | 2.62× |
+
+So for genuine IDR compositions it lands within roughly 0.6–0.95×, erring compact. The charged
+classes are worst because polyelectrolyte expansion pushes their scaling exponent to 0.60–0.64.
+
+The 2.62× outlier is worth understanding: a sequence drawn uniformly from all 20 amino acids is
+hydrophobic-rich, and ALBATROSS correctly predicts a **collapsed globule** (measured scaling
+exponent 0.20). Such a sequence isn't disordered at all, so no length-only law can describe it.
+The error here is *compositional*, not a matter of tuning — true $R_e$ spans 3.4× across
+compositions at fixed length — so refitting the exponent doesn't help, and was tried.
+
+Use the fallback to keep a light install working, not to avoid installing sparrow for real work.
+
+## Region identification
+
+Three strategies behind one flag:
+
+- **`contact`** — geometric burial from the coordinates. Works on any structure, including
+  experimental ones with no confidence metric.
+- **`plddt`** — AlphaFold's own per-residue confidence, already in the B-factor column. Free,
+  and it's the model's own assessment of where it was guessing. (v1 parsed pLDDT into a field
+  and then never looked at it, re-deriving confidence geometrically instead.)
+- **`metapredict`** — sequence-only. Needs no structure, so it's the path for building from
+  sequence, and it's much faster.
+- **`auto`** (default) — pLDDT when the B-factors look like pLDDT, contacts otherwise. It tells
+  you which it chose.
+
+Every assignment keeps its score profile and threshold, so a boundary you disagree with can be
+audited rather than just re-run with different numbers.
+
+You can also supply regions explicitly:
+
+```python
+from dodo.regions import assign_regions_from_spec
+
+assign_regions_from_spec(structure, {"A": [("idr", 1, 40), ("folded", 41, 290)]})
+```
+
+Bounds here are **1-based inclusive**, matching what you read off a PDB file. Overlaps, gaps
+and out-of-range bounds are rejected with an explanation — v1 accepted all of them silently and
+failed later with something unrelated.
+
+## Multi-model output is now a real ensemble
+
+`-n 10` writes ten conformers as MODEL/ENDMDL frames. Folded domains stay put; the disordered
+regions differ.
+
+**In 1.x they effectively didn't.** v1 placed folded domains once outside the model loop and
+targeted only the *mean* predicted end-to-end distance, so every model shared one arrangement
+and essentially one dimension. Measured on an early 2.0 engine, the coefficient of variation of
+end-to-end distance across conformers was 0.006–0.045, where a matched physical reference gives
+0.35–0.48. Sixty models of a 200-residue IDR spanning 1.9 Å of extension is one conformation
+sampled sixty times.
+
+A predicted end-to-end distance is the **mean of a distribution**, so each model now draws its
+own target from the physical radial distribution $P(R) \propto R^2 e^{-3R^2/2\langle R^2\rangle}$.
+Measured CV is now 0.36–0.53, and the ensemble mean still matches the prediction.
+
+Two details worth knowing:
+
+- A **single** model still hits the target exactly. One conformer should be the predicted
+  dimension, not a random draw around it.
+- Only regions with a **free end** scatter. An interior region pinned between two folded
+  domains has its end-to-end distance determined by the anchor separation — there's nothing to
+  sample, and its models differ in path rather than in span.
+
+## Reproducibility
+
+Everything stochastic takes a seed. Same seed, bit-identical output:
 
 ```bash
-pdb-from-sequence GRNQNGGGYQNYNNQGYQGHGGQHQNNYNQYPCNYFGPGYNN -o /Users/your_user_name/Desktop/my_cool_proteins/my_cool_IDR.pdb
+dodo rebuild model.pdb -o out.pdb --seed 42
 ```
-**Additional usage:**  
 
-All arguments for ``pdb-from-pdb`` are as follows:  
-``-o`` or ``--out_path`` : **required**. Where to save your protein structure file. Specify the file name here.  
-  
-``-m`` or ``--mode`` : optional. Default: **predicted**. ``--mode`` lets you specify how to build the IDR. The default **predicted** option predicts the end-to-end distance of your disordered regions from sequence and then makes the IDRs fit within that distance. Additional options are ``super_compact``, ``compact``, ``normal``, ``expanded``, ``super_expanded``, ``max_expansion``. These are pretty self explanatory.  
-  
-``-n`` or ``--num_models`` : optional. Default: 1. ``--num_models`` lets you choose the number of models of IDRs to make for your protein. The folded domains are left in the same location for all models wherease the IDRs vary.   
-  
-``-c`` or ``--no_CONECT_lines`` : optional. Default: False. The ``--no_CONECT_lines`` flag lets you make files without CONECT lines.  
-  
-``-api`` or ``--attempts_per_IDR`` : optional. Default: 50. ``--attempts_per_IDR`` lets you specify the number of attempts to make to the IDR.  
+v1 had no seed anywhere, so a stochastic structure builder wasn't reproducible and couldn't be
+regression-tested at all.
 
-``-apr`` or ``--attempts_per_residue`` : optional. Default: 1000. ``--attempts_per_residue`` lets you specify the number of attempts to make the coordinates for each residue for your IDR.   
-   
-  
-#### Changes
+## Why CONECT records matter
 
-Logging changes below.  
+DODO writes CONECT records by default, and you should leave them on. CA–CA spacing is 3.81 Å,
+past the automatic bond-detection cutoff in both VMD and PyMOL — so without CONECT a rebuilt
+region renders as a cloud of disconnected dots. This isn't cosmetic polish; its absence defeats
+the tool.
 
-* V0.15 - July 9, 2024. Fixed bug where you couldn't make structures from local PDBs when using metapredict if the structure was predicted to be completely disordered. Also fixed the inability to have multiple models for local PDBs that are fully disordered.
+## Current limitations
 
-* V0.14 - April 9, 2024. Fixed bug where you couldn't manually assign regions in the pdb_from_pdb function. Still need to add user-facing docs for this!
+Honestly stated, with what's fixed since 1.x marked.
 
-* V0.13 - December 11, 2023. Fixed bug where proteins predicted to be fully disordered failed to build. Shoutout to Github user alexpmagalhaes for pointing out the bug and reporting with enough information to make it a quick fix. 
+1. **~~Rebuilding uses a simple random walk, so conformations aren't scientifically useful.~~**
+   Partly addressed. The walk is now a self-avoiding, angle-constrained growth walk that hits
+   the predicted dimensions and produces a genuine ensemble across models. It is still a
+   geometric sampler, not a force field — for ensemble-grade conformations, use
+   `--engine starling`.
 
-* V0.12 - November 15, 2023. Added ability to save out the predicted folded domains as individual PDBs from Python and in the command line.  
+2. **~~Rebuilt IDRs contain only alpha carbons.~~** Addressed, with a caveat — see
+   [All-atom output](#all-atom-output) below.
 
-* V0.11 - October 30, 2023. Couple small fixes, updated documentation, fixed some embarassingly bad typos.
+3. **~~Unusual-bond warnings in VMD.~~** Addressed: correct CONECT records, correct atom-name
+   columns, and the element column written. (v1 right-justified atom names from column 13 and
+   omitted the element, with the result that MDTraj read its CA-only output as 912 *calcium*
+   atoms.)
 
-* V0.10 - October 24, 2023. Big changes! Added functionality to generate multiple IDRs for a single PDB so you can make 'simulation-like' visualizations when viewing in PDB! I also added command-line functionality and fixed some more bugs. Note: the multiple models are for visualization only and not equivalent to actual simulations!
+4. **~~Some visualization modes don't work in VMD; tube and trace fail.~~** Should be addressed
+   by 2 and 3 together, but please report if you still see it.
 
-* V0.06 - October 17, 2023. Added functionality to place folded domains in an approximate linear arrangement for visualization purposes.  
+5. **Assembly rebuilding is not implemented.** Multi-chain structures are read and written
+   correctly, and regions are identified per chain, but rebuilding unmodelled regions of an EM
+   assembly against the deposited sequence isn't wired up yet.
 
-* V0.05 - October 5, 2023. Major overhaul to the backend to make structure generation more robust and efficient. Changed some user facing functionality and added ability to generate a PDB of an IDR from sequence alone. Improved documentation.
+### All-atom output
 
-* V0.04 - September 29, 2023. Made it so the atoms of folded domains can be kept in the structure. Only CA for the IDRs for now. Improved performance a bit. Still need to clean up the code a lot.. Made everything callable by the PDBParserObj made from the class pdb_tools.PDBParser 
+`--all-atom` places N, C and O for rebuilt regions. It is **off by default** because it
+currently refuses a fraction of generated traces, and that fraction grows with chain length:
+roughly 12/12 accepted at 20 residues, 6/12 at 100, 2/12 at 200.
 
-* V0.03 - September 28, 2023. Made it so you can save the IDRs generated from sequence alone. Removed the ability to make all atom structures because it wasn't great. This hopefully will come in the future. 
+The cause is understood and measured. Reconstructability constrains the **change** in CA–CA–CA
+pseudo-angle between consecutive residues, not its magnitude: the allowed change is about 35°
+at a base angle of 95° and collapses to 4° at 150°. The generator doesn't yet enforce that joint
+constraint, so a long chain almost always contains one unreconstructable junction. The fix is a
+constraint on consecutive angles during candidate selection.
 
-* V0.02 - September 26, 2023. Added generating IDR coords from sequence alone. Added filling in all atom coordinates from alpha carbon coordinate using fixed bond angles and distances, which isn't great but is better than nothing. 
+Side chains are CB only. A full rotamer library is deliberately not implemented rather than
+fabricated.
 
-* V0.01 - September 25, 2023. Initial release.  
+## Development
 
+```bash
+git clone https://github.com/idptools/dodo.git
+cd dodo
+pip install -e ".[dev]"
+pytest                      # 1400 tests
+pytest -m "not slow"        # the fast subset
+ruff check src tests && mypy
+pre-commit install
+```
 
-### Copyright
+Tests marked `network` hit the AlphaFold database, RCSB and UniProt; CI deselects them from the
+main matrix and runs them separately so an upstream outage doesn't redden a pull request.
 
-Copyright (c) 2023, Ryan Emenecker - Holehouse Lab
+## Changes
 
+### 2.0 — in development
+
+A full rewrite. The 1.x API is gone; see [Migrating from 1.x](#migrating-from-1x).
+
+**Correctness fixes that changed output**
+
+- **AlphaFold downloads work again.** v1 hardcoded `AF-{id}-F1-model_v4.pdb`; EBI has since
+  published `model_v6` and retired the older URLs, so v4 and v5 both 404 and *every*
+  `pdb_from_name` call in 1.x fails today. The URL is now resolved from the AFDB API, which
+  survives future version bumps.
+- **Build modes are length-independent** (see [Build modes](#build-modes)).
+- **Multi-model output is a real ensemble** (see [above](#multi-model-output-is-now-a-real-ensemble)).
+- **Region identification: two domain-merging bugs fixed.** A single candidate folded block
+  yielded *zero* folded domains, so a clean single-domain protein came out entirely disordered
+  and its real domain was replaced by a random walk. And the gap before the last block was
+  never tested, so an IDR between the last two blocks was absorbed into the final domain and
+  never rebuilt.
+- **The folded/disordered score no longer depends on composition.** v1 thresholded a raw
+  atom-*pair* count, which scales with a residue's own heavy-atom count: measured within one
+  folded domain, every glycine fell below the cutoff while 94% of Trp/Phe/Tyr sat above it. The
+  score now counts neighbouring residues by their alpha carbons, so composition can't bias it —
+  and it's invariant to whether side chains are present, which matters because DODO must handle
+  full models, structures with unmodelled side chains, and its own output.
+- **Reader data loss fixed.** Mid-chain selenomethionine no longer vanishes (which fabricated a
+  phantom chain break); insertion codes keep residues 10 and 10A distinct; alternate conformers
+  no longer duplicate atoms; multi-model files are no longer merged into one impossible
+  structure; and hybrid-36 serials are decoded, so files over 99,999 atoms — i.e. the EM
+  assemblies this tool targets — no longer crash outright.
+- **CA–CA bond length is 3.81 Å everywhere.** v1 had 3.8, 3.856 and 3.89 live simultaneously.
+- **Generated angles are restricted to what can be reconstructed to all-atom.** A CA
+  pseudo-angle is coupled to N–CA–C for a trans peptide, so generating a wide angle can make the
+  output un-reconstructable by construction.
+- **Failure is never silent.** v1 builders returned coordinate arrays full of exact `(0,0,0)`
+  rows on total failure, samplers returned NaN, and the domain placer returned positions it had
+  already determined to be clashing. Everything now raises or reports an explicit success mask.
+
+**New**
+
+- Single `dodo` CLI with `rebuild` / `fetch` / `sequence` / `regions` subcommands.
+- mmCIF reading, including `entity_poly`, `struct_ref` and unobserved-residue records.
+- pLDDT-based region identification.
+- Bond-length regularization for generative-model output (`dodo.geometry.regularize`). STARLING
+  is a diffusion model, so its CA–CA distances scatter rather than sitting on the bond length.
+  This is a constrained projection, not a rebuild: measured bond error 0.43–1.13 Å → 5×10⁻⁷ Å
+  while preserving radius of gyration to within 0.03%.
+- Seeds throughout, so output is reproducible.
+- Type annotations, `mypy --strict` clean, `py.typed` shipped.
+
+**Packaging and infrastructure**
+
+- Python 3.10+; 3.8 and 3.9 are end-of-life.
+- Base install needs only numpy and scipy. Everything heavy is an extra.
+- **The distribution now contains the package.** 1.x shipped a wheel that excluded the entire
+  backend — 12.7 KB with none of the engine — while `pip install .` still exited 0.
+- **CI now runs.** The workflow's trigger key was `off:`, which YAML parses as boolean false, so
+  GitHub never ran anything on a 3,800-line numerics package.
+
+### 1.x
+
+<details>
+<summary>Earlier changelog</summary>
+
+- **0.15** — 2024-07-09. Fixed building from local PDBs with metapredict when the structure was
+  predicted fully disordered; fixed multiple models for fully disordered local PDBs.
+- **0.14** — 2024-04-09. Fixed manual region assignment in `pdb_from_pdb`.
+- **0.13** — 2023-12-11. Fixed fully-disordered proteins failing to build. Thanks to GitHub user
+  alexpmagalhaes for a well-reported bug.
+- **0.12** — 2023-11-15. Save predicted folded domains as individual PDBs.
+- **0.11** — 2023-10-30. Small fixes, docs, typos.
+- **0.10** — 2023-10-24. Multiple IDR models in one PDB for simulation-like visualization;
+  command-line functionality.
+- **0.06** — 2023-10-17. Approximate linear arrangement of folded domains.
+- **0.05** — 2023-10-05. Backend overhaul; IDR-from-sequence.
+- **0.04** — 2023-09-29. Keep folded-domain atoms.
+- **0.03** — 2023-09-28. Save sequence-only IDRs.
+- **0.02** — 2023-09-26. IDR coordinates from sequence.
+- **0.01** — 2023-09-25. Initial release.
+
+</details>
+
+## Migrating from 1.x
+
+| 1.x | 2.0 |
+|---|---|
+| `build.pdb_from_pdb(path, out_path=...)` | `dodo.rebuild(path)` → `dodo.write_pdb(report.models, out)` |
+| `build.pdb_from_name(name, out_path=...)` | `dodo.fetch_alphafold(accession)` then `dodo.rebuild(...)`, or `dodo fetch` |
+| `build.pdb_from_sequence(seq, out_path=...)` | `dodo.build_from_sequence(seq)` |
+| `pdb-from-pdb file -o out` | `dodo rebuild file -o out` |
+| `pdb-from-name "human p53" -o out` | `dodo fetch "human p53" -o out` |
+| `pdb-from-sequence SEQ -o out` | `dodo sequence SEQ -o out` |
+| `num_models=N` | `n_models=N` / `-n N` |
+| `mode='normal'` (0.8 Å/residue) | `mode='predicted'` (1.0× predicted) — see [Build modes](#build-modes) |
+| `use_metapredict=True` | `strategy='metapredict'` |
+| `regions_dict={...}` | `assign_regions_from_spec(...)`, 1-based inclusive |
+| `attempts_per_region`, `attempts_per_coord` | removed; retry budgets are internal and reported on failure |
+| `graph=True` | removed; use `dodo.regions` and plot the models yourself |
+| `beta_for_FD_IDR=True` | `write_pdb(..., annotate_regions=True)` |
+| `just_fds=True` | not yet reimplemented |
+| functions returned `None` and printed | functions return a `RebuildReport` |
+
+## Copyright
+
+Copyright (c) 2023-2026, Ryan Emenecker — Holehouse Lab
 
 #### Acknowledgements
- 
-Project based on the 
-[Computational Molecular Science Python Cookiecutter](https://github.com/molssi/cookiecutter-cms) version 1.1.
+
+Originally based on the
+[Computational Molecular Science Python Cookiecutter](https://github.com/molssi/cookiecutter-cms)
+version 1.1.

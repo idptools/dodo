@@ -832,8 +832,27 @@ def test_ensemble_with_no_usable_conformer_raises(monkeypatch: pytest.MonkeyPatc
 def test_screening_rejects_bad_geometry_and_says_why() -> None:
     rng = np.random.default_rng(41)
     good = cone_chain(30, rng, target=40.0)
+
+    # Pull the tail apart ALONG the bond it has to break, by a derived amount. Displacing it
+    # by a fixed vector in x (which is what this used to do) only lengthens that bond when the
+    # bond happens to point the same way: the generation window moved, the chain's geometry
+    # moved with it, and the "9-ish A bond" came out at 3.86 A -- inside the screen, so the
+    # conformer this test exists to reject was kept. Translating along the bond's own
+    # direction changes that one distance and nothing else at all: every other bond, every
+    # pseudo-angle (both directions either side of the cut are preserved) and the whole
+    # geometry of each half are untouched, so the screen has exactly one thing to object to.
     stretched = good.copy()
-    stretched[15:] += np.array([6.0, 0.0, 0.0])  # one 9-ish A bond
+    direction = good[15] - good[14]
+    direction /= np.linalg.norm(direction)
+    stretched[15:] += direction * S.BOND_SCREEN_MAX_LENGTH
+    broken_bond = C.CA_CA_BOND_LENGTH + S.BOND_SCREEN_MAX_LENGTH
+    # Premise, so this cannot silently stop testing the bond gate again: one bond a whole
+    # extra virtual bond beyond the ceiling, and nothing else disturbed.
+    bonds = ca_bond_lengths(stretched)
+    assert float(bonds.max()) == pytest.approx(broken_bond)
+    assert np.count_nonzero(bonds > S.BOND_SCREEN_MAX_LENGTH) == 1
+    assert ca_pseudo_angles(stretched) == pytest.approx(ca_pseudo_angles(good))
+
     folded = good.copy()
     folded[10] = folded[8] + 0.5 * (folded[9] - folded[8])  # a clash and a sharp angle
     kept, notes = S.screen_conformers(np.stack([good, stretched, folded]))
@@ -2510,7 +2529,14 @@ def test_screen_rejects_bonds_longer_than_a_peptide_can_make() -> None:
     chain = stretched_chain()
     assert float(np.abs(ca_bond_lengths(chain) - 4.25).max()) < 1e-9  # premise
     angles = ca_pseudo_angles(chain)
-    assert angles.min() >= C.BACKBONE_ANGLE_MIN and angles.max() <= C.BACKBONE_ANGLE_MAX
+    # The premise is that nothing but the bonds is wrong, so the angles must be inside the
+    # generation window -- within float noise. ``cone_chain`` builds from integer degrees off
+    # ``backbone_angle_grid()`` and re-measuring one from coordinates gives back e.g.
+    # 90.99999999999999 for a 91-degree turn, which an exact ``>=`` reads as a violation. The
+    # window itself is not loosened: the epsilon is the same 1e-6 the other window assertions
+    # in this file carry, and the bounds are still the constants.
+    assert angles.min() >= C.BACKBONE_ANGLE_MIN - 1e-6
+    assert angles.max() <= C.BACKBONE_ANGLE_MAX + 1e-6
     assert S._min_internal_ca_distance(chain) >= C.CA_CLASH_DISTANCE
     kept, notes = S.screen_conformers(np.stack([chain] * 3))
     assert kept.size == 0

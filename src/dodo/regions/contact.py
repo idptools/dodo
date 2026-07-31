@@ -51,6 +51,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from ..constants import (
+    CA_CONTACT_RADIUS,
     CONTACT_RADIUS,
     CONTACT_SCORE_SMOOTHING_WINDOW,
     LOOP_CONTACT_CUTOFF,
@@ -60,8 +61,10 @@ from ..structure import Structure
 
 __all__ = [
     "ContactProfile",
+    "atom_pair_counts",
     "ca_neighbour_counts",
     "contact_profile",
+    "density_profile",
     "is_loop_like",
     "loop_contact_counts",
     "smooth",
@@ -125,6 +128,66 @@ def smooth(values: np.ndarray, window: int) -> np.ndarray:
     return averaged
 
 
+def atom_pair_counts(
+    structure: Structure,
+    *,
+    radius: float = CONTACT_RADIUS,
+) -> np.ndarray:
+    """Count all-atom pairs within ``radius`` of each residue: DODO's original density score.
+
+    This is the metric the package author developed and validated, and it reportedly
+    outperforms sequence-based disorder predictors at drawing region boundaries. It counts, for
+    each residue, the number of (own atom, other residue's atom) pairs closer than ``radius``.
+    A residue buried in a folded core has many; one dangling in an IDR has few.
+
+    Reimplemented over a KD-tree rather than changed. v1 computed the identical quantity with a
+    quadruple-nested Python loop over residues and atoms, which took 10.1 s on a 1086-residue
+    model; this returns the same numbers in 7.2 ms. Getting it faster was an explicit goal, so
+    the speedup is the point and the metric is deliberately untouched.
+
+    Note this score IS composition-sensitive, because a residue with more heavy atoms
+    contributes more pairs: measured within one folded domain, the correlation with heavy-atom
+    count is r = 0.65, every glycine falls below the 480 threshold (mean 292) and 94% of
+    Trp/Phe/Tyr sit above it (mean 943). See :func:`contact_profile` for a normalized
+    alternative. The bias is real, but so is the author's finding that this metric works, and
+    the merge and smoothing stages downstream absorb a good deal of per-residue noise. It stays
+    the default; the alternative is available for comparison.
+
+    Excludes only a residue's own atoms, matching v1's ``res_ind_1 != res_ind_2`` exactly. It
+    deliberately does NOT exclude sequence neighbours, because the 480 threshold was tuned
+    against counts that include them.
+
+    Parameters
+    ----------
+    structure
+        The structure to score.
+    radius
+        Contact radius in Angstroms. Tuned at 8.0; larger values start merging folded domains
+        that AlphaFold happens to park close together in space.
+
+    Returns
+    -------
+    np.ndarray
+        Pair count per residue, ``(n_residues,)`` int64.
+    """
+    if structure.n_residues == 0:
+        return np.zeros(0, dtype=np.int64)
+
+    tree = cKDTree(structure.xyz)
+    pairs = tree.query_pairs(radius, output_type="ndarray")
+
+    counts = np.zeros(structure.n_residues, dtype=np.int64)
+    if pairs.size:
+        residue_a = structure.residue_index[pairs[:, 0]]
+        residue_b = structure.residue_index[pairs[:, 1]]
+        keep = residue_a != residue_b
+        if np.any(keep):
+            # Each pair is reported once, so credit both residues.
+            contributors = np.concatenate([residue_a[keep], residue_b[keep]])
+            counts += np.bincount(contributors, minlength=structure.n_residues)
+    return counts
+
+
 def ca_neighbour_counts(
     structure: Structure,
     *,
@@ -174,7 +237,7 @@ def ca_neighbour_counts(
 def contact_profile(
     structure: Structure,
     *,
-    radius: float = CONTACT_RADIUS,
+    radius: float = CA_CONTACT_RADIUS,
     window: int = CONTACT_SCORE_SMOOTHING_WINDOW,
     exclude_within: int = 2,
 ) -> ContactProfile:
@@ -210,6 +273,25 @@ def contact_profile(
         window=window,
         radius=radius,
     )
+
+
+def density_profile(
+    structure: Structure,
+    *,
+    radius: float = CONTACT_RADIUS,
+    window: int = CONTACT_SCORE_SMOOTHING_WINDOW,
+) -> ContactProfile:
+    """Smoothed version of DODO's primary all-atom density score.
+
+    Wraps :func:`atom_pair_counts` with the same moving average the alternative score uses.
+    Smoothing matters for a reason beyond tidiness: the raw per-residue score is noisy enough to
+    fragment a single domain into dozens of above/below-threshold blocks, and that noise used to
+    *mask* two domain-merging bugs downstream (see :mod:`dodo.regions.identify`) because a
+    domain arriving as 45 fragments never reached the single-block or last-gap code paths where
+    they lived.
+    """
+    raw = atom_pair_counts(structure, radius=radius).astype(np.float64)
+    return ContactProfile(raw=raw, smoothed=smooth(raw, window), window=window, radius=radius)
 
 
 def loop_contact_counts(

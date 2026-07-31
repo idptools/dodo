@@ -80,9 +80,9 @@ dodo regions AF-P04637-F1-model_v6.pdb
 |---|---|---|
 | `-o`, `--out` | *required* | Output PDB path |
 | `-m`, `--mode` | `predicted` | Target dimension as a multiplier on the predicted end-to-end distance |
-| `-n`, `--models` | `1` | Number of conformers. Folded domains stay put; each model draws its own IDR dimensions |
+| `-n`, `--models` | `1` | Number of conformers. Folded domains are positioned once and held fixed across all models; only the disordered regions differ |
 | `-e`, `--engine` | `walk` | `walk` or `starling` |
-| `-s`, `--strategy` | `auto` | How to identify regions: `auto`, `contact`, `plddt`, `metapredict` |
+| `-s`, `--strategy` | `auto` | How to identify regions: `auto`, `density`, `contact`, `plddt`, `metapredict` |
 | `--all-atom` | off | Place N, C and O for rebuilt regions ([caveat](#all-atom-output)) |
 | `--sidechains` | off | Also place CB; only with `--all-atom` |
 | `--seed` | none | Makes output reproducible |
@@ -140,6 +140,36 @@ The core `Structure` is a struct-of-arrays type: one coordinate array, with `Dom
 `Chain` as zero-copy views into it. Indices are 0-based positional throughout; PDB numbering is
 carried as data and never used as an index. Spans are half-open `[start, stop)`.
 
+## How it works
+
+The order of these steps is not incidental — it's the algorithm.
+
+1. **Identify** folded domains, IDRs, and loops (IDRs tethered at both ends inside a *single*
+   folded domain), using the all-atom density metric.
+2. **Predict** each IDR's end-to-end distance with ALBATROSS. Loops get no prediction — their
+   span is already dictated by the folded-domain geometry they bridge.
+3. **Reposition the folded domains.** Translate and rotate each one as a rigid body so that
+   consecutive domains sit at the predicted end-to-end distance of the IDR between them.
+4. **Rebuild loops.**
+5. **Rebuild connecting IDRs** between folded domains.
+6. **Rebuild terminal IDRs.**
+
+Steps 4–6 run in that order because that is decreasing order of constraint: a loop is pinned at
+both ends inside one domain, a connecting IDR is pinned between two domains that have already
+been positioned for it, and a terminal IDR is free at one end and can go almost anywhere. Build
+the loose regions first and they occupy space the tight ones then cannot avoid.
+
+**Step 3 is the one that makes the rest work, and it is easy to miss.** AlphaFold has no way to
+know where to put two domains joined by a long disordered linker, so it packs them together —
+measured on real models, **2–3.6× closer than the linker between them predicts** (p300's
+151-residue linker: a 26.1 Å gap against a 94.9 Å prediction). Rebuilding the linker into that
+gap can only produce a compact blob wedged between domains. The fix isn't a better linker
+builder; it's moving the domains.
+
+**Folded-domain atoms are never rebuilt.** They come from AlphaFold (or AlphaFold3, or a
+crystal structure) and are trusted. A domain only ever moves as a rigid body, and DODO verifies
+that: internal geometry is asserted unchanged to ~10⁻¹³ Å after every transform.
+
 ## Build modes
 
 Modes are **multipliers on the predicted end-to-end distance**:
@@ -194,17 +224,21 @@ Use the fallback to keep a light install working, not to avoid installing sparro
 
 ## Region identification
 
-Three strategies behind one flag:
+Four strategies behind one flag:
 
-- **`contact`** — geometric burial from the coordinates. Works on any structure, including
-  experimental ones with no confidence metric.
-- **`plddt`** — AlphaFold's own per-residue confidence, already in the B-factor column. Free,
-  and it's the model's own assessment of where it was guessing. (v1 parsed pLDDT into a field
-  and then never looked at it, re-deriving confidence geometrically instead.)
-- **`metapredict`** — sequence-only. Needs no structure, so it's the path for building from
-  sequence, and it's much faster.
-- **`auto`** (default) — pLDDT when the B-factors look like pLDDT, contacts otherwise. It tells
-  you which it chose.
+- **`density`** — DODO's original all-atom density metric: all-atom pairs within 8 Å per
+  residue, thresholded at 480. **This is the method DODO was built and validated on, and it
+  draws better boundaries than sequence-based disorder predictors.** Reimplemented over a
+  KD-tree rather than changed — same numbers, 10.1 s down to 7 ms on a 1,086-residue model.
+- **`contact`** — a CA-only alternative. Composition-free (every residue has exactly one CA)
+  and invariant to whether side chains are modelled, which the density score is not. Useful for
+  comparison and for CA-only input, but it is not the validated method.
+- **`plddt`** — AlphaFold's own per-residue confidence, from the B-factor column. Cheap, but
+  the density method beats disorder-based calls, so this is an explicit opt-in.
+- **`metapredict`** — sequence-only. The backup, and the only option with no structure at all.
+- **`auto`** (default) — `density` for all-atom input, `contact` for CA-only input (where a
+  pair count can't be compared against the tuned threshold). It never picks pLDDT on its own,
+  and it tells you what it chose.
 
 Every assignment keeps its score profile and threshold, so a boundary you disagree with can be
 audited rather than just re-run with different numbers.
@@ -223,8 +257,12 @@ failed later with something unrelated.
 
 ## Multi-model output is now a real ensemble
 
-`-n 10` writes ten conformers as MODEL/ENDMDL frames. Folded domains stay put; the disordered
-regions differ.
+`-n 10` writes ten conformers as MODEL/ENDMDL frames. The folded domains are positioned once
+and held fixed across every model, so a viewer flicking between frames sees only the disordered
+regions move — if the domains were re-placed per model they would jump around and destroy the
+illusion. One consequence worth knowing: a *connecting* IDR's end-to-end distance is fixed by
+its anchors, so across models its path varies but its span cannot. A *terminal* IDR is free at
+one end and does scatter.
 
 **In 1.x they effectively didn't.** v1 placed folded domains once outside the model loop and
 targeted only the *mean* predicted end-to-end distance, so every model shared one arrangement

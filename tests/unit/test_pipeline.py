@@ -36,16 +36,83 @@ class TestRebuild:
         assert report.n_built > 0
         assert len(report.models) == 1
 
-    def test_folded_domains_are_left_alone(self) -> None:
-        """DODO rebuilds disorder. A folded domain must come out bit-identical."""
+    def test_folded_domains_move_rigidly_and_are_never_rebuilt(self) -> None:
+        """Folded-domain atoms are transformed, never regenerated.
+
+        This test previously asserted folded-domain coordinates were bit-identical, which is
+        the wrong invariant and hid the fact that step 3 of the algorithm was missing entirely.
+        Folded domains DO move -- that is the whole point of repositioning them so a linker can
+        reach its predicted dimensions -- they just move as rigid bodies. Their internal
+        geometry must survive exactly; their position and orientation must not be assumed to.
+
+        Loop residues are excluded, because a loop inside a folded domain IS rebuilt.
+        """
         original = read_structure(DNMT3A)
         report = rebuild(DNMT3A, seed=0)
         rebuilt = report.models[0]
+
         for domain in rebuilt.domains:
-            if domain.kind is DomainKind.FOLDED:
-                before = original.xyz[domain.atom_slice]
-                after = rebuilt.xyz[domain.atom_slice]
-                assert np.array_equal(before, after), f"{domain!r} moved"
+            if domain.kind is not DomainKind.FOLDED:
+                continue
+            residues = np.arange(domain.span.start, domain.span.stop)
+            in_loop = np.zeros(residues.size, dtype=bool)
+            for loop in domain.loops:
+                in_loop |= (residues >= loop.start) & (residues < loop.stop)
+
+            before = original.ca_xyz[domain.span.slice][~in_loop]
+            after = rebuilt.ca_xyz[domain.span.slice][~in_loop]
+            if before.shape[0] < 2:
+                continue
+            # Distance to the domain's own centroid is invariant under any rigid motion, and
+            # detects scaling, shearing or reflection.
+            radii_before = np.linalg.norm(before - before.mean(axis=0), axis=1)
+            radii_after = np.linalg.norm(after - after.mean(axis=0), axis=1)
+            drift = float(np.abs(radii_before - radii_after).max())
+            assert drift < 1e-6, f"{domain!r} was deformed, not moved: drift {drift:.2e} A"
+
+    def test_repositioning_actually_happens(self) -> None:
+        """Step 3 must run. Its absence is what made an earlier version's output wrong.
+
+        AlphaFold packs domains joined by a long linker far closer than the linker predicts --
+        measured, 2-3.6x closer on real models -- so if nothing moves, the linker is built into
+        a gap that bears no relation to its sequence.
+        """
+        report = rebuild(DNMT3A, seed=0)
+        assert report.placements, "no folded domains were considered for repositioning"
+        moved = [p for p in report.placements if p.moved]
+        assert moved, "no folded domain moved; step 3 did not run"
+        for placement in moved:
+            assert placement.target_separation is not None
+            assert placement.achieved_separation == pytest.approx(
+                placement.target_separation, abs=0.5
+            ), str(placement)
+
+    def test_linkers_reach_their_predicted_dimensions(self) -> None:
+        """The point of the whole exercise: a connecting IDR ends up the right size."""
+        report = rebuild(DNMT3A, seed=0)
+        connecting = [
+            o
+            for o in report.outcomes
+            if o.built and o.target is not None and o.requested_end_to_end is not None
+        ]
+        assert connecting
+        for outcome in connecting:
+            error = abs(outcome.achieved_end_to_end - outcome.requested_end_to_end)
+            relative = error / outcome.requested_end_to_end
+            assert relative < 0.15, str(outcome)
+
+    def test_loops_are_rebuilt(self) -> None:
+        """Loops are a distinct region type and must actually be built.
+
+        An earlier version identified them and then only ever rebuilt IDRs, so loops were
+        reported in the region assignment and then silently left alone.
+        """
+        report = rebuild(DNMT3A, seed=0)
+        has_loops = any(d.loops for d in report.models[0].domains)
+        assert has_loops, "fixture needs a folded domain with a loop for this to mean anything"
+        assert any("loop" in (o.reason or "") or o.target is None for o in report.outcomes), (
+            "no loop appears in the outcomes; loops are not being rebuilt"
+        )
 
     def test_rebuilt_regions_are_physically_valid(self) -> None:
         """Every rebuilt region passes the clash-aware gate, junctions included.

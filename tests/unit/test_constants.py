@@ -116,38 +116,62 @@ class TestBackboneAngles:
     def test_window_brackets_the_mean_on_both_sides(self) -> None:
         """The window spans the bulk of the distribution but not its tails.
 
-        The two bounds have DIFFERENT provenance, so they are asserted differently:
+        Both bounds have the SAME provenance -- the author's window, tuned against the
+        measured AF2 angle distribution -- so both are asserted the same way, against that
+        distribution's mean and sd. The upper bound was briefly re-derived from what all-atom
+        reconstruction can represent (capped at 150.0) and that was reverted, so a symmetric
+        sd-based assertion is the right property for it again; see
+        :meth:`test_window_is_measured_rather_than_capped_for_all_atom_reconstruction`.
 
-        * the lower bound is tuned against the measured distribution (mean -1.31 sd) and
-          spans helical geometry;
-        * the upper bound is derived from what all-atom reconstruction can represent, not
-          from the distribution. A CA pseudo-angle is coupled to N-CA-C for a trans
-          peptide, so a wide pseudo-angle forces tau away from ideal -- generating an angle
-          DODO cannot reconstruct would make its own output unusable.
-
-        So do not reinstate a symmetric sd-based assertion here; it would be asserting the
-        wrong property of the upper bound.
+        Neither bound is a round number of sd and the window is not symmetric about the
+        mean, so the band is deliberately loose: tidying it to mean +/- 1 sd would narrow it
+        to 99-151 and drop helical geometry.
         """
         low_sd = (C.BACKBONE_ANGLE_MEAN - C.BACKBONE_ANGLE_MIN) / C.BACKBONE_ANGLE_SD
+        high_sd = (C.BACKBONE_ANGLE_MAX - C.BACKBONE_ANGLE_MEAN) / C.BACKBONE_ANGLE_SD
         assert 1.0 <= low_sd <= 2.0
+        assert 1.0 <= high_sd <= 2.0
         assert C.BACKBONE_ANGLE_MIN < C.BACKBONE_ANGLE_MEAN < C.BACKBONE_ANGLE_MAX
 
-    def test_upper_bound_is_reconstructable_to_all_atom(self) -> None:
-        """Every angle DODO generates must be representable as a trans backbone.
+    def test_window_is_measured_rather_than_capped_for_all_atom_reconstruction(self) -> None:
+        """The window is the measured distribution, NOT the all-atom-reconstructable range.
 
-        This is the constraint that sets the upper bound, and the boundary it has to sit
-        under is the one the reconstruction actually builds with -- ``place_backbone``'s own
-        ``_N_CA_C_TOLERANCE``, not an ideal tau. Measured boundary is 160.5 deg at that
-        tolerance (154.6 when it was 8.0 rather than 14.0 degrees); the window stops below it
-        with margin. Asserting against ``max_reconstructable_ca_angle()`` with its default
-        zero tolerance would be asserting a *different* property: that the window sits under
-        the ideal-tau ceiling of 146.5, which it deliberately does not -- see
-        TestClosure.test_max_reconstructable_ca_angle_is_below_the_sampling_window.
+        This replaces an assertion that the upper bound sits *under* the all-atom ceiling.
+        That policy is reversed: the bound was narrowed to 150.0 so that every generated
+        angle would be reconstructable, and it is back at the author's tuned 161.0. The
+        priority order is explicit -- (1) the CA-only pipeline, (2) backbones, (3) all-atom,
+        (4) STARLING -- and narrowing the *generation* window to serve (3) degrades (1), by
+        making chains more compact than the measured distribution supports. The all-atom path
+        has to grow its own constraint instead, and a magnitude cap was never that constraint:
+        the real one is on the *change* in pseudo-angle between consecutive residues (measured
+        allowance ~35 deg at a base angle of 95, collapsing to ~4 deg at 150).
+
+        So the property asserted here is the consequence, recorded rather than forgotten:
+        part of the generation window is NOT all-atom reconstructable. Both ceilings are
+        derived from :mod:`dodo.construct.backbone` rather than written down, so this test
+        follows any change to the peptide geometry or to the tau tolerance.
         """
         from dodo.construct.backbone import _N_CA_C_TOLERANCE, max_reconstructable_ca_angle
 
-        ceiling = max_reconstructable_ca_angle(n_ca_c_tolerance=_N_CA_C_TOLERANCE)
-        assert ceiling > C.BACKBONE_ANGLE_MAX
+        grid = C.backbone_angle_grid()
+
+        # At the tolerance place_backbone actually builds with, the top of the window is over
+        # the ceiling -- so the window admits angles no trans backbone can realize.
+        tolerated = max_reconstructable_ca_angle(n_ca_c_tolerance=_N_CA_C_TOLERANCE)
+        assert tolerated < C.BACKBONE_ANGLE_MAX
+        beyond_tolerated = int(np.count_nonzero(grid > tolerated))
+        assert beyond_tolerated > 0
+        # ... but only the very top of it, which is why the CA-only cost of capping the
+        # window is not worth paying for the all-atom benefit.
+        assert beyond_tolerated < grid.size
+
+        # At an *ideal* N-CA-C the unreconstructable share is substantial, and that is the
+        # honest statement of the coupling: it is not a rounding-error overlap.
+        ideal = max_reconstructable_ca_angle()
+        assert ideal < C.BACKBONE_ANGLE_MAX
+        assert int(np.count_nonzero(grid > ideal)) > beyond_tolerated
+        # The coupling bites at the wide end only; helical geometry is unaffected.
+        assert ideal > C.BACKBONE_ANGLE_MIN
 
     def test_ideal_angle_is_inside_the_window(self) -> None:
         assert C.BACKBONE_ANGLE_MIN <= C.BACKBONE_ANGLE_IDEAL <= C.BACKBONE_ANGLE_MAX

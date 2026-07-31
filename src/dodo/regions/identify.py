@@ -8,23 +8,26 @@ rebuilt at all -- so the output silently presents an AlphaFold artifact as struc
 
 Strategies
 ----------
-Three ways to make the call, behind one enum:
-
+``DENSITY`` (the default)
+    DODO's original all-atom density score: all-atom pairs within 8 A per residue, thresholded
+    at 480. This is the method the package was built and validated on, and the author reports
+    it draws better boundaries than sequence-based disorder predictors. It is reimplemented
+    over a KD-tree rather than changed -- same numbers, 10.1 s down to 7 ms on a 1086-residue
+    model.
 ``CONTACT``
-    Geometric burial from the coordinates (:mod:`dodo.regions.contact`). Works on any
-    structure, including experimental ones with no confidence metric.
+    An alternative CA-only burial score. Composition-free (every residue has exactly one CA)
+    and invariant to whether side chains are modelled, which the density score is not. Useful
+    for comparison and for CA-only input, but it is not the validated method.
 ``PLDDT``
-    AlphaFold's own per-residue confidence, which is already sitting in the B-factor
-    column. Free, and it is the model's own assessment of where it is guessing. The
-    pre-rewrite code parsed it into a field and then never looked at it, choosing instead to
-    re-derive confidence geometrically from the coordinates AlphaFold produced *because* it
-    was uncertain.
+    AlphaFold's own per-residue confidence, from the B-factor column. Cheap, and it is the
+    model's own account of where it was guessing -- but the density method reportedly beats
+    disorder-based calls, so this is an explicit opt-in rather than a default.
 ``METAPREDICT``
-    Sequence-only disorder prediction. Needs no structure at all, so it is the strategy for
-    building from sequence, and it is far faster than the geometric route.
+    Sequence-only disorder prediction. The backup, and the only option when there is no
+    structure at all.
 
-:data:`Strategy.AUTO` picks ``PLDDT`` when the structure looks like an AlphaFold model and
-``CONTACT`` otherwise.
+:data:`Strategy.AUTO` resolves to ``DENSITY`` for all-atom input and ``CONTACT`` for CA-only
+input, where a pair count cannot be compared against the tuned threshold.
 
 The two merge bugs
 ------------------
@@ -56,6 +59,7 @@ from enum import Enum
 import numpy as np
 
 from ..constants import (
+    CA_CONTACT_SCORE_THRESHOLD,
     CONTACT_SCORE_THRESHOLD,
     MAX_INTERNAL_GAP,
     MIN_FOLDED_DOMAIN_LENGTH,
@@ -66,7 +70,7 @@ from ..constants import (
 )
 from ..exceptions import InvalidRegionError, MissingDependencyError
 from ..structure import Chain, Domain, DomainKind, Span, Structure
-from .contact import contact_profile, is_loop_like, loop_contact_counts
+from .contact import contact_profile, density_profile, is_loop_like, loop_contact_counts
 
 __all__ = [
     "RegionAssignment",
@@ -81,13 +85,21 @@ __all__ = [
 class Strategy(str, Enum):
     """How to decide which residues are folded."""
 
-    #: Geometric burial from coordinates.
+    #: DODO's original all-atom density score. The default, and the method the package was
+    #: built and validated on -- the author reports it outperforms sequence-based disorder
+    #: predictors at drawing region boundaries.
+    DENSITY = "density"
+    #: Alternative CA-only burial score: composition-free and invariant to whether side chains
+    #: are modelled, but not the validated method. Available for comparison.
     CONTACT = "contact"
     #: AlphaFold pLDDT, read from the B-factor column.
     PLDDT = "plddt"
     #: Sequence-only disorder prediction via metapredict.
     METAPREDICT = "metapredict"
-    #: pLDDT for AlphaFold models, contact scoring otherwise.
+    #: Resolves to :attr:`DENSITY` when the structure has side chains to measure, and to
+    #: :attr:`CONTACT` when it is CA-only (where a pair count is not comparable to the tuned
+    #: threshold). Deliberately does NOT prefer pLDDT: the density method was found to work
+    #: better, and pLDDT is available as an explicit choice.
     AUTO = "auto"
 
 
@@ -251,6 +263,15 @@ def merge_blocks(blocks: list[tuple[int, int]], *, max_gap: int) -> list[tuple[i
         else:
             merged.append((start, stop))
     return merged
+
+
+def _folded_mask_from_density(
+    structure: Structure, chain: Chain, threshold: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Score with DODO's original all-atom density metric. Returns (score, folded_mask)."""
+    profile = density_profile(structure)
+    score = profile.smoothed[chain.span.slice]
+    return score, score >= threshold
 
 
 def _folded_mask_from_contact(
@@ -541,13 +562,15 @@ def assign_regions(
         notes: list[str] = []
         resolved = strategy
         if resolved is Strategy.AUTO:
-            resolved = (
-                Strategy.PLDDT if _looks_like_alphafold(structure, chain) else Strategy.CONTACT
-            )
+            # The density metric needs side chains to count. On a CA-only structure a pair
+            # count is not comparable to the tuned 480 threshold, so fall back to the CA-only
+            # score there rather than silently mis-thresholding.
+            has_side_chains = bool(np.any(~np.isin(structure.atom_name, ("N", "CA", "C", "O"))))
+            resolved = Strategy.DENSITY if has_side_chains else Strategy.CONTACT
             reason = (
-                "B-factors look like pLDDT"
-                if resolved is Strategy.PLDDT
-                else "B-factors do not look like pLDDT"
+                "all-atom input, using the validated density metric"
+                if resolved is Strategy.DENSITY
+                else "input has no side chains, so the density threshold does not apply"
             )
             notes.append(f"strategy auto-selected as {resolved.value} ({reason})")
 
@@ -557,9 +580,12 @@ def assign_regions(
         elif resolved is Strategy.METAPREDICT:
             cutoff = 0.5 if threshold is None else threshold
             score, folded_mask = _folded_mask_from_metapredict(chain, cutoff)
+        elif resolved is Strategy.CONTACT:
+            cutoff = CA_CONTACT_SCORE_THRESHOLD if threshold is None else threshold
+            score, folded_mask = _folded_mask_from_contact(structure, chain, cutoff)
         else:
             cutoff = CONTACT_SCORE_THRESHOLD if threshold is None else threshold
-            score, folded_mask = _folded_mask_from_contact(structure, chain, cutoff)
+            score, folded_mask = _folded_mask_from_density(structure, chain, cutoff)
 
         # Seed -> merge -> length filter. Offsets are chain-local until here.
         seeds = find_runs(folded_mask, min_length=min_seed_run)

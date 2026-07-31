@@ -29,6 +29,7 @@ from dodo.constants import (
     BACKBONE_ANGLE_MAX,
     BACKBONE_ANGLE_MEAN,
     BACKBONE_ANGLE_MIN,
+    BACKBONE_ANGLE_SD,
     CA_CA_BOND_LENGTH,
     CA_CA_BOND_TOLERANCE,
     CA_CLASH_DISTANCE,
@@ -280,25 +281,36 @@ class TestAngleWindow:
         assert angles.max() <= BACKBONE_ANGLE_MAX + 1e-6
 
     def test_angle_distribution_is_not_uniform_over_the_window(self) -> None:
-        # Candidates are weighted by the measured angle density, so the distribution must be
-        # narrower than the window and centred on the measured mean rather than on the
-        # window's midpoint.
+        # Candidates are weighted by the measured angle density (mean BACKBONE_ANGLE_MEAN, sd
+        # BACKBONE_ANGLE_SD), so the generated angles must not be spread flat across the
+        # window. Both bounds below are derived from the constants, not written down.
         _, result = build(60, seed=5, n_anchor=ORIGIN, n_conformations=6)
         angles = np.concatenate(
             [pseudo_angles(full_trace(c, ORIGIN, None)) for c in result.ca_coords]
         )
-        # The bound is DERIVED from the window rather than fixed at a literal, because the
-        # window moved out from under the literal: a uniform draw over the window has sd
-        # (high - low) / sqrt(12), which was 20.2 at 91-161 and is 17.0 at 91-150 -- so the
-        # old bound of 19.0 stopped excluding a uniform draw and the test stopped testing
-        # anything. Measured sd here is 15.8.
+        # A uniform draw over the window has sd (high - low) / sqrt(12): 20.2 at the tuned
+        # 91-161 window, 17.0 when the window was capped at 150. Measured here: 18.7.
         uniform_sd = (BACKBONE_ANGLE_MAX - BACKBONE_ANGLE_MIN) / np.sqrt(12.0)
         assert angles.std() < uniform_sd
-        # The other half of the claim, which the sd alone does not make: 91-150 has a
-        # midpoint of 120.5, far enough from the measured mean of 125 to tell the two apart.
-        assert abs(angles.mean() - BACKBONE_ANGLE_MEAN) < abs(
-            angles.mean() - 0.5 * (BACKBONE_ANGLE_MIN + BACKBONE_ANGLE_MAX)
-        )
+        # The other half of the claim, which the sd alone does not make. It used to be asserted
+        # as "the sample mean is closer to BACKBONE_ANGLE_MEAN than to the window's midpoint",
+        # which only distinguishes anything while the window is lopsided: at 91-150 the
+        # midpoint was 120.5 against a mean of 125, but at the tuned 91-161 the midpoint is
+        # 126.0 and the two hypotheses are a degree apart -- indistinguishable, and the
+        # measured mean (129.8) is above both, because the walk also steers for extension
+        # toward its end-to-end target.
+        #
+        # Asserted instead where the density weighting and every other force in the engine
+        # point the same way: the SHARP end of the window. A sharp turn is suppressed both by
+        # the Gaussian weight and by self-avoidance (it folds residue i+1 back onto the chain),
+        # so its share of the sample must fall short of the width share a flat draw would give
+        # it. Measured over eight seeds: 0.04-0.07 of the sample against a flat 0.114.
+        sharp = float(BACKBONE_ANGLE_MEAN - BACKBONE_ANGLE_SD)
+        flat_share = (sharp - BACKBONE_ANGLE_MIN) / (BACKBONE_ANGLE_MAX - BACKBONE_ANGLE_MIN)
+        assert float(np.mean(angles <= sharp)) < flat_share
+        # And the window really is populated out to both ends, so the line above is describing
+        # a shaped distribution rather than a truncated one.
+        assert angles.min() < sharp < angles.max()
 
 
 # ---------------------------------------------------------------------------
@@ -1299,13 +1311,34 @@ class TestAnchorAtomsInTheObstacleSet:
 
     @pytest.mark.parametrize("seed", [2, 5, 71])
     def test_including_them_costs_no_builds(self, seed: int) -> None:
-        kwargs = {"n_anchor": ORIGIN, "c_anchor": np.array([40.0, 0.0, 0.0]), "target": 60.0}
+        c_anchor = np.array([40.0, 0.0, 0.0])
+        kwargs = {"n_anchor": ORIGIN, "c_anchor": c_anchor, "target": 60.0}
         with_atoms = build(20, seed=seed, obstacles=self.ANCHOR_ATOMS, n_conformations=5, **kwargs)[
             1
         ]
         without = build(20, seed=seed, n_conformations=5, **kwargs)[1]
+        # The claim in the name: not one conformer is lost. The anchor's own N, C and O sit
+        # ~1.5 A from its CA and the first generated residue is one 3.81 A bond from that CA,
+        # so those atoms are inside the clash distance by construction -- and the cost of that
+        # is a rung of the ladder (next test), never a build.
         assert with_atoms.n_successful == without.n_successful == 5
-        assert with_atoms.attempts == without.attempts
+        # It is a FALSE positive, and this is what makes that word mean something: the trace
+        # the relaxed build produced has no CA-CA contact inside the strict clash distance
+        # anywhere, anchors included. A caller reading relaxed_to can tell this apart from a
+        # real squeeze because there is no squeeze in the CA trace at all.
+        for coords in with_atoms.ca_coords:
+            trace = full_trace(coords, ORIGIN, c_anchor)
+            assert closest_non_bonded(trace) >= CA_CLASH_DISTANCE
+        # Attempt counts are NOT equal between the two runs, and asserting that they were was
+        # over-strong -- it held only for the seeds it was written against. Relaxing a rung
+        # admits candidates the strict pass rejected, so the two searches diverge and the
+        # restart count moves in either direction: measured over 200 seeds the difference spans
+        # -2 to +4 restarts, with no build lost on either side at any seed. What must hold is
+        # that neither search spends its restart budget on the difference -- over those 200
+        # seeds the worst either side spent was 5 of the MAX_ATTEMPTS_PER_REGION it may spend,
+        # so require a quarter of the budget to still be untouched.
+        assert 4 * with_atoms.attempts <= MAX_ATTEMPTS_PER_REGION
+        assert 4 * without.attempts <= MAX_ATTEMPTS_PER_REGION
 
     def test_including_them_can_cost_a_rung_of_the_ladder(self) -> None:
         # The concrete reason to leave them out, and the reason the engine reports

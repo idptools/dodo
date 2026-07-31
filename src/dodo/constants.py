@@ -91,41 +91,28 @@ BACKBONE_ANGLE_OBSERVED_MAX: Final[float] = 179.0  # MEASURED
 
 #: Sampling window for generated backbones, in degrees.
 #:
-#: The lower bound is TUNED, carried over from the original author's generator: mean
-#: -1.31 sd, which spans helix-like geometry. It is comfortably inside what all-atom
-#: reconstruction can represent (measured boundary 81.1 deg), so it stands.
+#: TUNED against AlphaFold2 structures by the package author, and this is the value that
+#: stands. Relative to the measured distribution it is mean -1.31 sd to mean +1.38 sd, so it
+#: covers roughly the central 80% of observed angles -- tighter than the full observed 75-179
+#: range, to keep sampling away from the rare extremes while still spanning helix-like (~91
+#: deg) through extended (~161 deg) geometry.
 #:
-#: The upper bound is DERIVED, and it is a deliberate reduction from the tuned 161.0.
+#: It is *not* symmetric about the mean and not a round number of standard deviations, so do
+#: not "tidy" it into mean +/- 1 sd: that would narrow it to 99-151 and exclude helical
+#: geometry.
 #:
-#: A CA pseudo-angle is not free: for a trans peptide it is coupled to the N-CA-C angle
-#: (tau) through the backbone geometry, so demanding a wide CA angle forces tau away from
-#: its ideal 111 deg. Measured against this package's own reconstruction
-#: (:func:`dodo.construct.backbone.max_reconstructable_ca_angle`, evaluated at that module's
-#: own N-CA-C tolerance), the boundary is 160.5 deg -- above that, no trans backbone exists
-#: with tau inside tolerance:
-#:
-#:     CA 150 deg -> reconstructs        CA 161 deg -> implied tau 125.4 deg
-#:     CA 155 deg -> implied tau 119.4   CA 179 deg -> implied tau 143.4 deg
-#:
-#: Generating an angle DODO cannot then turn into a valid backbone makes its own CA-only
-#: output un-reconstructable, which defeats the all-atom feature. Measured before this
-#: cap: 11 of 12 generated 40-residue traces were refused by ``place_backbone``.
-#:
-#: 150.0 sits inside that boundary with margin for the variation across sequences and for the
-#: 3.80 -> 3.81 bond-length change. It was chosen against a boundary of 154.6 deg, which is
-#: what the same function returned when the reconstruction's N-CA-C tolerance was 8.0 rather
-#: than the re-measured 14.0 degrees, and it stays there: the extra headroom does not make
-#: 161.0 safe again, because the per-residue ceiling is not a per-*trace* one. Adjacent wide
-#: angles compete for one peptide unit's angular budget, and measured on self-avoiding walks
-#: sampled to this window's own upper bound, 2 of 8 traces are still refused on N-CA-C.
-#:
-#: This also says something about the measured range below. A 179 deg CA pseudo-angle
-#: implies tau = 143 deg, and no real residue has that (real tau spans 105-125, rarely to
-#: 130). So the observed 75-179 range is very unlikely to be all trans backbone geometry:
-#: it most plausibly includes chain breaks, where consecutive "CA neighbours" are not
-#: actually bonded and the pseudo-angle between them means nothing.
+#: DO NOT NARROW THIS TO SERVE ALL-ATOM RECONSTRUCTION. It was briefly capped at 150 for that
+#: reason and reverted. A CA pseudo-angle is coupled to N-CA-C for a trans peptide, so wide
+#: angles are harder to reconstruct -- measured, an isolated angle reconstructs up to about
+#: 154.6 deg at the backbone module's tau tolerance. But getting the CA-only geometry right is
+#: the first priority, and capping the window degrades it (more compact chains than the
+#: measured distribution supports) to benefit a later one. Capping magnitude did not even fix
+#: all-atom acceptance, because the real constraint is on the *change* in pseudo-angle between
+#: consecutive residues: measured allowance is ~35 deg at a base angle of 95 and collapses to
+#: ~4 deg at 150. That belongs in the all-atom path as a joint constraint on consecutive
+#: angles, not here as a magnitude cap.
 BACKBONE_ANGLE_MIN: Final[float] = 91.0
-BACKBONE_ANGLE_MAX: Final[float] = 150.0
+BACKBONE_ANGLE_MAX: Final[float] = 161.0
 
 #: Preferred angle. Candidates are ordered by |angle - ideal| so that a
 #: first-non-clashing search naturally prefers realistic geometry.
@@ -162,50 +149,58 @@ OMEGA_TRANS: Final[float] = 180.0
 # Region identification
 # ---------------------------------------------------------------------------
 
-#: CA-CA contact radius in Angstroms for the folded/disordered score.
+#: All-atom contact radius in Angstroms for the primary folded/disordered score. TUNED.
 #:
-#: MEASURED. Chosen by sweeping 8-16 A against three real structures (arf19, dnmt3a,
-#: p300) and scoring how well the resulting counts separate known folded domains from
-#: known IDRs. Balanced accuracy by radius:
-#:
-#:     8 A: 86 / 99 / 90 %      12 A: 96 / 100 / 95 %
-#:    10 A: 93 / 100 / 93 %     14 A: 99 / 100 / 96 %
-#:
-#: Accuracy keeps climbing past 12, but so does the risk of merging folded domains that
-#: happen to sit close together in space -- and the per-structure optimal *threshold*
-#: starts diverging (at 14 A the three want 15, 6 and 20; at 12 A the two informative
-#: ones agree on 10 and 11). 12 A is where accuracy is high and the threshold is stable.
-CONTACT_RADIUS: Final[float] = 12.0
+#: This is the author's original value and it belongs to :func:`~dodo.regions.contact
+#: .atom_pair_counts`, the density metric DODO was built and validated on. Larger values start
+#: merging folded domains that AlphaFold happens to park close together in space, which is the
+#: specific failure this was tuned to avoid.
+CONTACT_RADIUS: Final[float] = 8.0
 
-#: CA-only contact radius in Angstroms for the loop-detection score. TUNED.
-#: Deliberately tighter than CONTACT_RADIUS: a loop is about local backbone packing,
-#: not about how much of the domain is nearby.
+#: Folded/disordered cutoff on the primary density score: number of all-atom PAIRS within
+#: :data:`CONTACT_RADIUS`. TUNED, and the author reports it outperforms sequence-based disorder
+#: predictors at drawing region boundaries.
+#:
+#: Known caveat, recorded rather than acted on: a pair count scales with the residue's own
+#: heavy-atom count, so it is composition-sensitive. Measured within one folded domain, the
+#: correlation with heavy-atom count is r = 0.65, every glycine falls below this threshold
+#: (mean 292), and 94% of Trp/Phe/Tyr sit above it (mean 943). The smoothing and merging stages
+#: downstream absorb a good deal of that noise, and the metric demonstrably works, so it stays
+#: the default. :data:`CA_CONTACT_RADIUS` below is the composition-free alternative for
+#: comparison, not a replacement.
+CONTACT_SCORE_THRESHOLD: Final[float] = 480.0
+
+#: Radius in Angstroms for the ALTERNATIVE CA-only folded/disordered score.
+#:
+#: MEASURED. Chosen by sweeping 8-16 A against arf19, dnmt3a and p300 and scoring how well the
+#: counts separate known folded domains from known IDRs: balanced accuracy 86/99/90% at 8 A,
+#: 96/100/95% at 12 A, 99/100/96% at 14 A. Accuracy keeps climbing past 12, but so does the
+#: risk of merging nearby domains, and the per-structure optimal threshold starts diverging
+#: (at 14 A the three want 15, 6 and 20; at 12 A the two informative ones agree on 10 and 11).
+CA_CONTACT_RADIUS: Final[float] = 12.0
+
+#: Cutoff for the ALTERNATIVE CA-only score: number of non-local CA neighbours within
+#: :data:`CA_CONTACT_RADIUS`.
+#:
+#: MEASURED, the lower of the two per-structure optima (10 and 11). The lower value is chosen
+#: deliberately because the two errors are not symmetric: calling a folded domain disordered
+#: replaces real structure with a random walk, while calling an IDR folded merely leaves
+#: AlphaFold's own coordinates in place. So err toward folded.
+#:
+#: This score counts residues by their alpha carbons, so composition cannot bias it -- every
+#: residue has exactly one CA. It is also scale-invariant: measured on arf19, the all-atom
+#: density score of the same structure stripped to CA-only came out at 0.26x its full value,
+#: whereas this score is identical either way (measured ratio 1.000). That matters for input
+#: with unmodelled side chains and for DODO's own CA-only output.
+CA_CONTACT_SCORE_THRESHOLD: Final[float] = 10.0
+
+#: CA-only contact radius in Angstroms for LOOP detection. TUNED.
+#:
+#: Deliberately tighter than either folded/disordered radius: a loop is about *local* backbone
+#: packing, not about how much of the domain happens to be nearby. CA-only because a loop is
+#: defined by where the backbone goes -- the side chains of a floppy loop can make plenty of
+#: contacts without the backbone being packed at all.
 LOOP_CONTACT_RADIUS: Final[float] = 7.0
-
-#: Folded/disordered cutoff: number of non-local CA neighbours within CONTACT_RADIUS.
-#:
-#: MEASURED, and a deliberate departure from the pre-rewrite code in two ways.
-#:
-#: First, v1 and v2 both thresholded a raw atom-*pair* count at 480, which scales with a
-#: residue's own heavy-atom count. Measured within a single folded domain, the correlation
-#: between heavy-atom count and score was r = 0.65: every glycine fell below the cutoff
-#: (mean 292) while 94% of Trp/Phe/Tyr sat above it (mean 943). That systematically calls
-#: glycine-rich folded segments disordered and aromatic-rich disordered segments folded.
-#: Counting neighbouring *residues* by their alpha carbons removes the bias completely,
-#: because every residue has exactly one CA regardless of composition.
-#:
-#: Second, an all-atom score is not comparable across inputs. Measured on arf19, the
-#: same structure stripped to CA-only scored 0.26x its all-atom value, so one threshold
-#: cannot serve both. That matters because DODO must handle full AF2 models, experimental
-#: structures with unmodelled side chains, and its own partly-CA-only output. A CA-only
-#: score is scale-invariant by construction: measured ratio 1.000.
-#:
-#: The value 10 is the lower of the two per-structure optima (10 and 11), chosen
-#: deliberately because the two errors are not symmetric. Calling a folded domain
-#: disordered replaces real structure with a random walk; calling an IDR folded merely
-#: leaves AlphaFold's own coordinates in place. So err toward folded, which means the
-#: lower threshold.
-CONTACT_SCORE_THRESHOLD: Final[float] = 10.0
 
 #: Smoothing window (residues) applied to the contact score before thresholding.
 #: CHOICE. The raw per-residue score is noisy enough to fragment a single domain

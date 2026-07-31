@@ -135,11 +135,10 @@ the peptide bond angles are strained (see :func:`ca_angle_budget`). Since those 
 plus tau bracket the ``CA(i-1)-CA(i)-CA(i+1)`` pseudo-angle, no all-atom-reconstructable
 trans backbone can have a CA pseudo-angle above ``N_CA_C_ANGLE + 35.50`` = 146.5 degrees, or
 above 160.5 at the default ``N-CA-C`` tolerance
-(:func:`max_reconstructable_ca_angle`). :data:`~dodo.constants.BACKBONE_ANGLE_MAX` is 150.0,
-inside that ceiling on purpose, so no *single* angle drawn from the sampling window is
-impossible on its own account -- but a trace generated against the full window is still not
-always reconstructable, for the budget reason in the next paragraph, and this module says so
-loudly instead of quietly emitting a 28-degree ``N-CA-C`` angle.
+(:func:`max_reconstructable_ca_angle`). :data:`~dodo.constants.BACKBONE_ANGLE_MAX is 161.0,
+which is ABOVE that ceiling: the window is the author's measured AF2 distribution, deliberately
+not capped to what all-atom reconstruction can represent (CA-only correctness is the higher
+priority).
 :func:`unreconstructable_ca_angles` answers the per-residue question before anything is
 built, which is what a generator needs; an empty answer is necessary, not sufficient.
 
@@ -147,8 +146,9 @@ The per-residue ceiling is not a per-*trace* one, because adjacent residues shar
 unit and cannot both draw most of its budget. Measured on self-avoiding random walks of 60
 and 150 residues, six seeds each: with the CA-CA-CA window capped at 140 degrees, 12 of 12
 reconstruct with no failure of any kind; at 145.5 -- a degree *under* the ideal ceiling --
-still no ``N-CA-C`` failure, and the one refusal is steric; at the sampling window's own
-150.0, two of six 150-residue traces fail on ``N-CA-C``. That last threshold moved out with
+still no ``N-CA-C`` failure, and the one refusal is steric; at 150 degrees, two of six
+150-residue traces fail on ``N-CA-C``. The sampling window's actual upper bound is 161.0, well
+above all of these, so a full-window trace fails more often still. That threshold moved out with
 the tau tolerance: at the earlier :data:`_N_CA_C_TOLERANCE` of 8.0 it was 145.5 that failed
 three of four.
 
@@ -914,11 +914,15 @@ def max_reconstructable_ca_angle(*, n_ca_c_tolerance: float = 0.0) -> float:
     cannot be enlarged by straining the peptide angles.
 
     Measured value: 146.5 degrees, and 160.5 at :data:`_N_CA_C_TOLERANCE`, against a
-    :data:`~dodo.constants.BACKBONE_ANGLE_MAX` of 150.0. So the sampling window is inside
-    the ceiling per residue, but a CA trace sampled from the full window is still not always
-    reconstructable to an all-atom backbone, because the consequences compound: adjacent
-    residues that both need most of the budget share one peptide unit and cannot both have
-    it.
+    :data:`~dodo.constants.BACKBONE_ANGLE_MAX` of 161.0. So the sampling window extends PAST
+    this ceiling at its wide end -- deliberately, because the window is the author's measured
+    AF2 distribution and getting CA-only geometry right outranks all-atom reconstructability.
+    Two consequences follow, and both are real: a few angles from the top of the window are
+    individually unreconstructable, and even angles inside the ceiling compound, because
+    adjacent residues that each need most of the budget share one peptide unit and cannot both
+    have it. The second is the dominant effect, which is why capping the window's magnitude
+    never fixed acceptance -- the constraint that matters is on the CHANGE in pseudo-angle
+    between consecutive residues.
 
     Raises
     ------

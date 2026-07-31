@@ -11,7 +11,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from dodo.constants import LOOP_CONTACT_CUTOFF, MIN_LOOP_LENGTH
+from dodo.constants import (
+    CA_CONTACT_SCORE_THRESHOLD,
+    CONTACT_SCORE_THRESHOLD,
+    LOOP_CONTACT_CUTOFF,
+    MIN_LOOP_LENGTH,
+    PLDDT_DISORDER_THRESHOLD,
+)
 from dodo.exceptions import InvalidRegionError
 from dodo.regions.contact import contact_profile, loop_contact_counts, smooth
 from dodo.regions.identify import (
@@ -234,12 +240,38 @@ class TestLoopContactCounts:
 # ---------------------------------------------------------------------------
 
 
+#: Phenylalanine's heavy atoms, in PDB order. Used to give the all-atom fixture real side
+#: chains: :data:`~dodo.constants.CONTACT_SCORE_THRESHOLD` counts all-atom PAIRS within 8 A, so
+#: a backbone-only structure cannot reach it however tightly it is packed -- and a structure
+#: with no atom outside N/CA/C/O is CA-only as far as strategy selection is concerned, which is
+#: the distinction :meth:`TestAssignRegions.test_auto_picks_density_for_all_atom_input` turns on.
+PHE_ATOMS = ("N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ")
+
+
+def _atom_shell(n_atoms: int, radius: float = 1.5) -> np.ndarray:
+    """``n_atoms`` offsets spread evenly over a sphere of ``radius``, deterministically.
+
+    A Fibonacci lattice. The point is only that a residue's non-CA atoms do not sit on top of
+    each other or all in one direction, so that pair counts in the fixture's cores behave like
+    a packed core's rather than like a line of beads.
+    """
+    index = np.arange(n_atoms)
+    z = 1.0 - 2.0 * (index + 0.5) / n_atoms
+    ring = np.sqrt(np.maximum(1.0 - z * z, 0.0))
+    phi = np.pi * (3.0 - np.sqrt(5.0)) * index
+    return radius * np.stack([ring * np.cos(phi), ring * np.sin(phi), z], axis=1)
+
+
 def make_two_domain_structure(
-    fd1: int = 40, idr: int = 60, fd2: int = 40, *, seed: int = 0
+    fd1: int = 40, idr: int = 60, fd2: int = 40, *, seed: int = 0, all_atom: bool = False
 ) -> Structure:
     """Build a structure with two compact blobs joined by an extended linker.
 
     Built geometrically rather than mocked, so the whole scoring path is exercised.
+
+    With ``all_atom`` every residue carries phenylalanine's eleven heavy atoms instead of a
+    lone CA, on the same alpha-carbon layout. That is what the density strategy needs to be
+    exercised at all: it counts all-atom pairs against a threshold tuned on packed cores.
     """
     rng = np.random.default_rng(seed)
     coords = []
@@ -252,16 +284,36 @@ def make_two_domain_structure(
     centre = start + np.array([idr * 3.8 + 40.0, 0.0, 0.0])
     coords.extend(centre + rng.normal(0.0, 5.0, size=(fd2, 3)))
 
+    ca_xyz = np.array(coords)
     n = fd1 + idr + fd2
+    per_residue_b = [90.0] * fd1 + [30.0] * idr + [90.0] * fd2
+
+    if not all_atom:
+        return Structure.from_atom_records(
+            xyz=ca_xyz,
+            atom_name=["CA"] * n,
+            element=["C"] * n,
+            residue_name=["ALA"] * n,
+            residue_number=list(range(1, n + 1)),
+            chain_id=["A"] * n,
+            b_factor=per_residue_b,
+            source="synthetic-two-domain",
+        )
+
+    offsets = np.zeros((len(PHE_ATOMS), 3))
+    offsets[[i for i, name in enumerate(PHE_ATOMS) if name != "CA"]] = _atom_shell(
+        len(PHE_ATOMS) - 1
+    )
+    elements = ["N" if name[0] == "N" else "O" if name[0] == "O" else "C" for name in PHE_ATOMS]
     return Structure.from_atom_records(
-        xyz=np.array(coords),
-        atom_name=["CA"] * n,
-        element=["C"] * n,
-        residue_name=["ALA"] * n,
-        residue_number=list(range(1, n + 1)),
-        chain_id=["A"] * n,
-        b_factor=[90.0] * fd1 + [30.0] * idr + [90.0] * fd2,
-        source="synthetic-two-domain",
+        xyz=(ca_xyz[:, None, :] + offsets[None, :, :]).reshape(-1, 3),
+        atom_name=list(PHE_ATOMS) * n,
+        element=elements * n,
+        residue_name=["PHE"] * (n * len(PHE_ATOMS)),
+        residue_number=[i for i in range(1, n + 1) for _ in PHE_ATOMS],
+        chain_id=["A"] * (n * len(PHE_ATOMS)),
+        b_factor=[b for b in per_residue_b for _ in PHE_ATOMS],
+        source="synthetic-two-domain-all-atom",
     )
 
 
@@ -275,16 +327,79 @@ class TestAssignRegions:
         assert kinds == [DomainKind.FOLDED, DomainKind.IDR, DomainKind.FOLDED]
 
     def test_plddt_strategy_uses_b_factors(self) -> None:
+        """Explicitly requested pLDDT still works -- and asking by name is now the only route.
+
+        AUTO never selects it (see the two tests below), so this is the whole of pLDDT's
+        remaining route into a build and it has to keep working: the fixture's B-factor column
+        is 90 over the domains and 30 over the linker, and thresholding it at
+        PLDDT_DISORDER_THRESHOLD must recover both domains.
+        """
         structure = make_two_domain_structure()
         assignment = assign_regions(structure, strategy=Strategy.PLDDT)[0]
         assert assignment.strategy is Strategy.PLDDT
+        assert assignment.threshold == PLDDT_DISORDER_THRESHOLD
         assert assignment.n_folded == 2
 
-    def test_auto_picks_plddt_when_b_factors_look_like_plddt(self) -> None:
-        structure = make_two_domain_structure()
+    def test_auto_picks_density_for_all_atom_input(self) -> None:
+        """AUTO resolves to the author's density metric when there are side chains to count.
+
+        This replaces an assertion that AUTO prefers pLDDT when the B-factor column looks like
+        pLDDT. That preference is reversed: DENSITY -- all-atom pairs within
+        CONTACT_RADIUS against CONTACT_SCORE_THRESHOLD -- is the metric DODO was built and
+        validated on, and the author reports it outperforms sequence-based disorder predictors,
+        so it is the default and pLDDT is an explicit opt-in.
+
+        The fixture's B-factor column still reads exactly like pLDDT (90 over the domains, 30
+        over the linker), which is the point: that is no longer evidence for anything.
+        """
+        structure = make_two_domain_structure(all_atom=True)
+        assert structure.b_factor.max() <= 100.0  # premise: still looks like pLDDT
         assignment = assign_regions(structure, strategy=Strategy.AUTO)[0]
-        assert assignment.strategy is Strategy.PLDDT
+        assert assignment.strategy is Strategy.DENSITY
+        assert assignment.threshold == CONTACT_SCORE_THRESHOLD
         assert any("auto-selected" in note for note in assignment.notes)
+        # Resolved to it *and* it works: the density metric draws the two domains and the
+        # linker, with the scored profile either side of its own threshold.
+        assert [d.kind for d in assignment.domains] == [
+            DomainKind.FOLDED,
+            DomainKind.IDR,
+            DomainKind.FOLDED,
+        ]
+        idr = next(d for d in assignment.domains if d.kind is DomainKind.IDR)
+        assert assignment.score[idr.span.slice].max() < CONTACT_SCORE_THRESHOLD
+
+    def test_auto_picks_contact_for_ca_only_input_and_never_plddt(self) -> None:
+        """AUTO falls back to the CA-only score on CA-only input -- not to pLDDT.
+
+        A pair count is not comparable to CONTACT_SCORE_THRESHOLD once the side chains that
+        produced those pairs are missing (measured: the same structure stripped to CA-only
+        scores 0.26x), so the density metric is not applicable here. The alternative is the
+        composition-free CA neighbour count, thresholded at CA_CONTACT_SCORE_THRESHOLD -- not
+        pLDDT, however pLDDT-shaped the B-factor column looks.
+
+        "Never pLDDT" is asserted so that it cannot pass by coincidence: the B-factor column is
+        INVERTED, confident over the linker and unconfident over the two blobs. Read as pLDDT
+        that column calls the linker the folded domain, which is the opposite of the truth and
+        of what the geometry says -- so if AUTO were still consulting it, the answer here would
+        differ, and it does not.
+        """
+        structure = make_two_domain_structure()
+        structure.b_factor[:] = np.where(structure.b_factor > 50.0, 30.0, 90.0)
+        assert structure.b_factor.max() <= 100.0  # premise: still shaped like pLDDT
+
+        misled = assign_regions(structure, strategy=Strategy.PLDDT)[0]
+        assert misled.n_folded == 1  # premise: the column, if read, says something else
+
+        assignment = assign_regions(structure, strategy=Strategy.AUTO)[0]
+        assert assignment.strategy is Strategy.CONTACT
+        assert assignment.threshold == CA_CONTACT_SCORE_THRESHOLD
+        assert any("auto-selected" in note for note in assignment.notes)
+        assert assignment.n_folded == 2
+        assert [d.kind for d in assignment.domains] == [
+            DomainKind.FOLDED,
+            DomainKind.IDR,
+            DomainKind.FOLDED,
+        ]
 
     def test_auto_picks_contact_when_b_factors_are_crystallographic(self) -> None:
         structure = make_two_domain_structure()

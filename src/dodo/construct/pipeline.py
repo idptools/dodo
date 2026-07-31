@@ -38,9 +38,10 @@ import numpy as np
 from ..constants import CA_CA_BOND_LENGTH, DEFAULT_MODE, MIN_IDR_LENGTH
 from ..exceptions import BuildError, DodoError
 from ..regions.identify import RegionAssignment, Strategy, assign_regions
-from ..structure import Domain, DomainKind, Structure
+from ..structure import Domain, DomainKind, Span, Structure
 from .backbone import place_backbone_for_domain
 from .dimensions import DimensionTarget, target_dimensions
+from .place import DomainPlacement, reposition_folded_domains
 
 __all__ = [
     "RebuildReport",
@@ -100,6 +101,9 @@ class RebuildReport:
     models: list[Structure] = field(default_factory=list)
     assignments: list[RegionAssignment] = field(default_factory=list)
     outcomes: list[RegionOutcome] = field(default_factory=list)
+    #: Where every folded domain ended up. Folded domains are moved as rigid bodies, never
+    #: rebuilt, so this records position and orientation changes only.
+    placements: list[DomainPlacement] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -124,6 +128,10 @@ class RebuildReport:
             f"region-model pair(s) rebuilt"
         ]
         lines += [f"  {a.describe()}" for a in self.assignments]
+        moved = [p for p in self.placements if p.moved]
+        if moved:
+            lines.append(f"  {len(moved)} folded domain(s) repositioned:")
+            lines += [f"    {p}" for p in moved]
         if self.failures:
             lines.append(f"  {len(self.failures)} failure(s):")
             lines += [f"    {f}" for f in self.failures]
@@ -175,6 +183,126 @@ def _obstacles_for(structure: Structure, domain: Domain) -> np.ndarray | None:
     return coords
 
 
+def _build_region(
+    structure: Structure,
+    *,
+    span: Span,
+    sequence: str,
+    target: DimensionTarget | None,
+    model: int,
+    rng: np.random.Generator,
+    engine: object,
+    min_length: int,
+    label: str,
+    requested_override: float | None = None,
+    domain: Domain | None = None,
+) -> RegionOutcome:
+    """Build one region -- a loop, a connecting IDR or a terminal IDR -- and report the outcome.
+
+    One function for all three because they differ only in what sets the target: a loop's span
+    is dictated by the folded-domain geometry it bridges, while an IDR's comes from its predicted
+    dimensions. Sharing the code means the anchor handling cannot drift between them, which is
+    where the pre-rewrite version accumulated its junction defects.
+    """
+    from ..engines.base import IDRRequest
+
+    chain = structure.chains[int(structure.chain_index[span.start])]
+    residues = (
+        int(structure.residue_number[span.start]),
+        int(structure.residue_number[span.stop - 1]),
+    )
+
+    def outcome(**kwargs: object) -> RegionOutcome:
+        return RegionOutcome(
+            model=model,
+            chain_id=chain.chain_id,
+            residues=residues,
+            n_residues=len(sequence),
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    if len(sequence) < min_length:
+        return outcome(
+            built=False,
+            reason=f"{label}: shorter than the {min_length}-residue minimum; left as-is",
+        )
+
+    n_anchor_xyz = structure.ca_xyz[span.n_anchor] if span.n_anchor is not None else None
+    c_anchor_xyz = structure.ca_xyz[span.c_anchor] if span.c_anchor is not None else None
+
+    # A loop's target is simply the distance it has to bridge. Anything else would be a
+    # constraint we invented rather than one the structure imposes.
+    if target is None:
+        if n_anchor_xyz is None or c_anchor_xyz is None:
+            return outcome(
+                built=False,
+                reason=f"{label}: needs two anchors but only has one; not a loop",
+            )
+        requested = float(np.linalg.norm(c_anchor_xyz - n_anchor_xyz))
+    else:
+        requested = requested_override if requested_override is not None else target.end_to_end
+
+    try:
+        result = engine.generate(  # type: ignore[attr-defined]
+            IDRRequest(
+                sequence=sequence,
+                n_residues=len(sequence),
+                target_end_to_end=requested,
+                n_anchor_xyz=n_anchor_xyz,
+                c_anchor_xyz=c_anchor_xyz,
+                n_anchor_prev_xyz=_outer_ca(structure, span.n_anchor, step=-1),
+                c_anchor_next_xyz=_outer_ca(structure, span.c_anchor, step=+1),
+                n_conformations=1,
+            ),
+            obstacles=_obstacles_for_span(structure, span),
+            rng=rng,
+        )
+    except DodoError as exc:
+        return outcome(built=False, reason=f"{label}: {type(exc).__name__}: {exc}")
+
+    if not bool(result.success[0]):
+        return outcome(
+            built=False, reason=f"{label}: the engine reported failure for this conformer"
+        )
+
+    structure.set_ca_xyz(np.arange(span.start, span.stop), result.ca_coords[0])
+    if domain is not None:
+        domain.rebuilt = True
+
+    achieved = float(np.linalg.norm(result.ca_coords[0][-1] - result.ca_coords[0][0]))
+    return outcome(
+        built=True,
+        target=target,
+        achieved_end_to_end=achieved,
+        requested_end_to_end=requested,
+    )
+
+
+def _outer_ca(structure: Structure, anchor: int | None, *, step: int) -> np.ndarray | None:
+    """CA one step beyond an anchor, for constraining the junction angle centred on it."""
+    if anchor is None:
+        return None
+    outer = anchor + step
+    chain = structure.chains[int(structure.chain_index[anchor])]
+    if not (chain.span.start <= outer < chain.span.stop):
+        return None
+    coords: np.ndarray = structure.ca_xyz[outer]
+    return coords
+
+
+def _obstacles_for_span(structure: Structure, span: Span) -> np.ndarray | None:
+    """Already-placed atoms the region must avoid, excluding itself and its own anchors."""
+    mask = structure.rebuilt_atom_mask()
+    mask[structure.atom_slice_for_residues(span.start, span.stop)] = False
+    for anchor in (span.n_anchor, span.c_anchor):
+        if anchor is not None:
+            mask[structure.atom_slice_for_residues(anchor, anchor + 1)] = False
+    if not mask.any():
+        return None
+    coords: np.ndarray = structure.xyz[mask]
+    return coords
+
+
 def _rebuild_one_model(
     structure: Structure,
     *,
@@ -187,8 +315,7 @@ def _rebuild_one_model(
     all_atom: bool,
     model_targets: dict[tuple[str, int, int], np.ndarray],
 ) -> list[RegionOutcome]:
-    """Rebuild every IDR and loop of one model, in place. Returns per-region outcomes."""
-    from ..engines.base import IDRRequest
+    """Rebuild every loop and IDR of one model, in place. Returns per-region outcomes."""
     from ..engines.walk import SelfAvoidingWalk
 
     engine: object
@@ -207,115 +334,73 @@ def _rebuild_one_model(
         raise ValueError(f"Unknown engine {engine_name!r}. Use 'walk' or 'starling'.")
 
     outcomes: list[RegionOutcome] = []
-    # Mark folded domains as already placed so they act as obstacles from the start.
+    # Folded domains are already positioned (step 3 ran before this), so they are obstacles
+    # from the outset. Their atoms are never rebuilt.
     for domain in structure.folded_domains():
         domain.rebuilt = True
 
-    for domain in structure.idrs():
-        chain = structure.chains[int(structure.chain_index[domain.span.start])]
-        residues = (
-            int(structure.residue_number[domain.span.start]),
-            int(structure.residue_number[domain.span.stop - 1]),
-        )
-        sequence = domain.sequence
+    # BUILD ORDER, and it is deliberate: loops, then connecting IDRs, then terminal IDRs.
+    #
+    # The ordering follows how constrained each region is. A loop is pinned at both ends inside
+    # a single folded domain, so it has the least freedom and must be satisfied first. A
+    # connecting IDR is pinned at both ends but between two domains that have already been
+    # positioned to accommodate it. A terminal IDR is free at one end and can go almost
+    # anywhere, so it is built last, into whatever space remains.
+    #
+    # Building in residue order instead -- which an earlier version of this pipeline did --
+    # lets a floppy terminal tail occupy space that a tightly constrained loop then cannot
+    # avoid.
+    loops: list[tuple[Domain, Span]] = [
+        (domain, loop) for domain in structure.folded_domains() for loop in domain.loops
+    ]
+    idrs = structure.idrs()
+    connecting = [d for d in idrs if not d.span.is_terminal]
+    terminal = [d for d in idrs if d.span.is_terminal]
 
-        if len(sequence) < min_length:
-            outcomes.append(
-                RegionOutcome(
-                    model=model,
-                    chain_id=chain.chain_id,
-                    residues=residues,
-                    n_residues=len(sequence),
-                    built=False,
-                    reason=f"shorter than the {min_length}-residue minimum; left as-is",
-                )
-            )
-            continue
-
-        try:
-            target = target_dimensions(sequence, mode=mode)
-            key = (chain.chain_id, domain.span.start, domain.span.stop)
-            drawn = model_targets.get(key)
-            requested = float(drawn[model - 1]) if drawn is not None else target.end_to_end
-
-            request = IDRRequest(
-                sequence=sequence,
-                n_residues=len(sequence),
-                target_end_to_end=requested,
-                n_anchor_xyz=domain.n_terminal_ca,
-                c_anchor_xyz=domain.c_terminal_ca,
-                # Supplying these is what keeps the junction angles inside the valid window.
-                n_anchor_prev_xyz=_outer_anchor(structure, domain, side="n"),
-                c_anchor_next_xyz=_outer_anchor(structure, domain, side="c"),
-                n_conformations=1,
-            )
-            result = engine.generate(request, obstacles=_obstacles_for(structure, domain), rng=rng)
-        except DodoError as exc:
-            outcomes.append(
-                RegionOutcome(
-                    model=model,
-                    chain_id=chain.chain_id,
-                    residues=residues,
-                    n_residues=len(sequence),
-                    built=False,
-                    reason=f"{type(exc).__name__}: {exc}",
-                )
-            )
-            continue
-
-        if not bool(result.success[0]):
-            outcomes.append(
-                RegionOutcome(
-                    model=model,
-                    chain_id=chain.chain_id,
-                    residues=residues,
-                    n_residues=len(sequence),
-                    built=False,
-                    reason="the engine reported failure for this conformer",
-                )
-            )
-            continue
-
-        indices = np.arange(domain.span.start, domain.span.stop)
-        structure.set_ca_xyz(indices, result.ca_coords[0])
-        domain.rebuilt = True
-
-        achieved = float(np.linalg.norm(result.ca_coords[0][-1] - result.ca_coords[0][0]))
+    for parent, loop in loops:
         outcomes.append(
-            RegionOutcome(
+            _build_region(
+                structure,
+                span=loop,
+                sequence=structure.sequence[loop.slice],
+                # A loop gets NO dimension prediction. Its span is dictated by the folded
+                # domain it bridges: the two anchors are fixed atoms of a domain that is not
+                # ours to move, so the distance is already decided. Predicting an end-to-end
+                # distance here and then failing to achieve it would be inventing a constraint
+                # the geometry has already settled.
+                target=None,
                 model=model,
-                chain_id=chain.chain_id,
-                residues=residues,
-                n_residues=len(sequence),
-                built=True,
-                target=target,
-                achieved_end_to_end=achieved,
-                requested_end_to_end=requested,
+                rng=rng,
+                engine=engine,
+                min_length=min_length,
+                label=f"loop in FD {parent.span.start + 1}-{parent.span.stop}",
             )
         )
 
-        if all_atom:
-            try:
-                place_backbone_for_domain(
-                    structure,
-                    domain,
-                    rng=rng,
-                    sidechains=bool(sidechains),
-                )
-            except DodoError as exc:
-                # The CA trace is good; only the all-atom step failed. Say so rather than
-                # discarding a usable rebuild.
-                outcomes[-1] = RegionOutcome(
-                    model=model,
-                    chain_id=chain.chain_id,
-                    residues=residues,
-                    n_residues=len(sequence),
-                    built=True,
-                    target=target,
-                    achieved_end_to_end=achieved,
-                    requested_end_to_end=requested,
-                    reason=f"CA trace built, but backbone placement failed: {exc}",
-                )
+    for domain in connecting + terminal:
+        key = (
+            structure.chains[int(structure.chain_index[domain.span.start])].chain_id,
+            domain.span.start,
+            domain.span.stop,
+        )
+        drawn = model_targets.get(key)
+        outcomes.append(
+            _build_region(
+                structure,
+                span=domain.span,
+                sequence=domain.sequence,
+                target=target_dimensions(domain.sequence, mode=mode)
+                if len(domain.sequence) >= min_length
+                else None,
+                requested_override=float(drawn[model - 1]) if drawn is not None else None,
+                model=model,
+                rng=rng,
+                engine=engine,
+                min_length=min_length,
+                label="connecting IDR" if not domain.span.is_terminal else "terminal IDR",
+                domain=domain,
+            )
+        )
 
     return outcomes
 
@@ -418,15 +503,39 @@ def rebuild(
                     )
                 )
 
+    # STEP 3, done ONCE for the whole run: move the folded domains so each linker's flanking
+    # anchors sit at its predicted end-to-end distance.
+    #
+    # Without this the linker is built into whatever gap AlphaFold happened to leave, which is
+    # essentially arbitrary. Measured on real models, AlphaFold packs domains 2-3.6x CLOSER
+    # than the linkers between them predict (p300's 151-residue linker: a 26.1 A gap against a
+    # 94.9 A prediction), because it has no way to know where to put domains joined by a long
+    # disordered region. Building into that gap gives a compact blob wedged between domains.
+    #
+    # ONCE, not per model, and that is deliberate. The multi-model output exists so a viewer can
+    # flick between conformers and see the disordered regions move; if the folded domains were
+    # re-placed for every model they would jump around between frames, which looks wrong and
+    # destroys the illusion. So the domain arrangement is shared and only the disordered regions
+    # differ -- which also means a connecting IDR's end-to-end distance is fixed by its anchors
+    # across all models (its path varies, its span cannot), while a terminal IDR is free and
+    # does scatter.
+    base = original.copy()
+    base_assignments = assign_regions(base, strategy=strategy)
+    report.assignments = base_assignments
+    for assignment in base_assignments:
+        report.notes.extend(assignment.notes)
+
+    placement = reposition_folded_domains(base, mode=mode, rng=rng)
+    report.placements.extend(placement.placements)
+    report.notes.extend(placement.notes)
+    for clashing in placement.clashing:
+        report.notes.append(str(clashing))
+
     for model_number in range(1, n_models + 1):
-        # Each model starts from the input coordinates, so a failed region in one model does
-        # not contaminate the next.
-        working = original.copy()
-        assignments = assign_regions(working, strategy=strategy)
-        if model_number == 1:
-            report.assignments = assignments
-            for assignment in assignments:
-                report.notes.extend(assignment.notes)
+        # Each model starts from the REPOSITIONED coordinates, so every model shares one domain
+        # arrangement and a failed region in one cannot contaminate the next.
+        working = base.copy()
+        assign_regions(working, strategy=strategy)
 
         with warnings.catch_warnings():
             # The pipeline supplies outer anchors, so the engine's warning about missing ones

@@ -31,7 +31,7 @@ _MODE_CHOICES = (
     "super_expanded",
     "max_expansion",
 )
-_STRATEGY_CHOICES = ("auto", "contact", "plddt", "metapredict")
+_STRATEGY_CHOICES = ("auto", "density", "contact", "plddt", "metapredict")
 _ENGINE_CHOICES = ("walk", "starling")
 
 
@@ -114,8 +114,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default="auto",
         choices=_STRATEGY_CHOICES,
         help=(
-            "how to identify regions: auto picks pLDDT for AlphaFold models and geometric "
-            "contacts otherwise (default: auto)"
+            "how to identify regions. density is DODO's original all-atom density metric and "
+            "the default for all-atom input; contact is a CA-only alternative; plddt and "
+            "metapredict are explicit opt-ins (default: auto)"
         ),
     )
     _add_common_build_arguments(rebuild_parser)

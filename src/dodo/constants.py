@@ -553,15 +553,18 @@ def resolve_mode(mode: str) -> float:
 
     Raises
     ------
-    ValueError
-        If ``mode`` is not a recognized mode name. The message lists the valid
-        options, since this is the most common user-facing input error.
+    ~dodo.exceptions.InvalidParameterError
+        If ``mode`` is not a recognized mode name. The message lists the valid options, since
+        this is the most common user-facing input error. That class is both a
+        :class:`~dodo.exceptions.DodoError` and a :exc:`ValueError`, so either ``except`` works.
     """
+    from .exceptions import InvalidParameterError
+
     try:
         return MODES[mode]
     except KeyError:
         valid = ", ".join(sorted(MODES))
-        raise ValueError(f"Unknown mode {mode!r}. Valid modes are: {valid}") from None
+        raise InvalidParameterError(f"Unknown mode {mode!r}. Valid modes are: {valid}") from None
 
 
 def backbone_angle_grid() -> np.ndarray:

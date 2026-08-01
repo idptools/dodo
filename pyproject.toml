@@ -63,8 +63,15 @@ classifiers = [
 #    stray "git@" and (b) is a PEP 508 direct reference, which makes the distribution
 #    permanently unpublishable to PyPI. See [tool.uv.sources] for the dev pin.
 dependencies = [
-    "numpy>=1.24",
-    "scipy>=1.10",
+    # numpy 2 is required, not merely tolerated. NEP 50 changed scalar type promotion, and
+    # DODO's geometry mixes Python floats with float32/float64 arrays throughout -- so 1.x and
+    # 2.x can silently disagree on a result dtype. Pinning the floor at 2.0 means there is one
+    # promotion rule to reason about instead of two, which for numerical code is the difference
+    # between a defined behaviour and a version-dependent one.
+    "numpy>=2.0",
+    # scipy 1.13.0 is the first release built against numpy 2, so anything older cannot coexist
+    # with the pin above. Raised from >=1.10 for that reason, not for a feature.
+    "scipy>=1.13",
 ]
 
 [project.optional-dependencies]
@@ -84,8 +91,9 @@ lookup = ["getSequence"]
 # tree. Optional by design, never vendored.
 starling = ["starling-ensemble"]
 
-# The matplotlib debug plotter.
-viz = ["matplotlib>=3.7"]
+# The matplotlib debug plotter. 3.9 is the first release supporting numpy 2, so it is the floor
+# implied by the numpy>=2.0 runtime pin rather than a feature requirement.
+viz = ["matplotlib>=3.9"]
 
 all = ["dodo[albatross,predictors,lookup,starling,viz]"]
 

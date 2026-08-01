@@ -22,6 +22,23 @@ class DodoError(Exception):
     """
 
 
+class InvalidParameterError(DodoError, ValueError):
+    """An argument was outside its permitted range or set of values.
+
+    Deliberately inherits from **both** :class:`DodoError` and :exc:`ValueError`. A caller
+    migrating from 1.x writes ``except DodoError`` as the translation of 1.x's
+    ``dodoException``, and the thing they most often wrapped it around was a mistyped mode name
+    -- so bad arguments have to be inside the hierarchy or that translation silently fails to
+    catch the commonest mistake. But a mistyped keyword argument is also exactly what
+    :exc:`ValueError` means in Python, and code already written as ``except ValueError`` should
+    not break to serve the first point.
+
+    Inheriting from both costs nothing and makes either instinct correct. It also means the CLI
+    catches these through its single ``except DodoError`` and prints one plain line, instead of
+    dumping a traceback at a user who mistyped a flag value.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Input and parsing
 # ---------------------------------------------------------------------------

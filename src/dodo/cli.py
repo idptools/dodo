@@ -77,6 +77,26 @@ def _add_common_build_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--seed", type=int, default=None, help="random seed; makes output reproducible"
     )
+    # v1 parity. These were `-f/--no_FD_atoms` and `-b/--beta_for_FD_IDR` on pdb-from-pdb and
+    # pdb-from-name. Both behaviours already existed in v2's writer but had no command line, which
+    # would have forced anyone with a shell script using them to rewrite it in Python.
+    parser.add_argument(
+        "--ca-only",
+        action="store_true",
+        help=(
+            "write alpha carbons only, for the folded domains too (v1's -f/--no_FD_atoms). "
+            "By default the regions DODO does not rebuild keep every atom they arrived with"
+        ),
+    )
+    parser.add_argument(
+        "-b",
+        "--annotate-regions",
+        action="store_true",
+        help=(
+            "encode each residue's region type in the B-factor column so a viewer can colour "
+            "by it (v1's -b/--beta_for_FD_IDR)"
+        ),
+    )
     parser.add_argument(
         "--no-conect",
         action="store_true",
@@ -268,10 +288,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "fetch":
             from .io import fetch_alphafold, resolve_uniprot_accession
 
-            accession = args.target
-            # A bare accession has no spaces and is short; anything else is a name to resolve.
-            if " " in accession or len(accession) > 10:
-                accession = resolve_uniprot_accession(args.target)
+            # Always resolve. resolve_uniprot_accession returns accession-shaped input
+            # unchanged without touching the network, so there is nothing to save by guessing
+            # first -- and the guess this used to make ("no spaces and 10 characters or fewer
+            # must be an accession") was wrong in both directions: `dodo fetch p53` and
+            # `dodo fetch calmodulin` failed, while `dodo fetch transthyretin` worked.
+            accession = resolve_uniprot_accession(args.target)
+            if accession != args.target:
                 print(f"resolved {args.target!r} to {accession}", file=sys.stderr)
             path = fetch_alphafold(accession)
             print(f"using {path}", file=sys.stderr)
@@ -281,7 +304,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         status = _report(report, quiet=args.quiet)
         if report.models:
-            write_pdb(report.models, args.out, conect=not args.no_conect)
+            write_pdb(
+                report.models,
+                args.out,
+                conect=not args.no_conect,
+                ca_only=args.ca_only,
+                annotate_regions=args.annotate_regions,
+            )
             if not args.quiet:
                 print(f"wrote {args.out}", file=sys.stderr)
         return status

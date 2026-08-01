@@ -25,19 +25,17 @@ cover the shapes that break region identification:
 * The **PTBP2 / PTBP3 / G3BP1 / TRF1** group are multi-domain proteins with interleaved short
   linkers, which is where loop-versus-IDR classification goes wrong.
 
-What is asserted, and what is only ratcheted
---------------------------------------------
-The hard assertions are invariants that must hold for every structure forever: the rebuild
-completes, no two atoms end up closer than the shortest bond in any protein, and no bond DODO
-built is the wrong length.
+What is asserted
+----------------
+Every assertion here is an invariant that must hold for every structure forever: the rebuild
+completes, no two atoms end up closer than the shortest bond in any protein, no bond DODO built is
+the wrong length, the region partition is complete and non-overlapping, output is bit-identical
+under a fixed seed, and there are no steric clashes at all.
 
-Steric clashes are handled differently, with a *ratchet* rather than a fixed expectation. Two of
-these structures currently retain a handful of clashes between a rebuilt alpha carbon and a folded
-domain's side chain, because the walk's relaxation ladder prefers a known-bad contact to failing
-outright. That is a real open defect with a fix in progress. Until it lands, asserting zero would
-leave a permanently red suite, and asserting the current numbers exactly would break the moment
-AlphaFold publishes a new model version. So the ceiling is deliberately loose and can only ever be
-tightened -- see :data:`CLASH_CEILING`.
+That last one was briefly a loose ratchet rather than an assertion, because p300 and TDP-43 each
+retained a few clashes admitted by the walk's clash relaxation ladder. Deleting that ladder removed
+them: all nine structures now rebuild with zero clashes and zero impossible separations, so the
+ceiling is zero and this is a real assertion. See :data:`CLASH_CEILING`.
 
 These tests need the network. They fetch from the AlphaFold database and are marked ``network``, so
 ``pytest -m 'not network'`` skips them. Fetches are cached by
@@ -81,17 +79,16 @@ CASES: tuple[Case, ...] = (
     Case("P42212", "GFP", "Alex Holehouse"),
 )
 
-#: Maximum steric clashes tolerated per structure.
+#: Maximum steric clashes tolerated per structure. Measured at 0 for all nine, against AFDB v6.
 #:
-#: A RATCHET, not a measurement. Measured today against AFDB v6 with ``seed=0``: p300 6, TDP-43 2,
-#: and 0 for the four others available locally. The ceiling sits well above that because the count
-#: depends on the AlphaFold model version, which EBI bumps without warning, and on the sparrow
-#: dimension predictions.
+#: A RATCHET: it must only ever move down. It was briefly 12, when p300 and TDP-43 retained a
+#: handful of clashes admitted by the walk's clash relaxation ladder as it descended to its 2.00 A
+#: rung. Deleting that ladder took the whole corpus to zero, so a real assertion replaced the
+#: allowance.
 #:
-#: Every one of these is a rebuilt alpha carbon against a folded-domain side chain, admitted by
-#: :data:`dodo.constants.CLASH_RELAXATION_LADDER` bottoming out at its 2.00 A rung. When the
-#: relaxation pass lands this becomes 0 and this comment goes away. It must only ever move down.
-CLASH_CEILING: int = 12
+#: If a future change cannot hold zero here, the right response is to fix the change, not to raise
+#: this number.
+CLASH_CEILING: int = 0
 
 IDS = [f"{c.name}-{c.accession}" for c in CASES]
 
@@ -169,8 +166,7 @@ class TestHistoricalFailures:
         violations = validate_clashes(report.models[0]).violations
         assert len(violations) <= CLASH_CEILING, (
             f"{case.name}: {len(violations)} clashes exceeds the ceiling of {CLASH_CEILING}. "
-            f"This ratchet only moves down. Worst: "
-            + "; ".join(v.message for v in violations[:3])
+            f"This ratchet only moves down. Worst: " + "; ".join(v.message for v in violations[:3])
         )
 
     def test_regions_are_identified(self, case: Case, _fetched: dict[str, Path]) -> None:

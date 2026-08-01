@@ -110,7 +110,6 @@ from ..constants import (
     CA_CLASH_DISTANCE,
     CANDIDATES_PER_ANGLE,
     CLASH_EXCLUDE_WITHIN_RESIDUES,
-    CLASH_RELAXATION_LADDER,
     MAX_ATTEMPTS_PER_REGION,
     MAX_CANDIDATES_PER_RESIDUE,
     WALK_BATCH_SIZE,
@@ -1490,31 +1489,25 @@ class SelfAvoidingWalk:
         # The region's own trace: hard threshold, no ladder, ever.
         acceptable &= self._nearest_chain_distance(candidates, chain_points) >= CA_CLASH_DISTANCE
 
-        chosen_mask = np.zeros((n_live, count), dtype=bool)
+        # External obstacles: the same hard threshold as the region's own trace, no ladder.
+        #
+        # There used to be a relaxation ladder here, descending 3.20 -> 2.80 -> 2.50 -> 2.00 A
+        # when the strict threshold admitted no candidate, on the theory that a tight contact
+        # beats a failed region. Measured across p300, arf19 and dnmt3a at seeds 0-3, that
+        # theory was wrong in both halves: the ladder was responsible for 69 of the 79 steric
+        # clashes in the output, and removing it caused ZERO additional region failures. It was
+        # buying nothing and paying for it in exactly the defect DODO is supposed to avoid.
+        #
+        # Do not reintroduce it without re-running that measurement. If a region genuinely
+        # cannot be built at 3.20 A, the honest answer is the per-region failure the report
+        # already models, not a contact the validators will flag.
         rung_used = np.full(n_live, CA_CLASH_DISTANCE, dtype=np.float64)
-        resolved = np.zeros(n_live, dtype=bool)
         if obstacle_tree is None:
-            # Nothing external to avoid, so there is nothing to relax against. Walking the
-            # ladder here anyway is how "no obstacles at all" used to end up reporting
-            # relaxed_to=2.8: the ladder is a concession to crowding and there is no crowding.
             chosen_mask = acceptable
-            resolved = np.any(acceptable, axis=1)
         else:
             nearest = self._nearest_obstacle_distance(candidates, obstacle_tree)
-            # One shared distance-to-nearest-obstacle array serves every rung of the
-            # relaxation ladder, so relaxing costs no extra geometry -- and each conformer
-            # relaxes only as far as it individually has to. A conformer only ever reaches a
-            # loosened rung because the strict one admitted no candidate at all, which is the
-            # "genuine crowding" condition.
-            for rung in CLASH_RELAXATION_LADDER:
-                passes = acceptable & (nearest >= rung)
-                newly = ~resolved & np.any(passes, axis=1)
-                if np.any(newly):
-                    chosen_mask[newly] = passes[newly]
-                    rung_used[newly] = rung
-                    resolved |= newly
-                if np.all(resolved):
-                    break
+            chosen_mask = acceptable & (nearest >= CA_CLASH_DISTANCE)
+        resolved = np.any(chosen_mask, axis=1)
 
         # Shift each row by the best log-weight among the candidates that are actually
         # available to it, so the largest weight in every row is exactly 1 and the ratios

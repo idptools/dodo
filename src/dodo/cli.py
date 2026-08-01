@@ -66,16 +66,14 @@ def _add_common_build_arguments(parser: argparse.ArgumentParser) -> None:
         choices=_ENGINE_CHOICES,
         help="conformation engine (default: walk; starling needs pip install 'dodo[starling]')",
     )
-    parser.add_argument(
-        "--all-atom",
-        action="store_true",
-        help="place N, C and O for rebuilt regions (see README for current limitations)",
-    )
-    parser.add_argument(
-        "--sidechains",
-        action="store_true",
-        help="also place CB; only meaningful with --all-atom",
-    )
+    # No --all-atom / --sidechains here. Placing backbone and side-chain atoms on REBUILT
+    # regions is priority 2/3 work and is not part of 2.0; the flags are withheld from the CLI
+    # until that geometry is trustworthy. The ``all_atom`` and ``sidechains`` keyword arguments
+    # remain on dodo.rebuild for development.
+    #
+    # Note this is NOT the same feature as v1's "all atom" option, which meant *keeping* every
+    # atom of the regions DODO does not rebuild. v2 does that unconditionally: folded domains
+    # retain their full atomic detail and only rebuilt regions are reduced to alpha carbons.
     parser.add_argument(
         "--seed", type=int, default=None, help="random seed; makes output reproducible"
     )
@@ -260,8 +258,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             "mode": args.mode,
             "n_models": args.models,
             "engine": args.engine,
-            "all_atom": args.all_atom,
-            "sidechains": args.sidechains,
             "seed": args.seed,
         }
 

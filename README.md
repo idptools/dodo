@@ -83,8 +83,6 @@ dodo regions AF-P04637-F1-model_v6.pdb
 | `-n`, `--models` | `1` | Number of conformers. Folded domains are positioned once and held fixed across all models; only the disordered regions differ |
 | `-e`, `--engine` | `walk` | `walk` or `starling` |
 | `-s`, `--strategy` | `auto` | How to identify regions: `auto`, `density`, `contact`, `plddt`, `metapredict` |
-| `--all-atom` | off | Place N, C and O for rebuilt regions ([caveat](#all-atom-output)) |
-| `--sidechains` | off | Also place CB; only with `--all-atom` |
 | `--seed` | none | Makes output reproducible |
 | `--no-conect` | off | Omit CONECT records — **not recommended**, see [below](#why-conect-records-matter) |
 | `-q`, `--quiet` | off | Suppress the per-region report |
@@ -311,8 +309,9 @@ Honestly stated, with what's fixed since 1.x marked.
    geometric sampler, not a force field — for ensemble-grade conformations, use
    `--engine starling`.
 
-2. **~~Rebuilt IDRs contain only alpha carbons.~~** Addressed, with a caveat — see
-   [All-atom output](#all-atom-output) below.
+2. **Rebuilt IDRs contain only alpha carbons.** Still true in 2.0, and deliberately so — getting
+   the alpha-carbon trace right comes first. Note this has never applied to the regions DODO
+   leaves alone, which keep every atom; see [Atoms in the output](#atoms-in-the-output) below.
 
 3. **~~Unusual-bond warnings in VMD.~~** Addressed: correct CONECT records, correct atom-name
    columns, and the element column written. (v1 right-justified atom names from column 13 and
@@ -326,20 +325,27 @@ Honestly stated, with what's fixed since 1.x marked.
    correctly, and regions are identified per chain, but rebuilding unmodelled regions of an EM
    assembly against the deposited sequence isn't wired up yet.
 
-### All-atom output
+### Atoms in the output
 
-`--all-atom` places N, C and O for rebuilt regions. It is **off by default** because it
-currently refuses a fraction of generated traces, and that fraction grows with chain length:
-roughly 12/12 accepted at 20 residues, 6/12 at 100, 2/12 at 200.
+Regions DODO does **not** rebuild keep every atom they arrived with. Folded domains are moved as
+rigid bodies — translated and rotated, never regenerated — so each one retains its full atomic
+detail exactly as AlphaFold produced it, down to the last decimal place. Only the regions DODO
+actually rebuilds are reduced to one alpha carbon per residue.
+
+On dnmt3a, for example: 4,636 atoms across the 578 residues DODO leaves alone, preserved
+bit-for-bit, and 334 alpha carbons for the 334 residues it rebuilds.
+
+Building backbone (N, C, O) or side-chain atoms **for rebuilt regions** is not part of 2.0. The
+machinery exists behind the `all_atom=` and `sidechains=` keyword arguments of `dodo.rebuild`, but
+it is not exposed on the command line, because it currently refuses a fraction of generated traces
+and that fraction grows with chain length: roughly 12/12 accepted at 20 residues, 6/12 at 100,
+2/12 at 200.
 
 The cause is understood and measured. Reconstructability constrains the **change** in CA–CA–CA
 pseudo-angle between consecutive residues, not its magnitude: the allowed change is about 35°
 at a base angle of 95° and collapses to 4° at 150°. The generator doesn't yet enforce that joint
 constraint, so a long chain almost always contains one unreconstructable junction. The fix is a
-constraint on consecutive angles during candidate selection.
-
-Side chains are CB only. A full rotamer library is deliberately not implemented rather than
-fabricated.
+constraint on consecutive angles during candidate selection, and it is the next feature after 2.0.
 
 ## Development
 

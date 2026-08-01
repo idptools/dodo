@@ -35,7 +35,13 @@ from pathlib import Path
 
 import numpy as np
 
-from ..constants import CA_CA_BOND_LENGTH, DEFAULT_MODE, MIN_IDR_LENGTH
+from ..constants import (
+    ANCHOR_EXEMPT_ATOMS,
+    ANCHOR_EXEMPT_ATOMS_BY_RESIDUE,
+    CA_CA_BOND_LENGTH,
+    DEFAULT_MODE,
+    MIN_IDR_LENGTH,
+)
 from ..exceptions import BuildError, DodoError
 from ..regions.identify import RegionAssignment, Strategy, assign_regions
 from ..structure import Domain, DomainKind, Span, Structure
@@ -326,12 +332,30 @@ def _outer_ca(structure: Structure, anchor: int | None, *, step: int) -> np.ndar
 
 
 def _obstacles_for_span(structure: Structure, span: Span) -> np.ndarray | None:
-    """Already-placed atoms the region must avoid, excluding itself and its own anchors."""
+    """Already-placed atoms the region must avoid.
+
+    The region's own residues are excluded, since the engine handles self-avoidance internally.
+    Its anchors are only *partly* excluded: the atoms a bonded neighbour legitimately comes
+    within a clash distance of -- the anchor's backbone, plus proline's CD -- and nothing else.
+
+    Exempting the whole anchor residue, as this once did, is a real defect and not a
+    conservative simplification. The first residue of a rebuilt region is bonded to the anchor's
+    CA but has no bonded relationship to the anchor's *side chain*, so a blanket exemption lets
+    the walk place a CA straight through it. That produced overlaps at 0.871-0.944 A -- below the
+    shortest bond in any protein -- in output the pipeline reported as clean. See
+    :data:`~dodo.constants.ANCHOR_EXEMPT_ATOMS` for the measurement behind the atom list.
+    """
     mask = structure.rebuilt_atom_mask()
     mask[structure.atom_slice_for_residues(span.start, span.stop)] = False
     for anchor in (span.n_anchor, span.c_anchor):
-        if anchor is not None:
-            mask[structure.atom_slice_for_residues(anchor, anchor + 1)] = False
+        if anchor is None:
+            continue
+        atoms = structure.atom_slice_for_residues(anchor, anchor + 1)
+        exempt = ANCHOR_EXEMPT_ATOMS | ANCHOR_EXEMPT_ATOMS_BY_RESIDUE.get(
+            str(structure.residue_name[anchor]), frozenset()
+        )
+        names = structure.atom_name[atoms]
+        mask[atoms] = mask[atoms] & ~np.isin(names, list(exempt))
     if not mask.any():
         return None
     coords: np.ndarray = structure.xyz[mask]

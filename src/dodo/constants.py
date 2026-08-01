@@ -458,6 +458,37 @@ ONE_TO_THREE: Final[dict[str, str]] = {
 #: Backbone atom names, in the canonical order they appear within a residue.
 BACKBONE_ATOMS: Final[tuple[str, ...]] = ("N", "CA", "C", "O")
 
+#: Atoms of an *anchor* residue that a newly placed neighbouring CA may legitimately come
+#: closer to than :data:`CA_CLASH_DISTANCE`, and which are therefore exempt from the obstacle
+#: set when building the region that anchor holds.
+#:
+#: MEASURED over 649,658 sequence-neighbour CA / atom pairs sampled from the human proteome.
+#: The 0.1th percentile of the distance from a residue's atoms to an adjacent residue's CA:
+#:
+#: ===== ====== ==================================================
+#: atom  p0.1   why
+#: ===== ====== ==================================================
+#: C     2.410  1-3 through the peptide bond
+#: N     2.379  1-3 through the peptide bond
+#: O     2.712  1-4, but pinned nearly eclipsing the peptide plane
+#: CA    3.018  the bonded partner itself
+#: ===== ====== ==================================================
+#:
+#: Every *side-chain* atom stays above 3.29 A at the same percentile, with one exception:
+#: proline CD reaches 2.778 A (minimum 2.245 A), because it is covalently bonded to proline's
+#: own backbone N and so is 1-3 from the preceding residue's C. GLU/GLN/LYS/ARG CD -- the other
+#: residues with a CD -- stay above 3.34 A, so the exemption is proline's alone.
+#:
+#: This exists because exempting the *whole* anchor residue is wrong. Doing so let the walk
+#: place a CA on top of an anchor's side chain: measured collisions at 0.871 A (LEU CD1),
+#: 0.937 A (ASN ND2) and 0.944 A (LYS CD) in output that every other check called clean.
+ANCHOR_EXEMPT_ATOMS: Final[frozenset[str]] = frozenset(BACKBONE_ATOMS)
+
+#: Per-residue additions to :data:`ANCHOR_EXEMPT_ATOMS`. See above for the measurement.
+ANCHOR_EXEMPT_ATOMS_BY_RESIDUE: Final[dict[str, frozenset[str]]] = {
+    "PRO": frozenset({"CD"}),
+}
+
 #: Heavy-atom counts per residue, used to normalize the contact score. DERIVED by
 #: counting non-hydrogen atoms in each standard residue.
 HEAVY_ATOM_COUNTS: Final[dict[str, int]] = {

@@ -77,6 +77,12 @@ def test_wheel_contains_every_subpackage(tmp_path: Path) -> None:
 
     This is the test whose absence let a 12.7 KB engine-less wheel ship.
     """
+    # A real guard, unlike the `except FileNotFoundError` this replaces. That could never fire:
+    # the subprocess is `sys.executable -m build`, and sys.executable always exists, so a missing
+    # backend exits 1 and raises CalledProcessError -- a FAILURE, not the intended skip. It went
+    # unnoticed because developer machines have `build`; CI installs only `.[test]`, which did
+    # not, so every matrix leg would have gone red. `build` is now pinned in that extra too.
+    pytest.importorskip("build")
     try:
         subprocess.run(
             [sys.executable, "-m", "build", "--wheel", "--outdir", str(tmp_path)],
@@ -85,8 +91,6 @@ def test_wheel_contains_every_subpackage(tmp_path: Path) -> None:
             capture_output=True,
             text=True,
         )
-    except FileNotFoundError:  # pragma: no cover
-        pytest.skip("the 'build' module is not installed")
     except subprocess.CalledProcessError as exc:  # pragma: no cover
         pytest.fail(f"wheel build failed:\n{exc.stdout}\n{exc.stderr}")
 
@@ -118,16 +122,14 @@ def test_wheel_installs_and_imports(tmp_path: Path) -> None:
     The end-to-end invariant that no amount of source-tree testing can establish: this
     is what a user actually gets.
     """
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "build", "--wheel", "--outdir", str(tmp_path / "dist")],
-            cwd=REPO_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError:  # pragma: no cover
-        pytest.skip("the 'build' module is not installed")
+    pytest.importorskip("build")
+    subprocess.run(
+        [sys.executable, "-m", "build", "--wheel", "--outdir", str(tmp_path / "dist")],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
     venv = tmp_path / "venv"
     subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, capture_output=True)

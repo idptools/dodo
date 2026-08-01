@@ -1340,19 +1340,39 @@ class TestAnchorAtomsInTheObstacleSet:
         assert 4 * with_atoms.attempts <= MAX_ATTEMPTS_PER_REGION
         assert 4 * without.attempts <= MAX_ATTEMPTS_PER_REGION
 
-    def test_including_them_can_cost_a_rung_of_the_ladder(self) -> None:
-        # The concrete reason to leave them out, and the reason the engine reports
-        # relaxed_to rather than hiding it: this is a false positive, and a caller who reads
-        # relaxed_to needs to be able to tell the difference from a real squeeze.
+    def test_including_them_biases_the_junction_away_from_real_geometry(self) -> None:
+        """The real cost of including them, now that there is no ladder to absorb it.
+
+        This test used to assert that including the anchor's own atoms consumed a rung of
+        CLASH_RELAXATION_LADDER. That ladder is gone -- it was responsible for 69 of 79 steric
+        clashes across the fixture sweep while preventing zero region failures -- so the cost
+        moved. It is no longer a spurious ``relaxed_to``; it is a distorted junction.
+
+        A residue bonded to the anchor legitimately comes closer to the anchor's backbone than
+        the clash distance. Measured over 649,658 sequence-neighbour pairs from the human
+        proteome, a CA sits at 2.379 A from the next residue's N at the 0.1st percentile and
+        3.280 A at the median -- so the median real junction is INSIDE the 3.20 A clash
+        distance. Feeding those atoms to the engine as ordinary obstacles therefore does not
+        prevent a defect, it forbids the commonest real geometry.
+        """
         kwargs = {"n_anchor": ORIGIN, "c_anchor": np.array([40.0, 0.0, 0.0]), "target": 60.0}
-        relaxed = [
-            build(20, seed=seed, obstacles=self.ANCHOR_ATOMS, n_conformations=5, **kwargs)[
-                1
-            ].relaxed_to
-            for seed in (2, 5, 71)
-        ]
-        assert any(value is not None for value in relaxed)
-        assert all(
-            build(20, seed=seed, n_conformations=5, **kwargs)[1].relaxed_to is None
-            for seed in (2, 5, 71)
+        anchor_backbone = self.ANCHOR_ATOMS[[0, 2, 3]]  # the N-terminal anchor's N, C, O
+
+        def closest_first_ca_to_anchor_backbone(*, obstacles: np.ndarray | None) -> float:
+            worst = np.inf
+            for seed in (2, 5, 71):
+                result = build(20, seed=seed, obstacles=obstacles, n_conformations=5, **kwargs)[1]
+                for coords in result.ca_coords:
+                    d = np.linalg.norm(anchor_backbone - coords[0], axis=1).min()
+                    worst = min(worst, float(d))
+            return worst
+
+        excluded = closest_first_ca_to_anchor_backbone(obstacles=None)
+        included = closest_first_ca_to_anchor_backbone(obstacles=self.ANCHOR_ATOMS)
+
+        # Included: the engine is forced to hold the whole region off the anchor's backbone.
+        assert included >= CA_CLASH_DISTANCE
+        # Excluded: it is free to adopt the natural approach, and does.
+        assert excluded < CA_CLASH_DISTANCE, (
+            f"expected the first CA to approach the anchor backbone naturally, got {excluded:.2f}"
         )

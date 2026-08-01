@@ -303,6 +303,74 @@ class TestRebuild:
             rebuild(DNMT3A, engine="magic")
 
 
+class TestAnchorObstacles:
+    """The anchor of a rebuilt region is only *partly* exempt from clash checking.
+
+    Exempting the whole anchor residue looks conservative and is not. The first rebuilt
+    residue is bonded to the anchor's CA but has no bonded relationship to the anchor's side
+    chain, so a blanket exemption let the walk place a CA straight through it -- producing
+    overlaps at 0.871 A (LEU CD1), 0.937 A (ASN ND2) and 0.944 A (LYS CD) in output that
+    every other check called clean. Those are below the shortest bond in any protein.
+    """
+
+    def test_anchor_backbone_is_exempt_but_side_chain_is_not(self) -> None:
+        from dodo.construct.pipeline import _obstacles_for_span
+        from dodo.regions import assign_regions
+
+        structure = read_structure(DNMT3A)
+        assign_regions(structure)
+        # Mark everything placed, so the obstacle set is limited only by the exemptions.
+        for domain in structure.domains:
+            domain.rebuilt = True
+        span = next(
+            d.span
+            for d in structure.domains
+            if d.kind is DomainKind.IDR and d.span.c_anchor is not None
+        )
+        anchor = span.c_anchor
+        assert anchor is not None
+
+        obstacles = _obstacles_for_span(structure, span)
+        assert obstacles is not None
+        present = {tuple(np.round(row, 4)) for row in obstacles}
+
+        atoms = structure.atom_slice_for_residues(anchor, anchor + 1)
+        names = [str(n) for n in structure.atom_name[atoms]]
+        coords = structure.xyz[atoms]
+        # A residue with a side chain, or the assertion below proves nothing.
+        assert any(n not in ("N", "CA", "C", "O") for n in names)
+
+        for name, xyz in zip(names, coords, strict=True):
+            key = tuple(np.round(xyz, 4))
+            if name in ("N", "CA", "C", "O"):
+                assert key not in present, f"anchor backbone {name} must be exempt"
+            else:
+                assert key in present, f"anchor side-chain {name} must remain an obstacle"
+
+    def test_proline_cd_is_exempt(self) -> None:
+        """Proline's CD is bonded to its own backbone N, so it is 1-3 from the preceding C.
+
+        Measured minimum to a neighbouring CA is 2.245 A -- below the clash distance, and
+        legitimately so. It is the only side-chain atom with that exemption.
+        """
+        from dodo.constants import ANCHOR_EXEMPT_ATOMS, ANCHOR_EXEMPT_ATOMS_BY_RESIDUE
+
+        assert "CD" in ANCHOR_EXEMPT_ATOMS_BY_RESIDUE["PRO"]
+        assert "CD" not in ANCHOR_EXEMPT_ATOMS
+        for residue in ("GLU", "GLN", "LYS", "ARG"):
+            assert residue not in ANCHOR_EXEMPT_ATOMS_BY_RESIDUE
+
+    @pytest.mark.slow
+    def test_output_has_no_impossible_separations(self) -> None:
+        """The end-to-end guard: no rebuilt structure may contain a sub-bond-length contact."""
+        from dodo.validate import find_impossible_pairs
+
+        for seed in (0, 1, 2, 3):
+            report = rebuild(DNMT3A, seed=seed)
+            pairs = find_impossible_pairs(report.models[0])
+            assert not pairs, f"seed {seed}: {[p.message for p in pairs]}"
+
+
 class TestBuildFromSequence:
     def test_builds_a_free_chain(self) -> None:
         report = build_from_sequence(IDR_SEQUENCE, seed=0)

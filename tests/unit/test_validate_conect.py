@@ -258,17 +258,31 @@ class TestRealOutputIsValid:
         assert len(strict.of_kind("non_reciprocal")) == report.n_bonds
 
     @pytest.mark.slow
-    def test_all_atom_rebuild_output_passes(self, tmp_path: Path) -> None:
-        """``all_atom=True`` places N, C and O in rebuilt regions, so it changes the bonds.
+    def test_mixed_all_atom_and_ca_only_output_passes(self, tmp_path: Path) -> None:
+        """Real output is a MIXTURE, and the junctions between the two halves are the risk.
 
-        The intra-residue records and the C-N junctions it enables are exactly where a
-        connectivity defect would appear next, since placing real backbone atoms in
-        rebuilt regions is the priority after this suite.
+        A rebuilt structure has all-atom folded domains and CA-only rebuilt regions in one file,
+        so connectivity has to be right for intra-residue bonds, for C-N peptide junctions inside
+        the folded domains, for CA-CA bonds along the rebuilt regions, AND for the two boundary
+        bonds where a CA-only region meets an all-atom domain. That last case is where the
+        previous defect actually appeared -- rebuilt regions left their non-CA atoms behind and
+        CONECT then bonded N to CA across 93 A.
+
+        This replaces a test that passed ``all_atom=True`` and claimed to be exercising placed
+        backbone atoms in rebuilt regions. That keyword was a silent no-op, so the test was
+        validating ordinary CA-only output under a misleading name and could not have caught
+        anything it claimed to cover.
         """
-        report = dodo.rebuild(FIXTURES / "dnmt3a.pdb", seed=5, all_atom=True, sidechains=True)
+        report = dodo.rebuild(FIXTURES / "dnmt3a.pdb", seed=5)
         assert report.ok, report.summary()
-        path = tmp_path / "all_atom.pdb"
-        write_pdb(report.models[0], path)
+        model = report.models[0]
+
+        # Guard the premise: this must really be a mixed file, or the test proves nothing.
+        names = {str(n) for n in model.atom_name}
+        assert names > {"CA"}, "expected all-atom folded domains alongside CA-only regions"
+
+        path = tmp_path / "mixed.pdb"
+        write_pdb(model, path)
         checked = validate_conect_file(path, require_backbone_conect=True)
         assert checked.ok, checked.describe()
         assert checked.completeness == 1.0

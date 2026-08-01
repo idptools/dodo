@@ -42,10 +42,9 @@ from ..constants import (
     DEFAULT_MODE,
     MIN_IDR_LENGTH,
 )
-from ..exceptions import BuildError, DodoError
+from ..exceptions import BuildError, DodoError, InvalidParameterError
 from ..regions.identify import RegionAssignment, Strategy, assign_regions
 from ..structure import Domain, DomainKind, Span, Structure
-from .backbone import place_backbone_for_domain
 from .dimensions import DimensionTarget, target_dimensions
 from .place import DomainPlacement, reposition_folded_domains
 
@@ -143,50 +142,6 @@ class RebuildReport:
             lines += [f"    {f}" for f in self.failures]
         lines += [f"  note: {n}" for n in self.notes]
         return "\n".join(lines)
-
-
-def _outer_anchor(structure: Structure, domain: Domain, *, side: str) -> np.ndarray | None:
-    """CA of the residue one step beyond an anchor, or None if there is no such residue.
-
-    Needed to constrain the pseudo-angle centred *on* the anchor. Without it that angle is
-    unconstrained and unmeasured, which is where the pre-rewrite builder's 38-177 degree
-    junction angles came from.
-    """
-    span = domain.span
-    anchor = span.n_anchor if side == "n" else span.c_anchor
-    if anchor is None:
-        return None
-    outer = anchor - 1 if side == "n" else anchor + 1
-    chain = structure.chains[int(structure.chain_index[anchor])]
-    if not (chain.span.start <= outer < chain.span.stop):
-        return None
-    coords: np.ndarray = structure.ca_xyz[outer]
-    return coords
-
-
-def _obstacles_for(structure: Structure, domain: Domain) -> np.ndarray | None:
-    """Coordinates the region must avoid: every already-placed atom outside it.
-
-    The engine wants a plain ``(n, 3)`` array, not a Structure, so this flattens the
-    already-rebuilt geometry.
-
-    Two exclusions matter. The region's own residues are excluded because they are what is
-    being replaced. Its immediate anchor residues are excluded because the engine already
-    treats them as bonded neighbours and holds the region to a clash distance against them --
-    passing them as obstacles too would make the engine reject the only positions that can
-    actually connect to them.
-    """
-    mask = structure.rebuilt_atom_mask()
-    # Drop the region itself.
-    mask[domain.atom_slice] = False
-    # Drop the flanking anchors, which the engine handles as chain neighbours.
-    for anchor in (domain.span.n_anchor, domain.span.c_anchor):
-        if anchor is not None:
-            mask[structure.atom_slice_for_residues(anchor, anchor + 1)] = False
-    if not mask.any():
-        return None
-    coords: np.ndarray = structure.xyz[mask]
-    return coords
 
 
 def _drop_non_ca_from_rebuilt(structure: Structure) -> Structure:
@@ -370,8 +325,6 @@ def _rebuild_one_model(
     engine_name: str,
     rng: np.random.Generator,
     min_length: int,
-    sidechains: bool | None,
-    all_atom: bool,
     model_targets: dict[tuple[str, int, int], np.ndarray],
 ) -> list[RegionOutcome]:
     """Rebuild every loop and IDR of one model, in place. Returns per-region outcomes."""
@@ -390,7 +343,7 @@ def _rebuild_one_model(
                 "pip install 'dodo[starling]', or pass engine='walk'."
             )
     else:
-        raise ValueError(f"Unknown engine {engine_name!r}. Use 'walk' or 'starling'.")
+        raise InvalidParameterError(f"Unknown engine {engine_name!r}. Use 'walk' or 'starling'.")
 
     outcomes: list[RegionOutcome] = []
     # Folded domains are already positioned (step 3 ran before this), so they are obstacles
@@ -471,8 +424,6 @@ def rebuild(
     n_models: int = 1,
     strategy: Strategy | str = Strategy.AUTO,
     engine: str = "walk",
-    all_atom: bool = False,
-    sidechains: bool = False,
     min_length: int = MIN_IDR_LENGTH,
     seed: int | None = None,
 ) -> RebuildReport:
@@ -494,11 +445,6 @@ def rebuild(
         How to identify regions. See :class:`~dodo.regions.identify.Strategy`.
     engine
         ``"walk"`` (always available) or ``"starling"`` (needs ``pip install 'dodo[starling]'``).
-    all_atom
-        Place N, C and O for rebuilt regions. Off by default because the analytic placement
-        currently refuses a fraction of generated traces; see the README.
-    sidechains
-        Place CB as well. Only meaningful with ``all_atom=True``.
     min_length
         Shortest region worth rebuilding. Shorter ones keep their input coordinates.
     seed
@@ -519,7 +465,7 @@ def rebuild(
     from ..io import read_structure
 
     if n_models < 1:
-        raise ValueError(f"n_models must be at least 1, got {n_models}.")
+        raise InvalidParameterError(f"n_models must be at least 1, got {n_models}.")
 
     original = read_structure(source) if not isinstance(source, Structure) else source
     report = RebuildReport()
@@ -615,8 +561,6 @@ def rebuild(
                 engine_name=engine,
                 rng=rng,
                 min_length=min_length,
-                sidechains=sidechains,
-                all_atom=all_atom,
                 model_targets=model_targets,
             )
         report.outcomes.extend(outcomes)
@@ -639,8 +583,6 @@ def build_from_sequence(
     mode: str = DEFAULT_MODE,
     n_models: int = 1,
     engine: str = "walk",
-    all_atom: bool = False,
-    sidechains: bool = False,
     seed: int | None = None,
 ) -> RebuildReport:
     """Build coordinates for a disordered sequence with no input structure.
@@ -652,7 +594,7 @@ def build_from_sequence(
     ----------
     sequence
         One-letter amino acid sequence.
-    mode, n_models, engine, all_atom, sidechains, seed
+    mode, n_models, engine, seed
         As for :func:`rebuild`.
 
     Returns
@@ -672,13 +614,13 @@ def build_from_sequence(
 
     cleaned = sequence.strip().upper()
     if not cleaned.isalpha() or not cleaned:
-        raise ValueError(
+        raise InvalidParameterError(
             f"sequence must be a non-empty string of one-letter amino acid codes, got {sequence!r}."
         )
     if n_models < 1:
-        raise ValueError(f"n_models must be at least 1, got {n_models}.")
+        raise InvalidParameterError(f"n_models must be at least 1, got {n_models}.")
     if engine != "walk":
-        raise ValueError(
+        raise InvalidParameterError(
             f"build_from_sequence currently supports engine='walk' only, got {engine!r}."
         )
 
@@ -717,10 +659,6 @@ def build_from_sequence(
             structure.chains[0].domains = [
                 Domain(structure=structure, span=Span(0, n), kind=DomainKind.IDR, rebuilt=True)
             ]
-            if all_atom:
-                place_backbone_for_domain(
-                    structure, structure.chains[0].domains[0], rng=rng, sidechains=sidechains
-                )
             report.models.append(structure)
 
         report.outcomes.append(

@@ -161,6 +161,29 @@ def _build_parser() -> argparse.ArgumentParser:
         "--scores", action="store_true", help="also print the per-residue score profile"
     )
 
+    validate_parser = subparsers.add_parser(
+        "validate",
+        help="check a structure's bond lengths, clashes and CONECT records",
+        description=(
+            "Validate structural geometry against reference bond lengths measured across 23,587 "
+            "AlphaFold structures. Works on DODO output and on any other PDB or mmCIF file."
+        ),
+    )
+    validate_parser.add_argument("structure", help="path to a PDB or mmCIF file")
+    validate_parser.add_argument(
+        "--max-findings",
+        type=int,
+        default=10,
+        metavar="N",
+        help="findings to print per check (default: 10)",
+    )
+    validate_parser.add_argument(
+        "--no-clashes", action="store_true", help="skip the steric clash check"
+    )
+    validate_parser.add_argument(
+        "--no-bonds", action="store_true", help="skip the bond-length check"
+    )
+
     return parser
 
 
@@ -211,6 +234,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                     for index, value in enumerate(assignment.score):
                         print(f"  {index + 1}\t{value:.3f}")
             return 0
+
+        if args.command == "validate":
+            from .io import read_structure
+            from .validate import validate_structure
+
+            structure = read_structure(args.structure)
+            path = (
+                args.structure if str(args.structure).lower().endswith((".pdb", ".ent")) else None
+            )
+            result = validate_structure(
+                structure,
+                path=path,
+                check_bonds=not args.no_bonds,
+                check_clashes=not args.no_clashes,
+            )
+            print(result.describe(args.max_findings))
+            # 0 clean, 2 findings. Distinct from 1, which means the file could not be read.
+            return 0 if result.ok else 2
 
         from .construct.pipeline import build_from_sequence, rebuild
         from .io import write_pdb

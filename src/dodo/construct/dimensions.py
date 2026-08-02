@@ -235,8 +235,9 @@ def predict_end_to_end(
                 "sparrow is not installed, so DODO is estimating end-to-end distance "
                 "from an analytical polymer scaling law instead of predicting it with "
                 "ALBATROSS. The estimate is blind to sequence composition and errs "
-                "compact for charged or proline-rich sequences. Install it with "
-                "pip install 'dodo[albatross]' for sequence-specific predictions.",
+                "compact for charged or proline-rich sequences. For sequence-specific "
+                "predictions install sparrow directly -- it is not on PyPI, so there is no "
+                "extra for it: pip install git+https://github.com/idptools/sparrow.git",
                 UserWarning,
                 stacklevel=2,
             )

@@ -197,7 +197,7 @@ class MissingDependencyError(DodoError):
     def __init__(self, package: str, purpose: str, extra: str | None = None):
         self.package = package
         self.extra = extra
-        install = f"pip install 'dodo[{extra}]'" if extra else f"pip install {package}"
+        install = f"pip install 'idptools-dodo[{extra}]'" if extra else f"pip install {package}"
         super().__init__(
             f"{purpose} requires {package}, which is not installed.\n  Install it with: {install}"
         )

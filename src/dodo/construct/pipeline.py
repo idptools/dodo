@@ -357,7 +357,7 @@ def _rebuild_one_model(
         if not engine.available():
             raise BuildError(
                 "The starling engine was requested but is not available. Install it with "
-                "pip install 'dodo[starling]', or pass engine='walk'."
+                "pip install 'idptools-dodo[starling]', or pass engine='walk'."
             )
     else:
         raise InvalidParameterError(f"Unknown engine {engine_name!r}. Use 'walk' or 'starling'.")
@@ -461,7 +461,8 @@ def rebuild(
     strategy
         How to identify regions. See :class:`~dodo.regions.identify.Strategy`.
     engine
-        ``"walk"`` (always available) or ``"starling"`` (needs ``pip install 'dodo[starling]'``).
+        ``"walk"`` (always available) or ``"starling"``, which needs
+        ``pip install 'idptools-dodo[starling]'``.
     min_length
         Shortest region worth rebuilding. Shorter ones keep their input coordinates.
     seed

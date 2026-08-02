@@ -36,24 +36,32 @@ Requires Python 3.10 or newer.
 pip install git+https://github.com/idptools/dodo.git
 ```
 
-The base install depends only on **numpy and scipy**, so it's fast and light. It gets you
-structure reading and writing, region identification, and IDR rebuilding with the random-walk
-engine. Without ALBATROSS it falls back to an analytical polymer scaling law for target
-dimensions — see [Dimension prediction](#dimension-prediction) for how good that actually is.
+The base install depends only on **numpy (2.0+) and scipy (1.13+)**, so it's fast and light. It
+gets you structure reading and writing, region identification, and IDR rebuilding with the
+random-walk engine.
 
-For sequence-specific predictions, install the extra you need:
+**Most users should also install sparrow**, which provides ALBATROSS. Without it DODO falls back
+to an analytical polymer scaling law that is blind to sequence composition — see
+[Dimension prediction](#dimension-prediction) for how good that actually is. It is a separate
+step rather than an extra because sparrow is not published on PyPI, and PyPI does not permit an
+extra to point at a git URL:
 
 ```bash
-pip install "dodo[albatross]"    # ALBATROSS dimension prediction via sparrow
-pip install "dodo[predictors]"   # metapredict, for sequence-only region identification
-pip install "dodo[lookup]"       # resolve protein names to UniProt accessions
-pip install "dodo[starling]"     # STARLING generative IDR ensembles (large: ~2.4 GB of weights)
-pip install "dodo[viz]"          # matplotlib debug plotting
-pip install "dodo[all]"          # everything above
+pip install git+https://github.com/idptools/sparrow.git
 ```
 
-`dodo[albatross]` is the one most users want. It's a separate extra because sparrow pulls in
-torch, and a visualization tool shouldn't force that on someone who just wants to read a PDB.
+The optional extras that *are* on PyPI:
+
+```bash
+pip install "idptools-dodo[predictors]"   # metapredict, for sequence-only region identification
+pip install "idptools-dodo[lookup]"       # resolve protein names to UniProt accessions
+pip install "idptools-dodo[starling]"     # STARLING generative IDR ensembles (~2.4 GB of weights)
+pip install "idptools-dodo[viz]"          # matplotlib debug plotting
+pip install "idptools-dodo[all]"          # everything above
+```
+
+The distribution is named `idptools-dodo` because PyPI's `dodo` belongs to an unrelated 2014
+project. The import name is unaffected — it is always `import dodo`.
 
 ## Command line
 
@@ -195,7 +203,7 @@ rather than being chased fruitlessly, and the clamping is reported.
 
 ## Dimension prediction
 
-With `dodo[albatross]` installed, targets come from ALBATROSS. Without it, DODO falls back to
+With sparrow installed, targets come from ALBATROSS. Without it, DODO falls back to
 an analytical scaling law, $R_e = 6.22\,N^{0.522}$ (from Kohn *et al.* 2004), and **warns you**
 that it did — a silent downgrade would make two runs of the same command disagree with no
 visible cause.

@@ -12,7 +12,14 @@ build-backend = "hatchling.build"
 #    from a tarball produced "1+unknown". PyPI rejects local version segments.
 
 [project]
-name = "dodo"
+# DISTRIBUTION name, not the import name. `import dodo` is unchanged and always will be --
+# hatchling's explicit packages = ["src/dodo"] below decouples the two.
+#
+# It is not "dodo" because PyPI's `dodo` is taken by an unrelated project: "DigitalOcean Library
+# and Command Line tools" 0.1.6, last uploaded 2014-07-16. `twine upload` returns 403 against it,
+# and PEP 541 name reclamation takes weeks. So the distribution is namespaced alongside the lab's
+# other packages, which is where a user would look for it anyway.
+name = "idptools-dodo"
 description = "Rebuild the disordered regions of predicted protein structures so they look like IDRs"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -45,7 +52,7 @@ classifiers = [
 ]
 
 # Runtime dependencies are deliberately minimal: numpy and scipy only. That is what
-# makes the "lite" install viable -- `pip install dodo` gets a working package that
+# makes the "lite" install viable -- `pip install idptools-dodo` gets a working package that
 # reads structures, identifies regions and rebuilds IDRs with the random-walk engine,
 # without pulling in torch.
 #
@@ -58,16 +65,21 @@ classifiers = [
 #  - matplotlib MOVED to the [viz] extra; it is only used by the debug plotter.
 #  - metapredict and getSequence MOVED to extras. Both pull torch transitively, and a
 #    module-scope import made even `dodo --help` pay multi-second torch startup.
-#  - sparrow MOVED to the [albatross] extra. It was declared as
+#  - sparrow REMOVED from the dependency list entirely. It was declared as
 #    `sparrow @ git+https://git@github.com/idptools/sparrow.git`, which (a) contains a
 #    stray "git@" and (b) is a PEP 508 direct reference, which makes the distribution
-#    permanently unpublishable to PyPI. See [tool.uv.sources] for the dev pin.
+#    permanently unpublishable to PyPI. It cannot live in an extra either -- see the note
+#    under [project.optional-dependencies]. See [tool.uv.sources] for the dev pin.
 dependencies = [
-    # numpy 2 is required, not merely tolerated. NEP 50 changed scalar type promotion, and
-    # DODO's geometry mixes Python floats with float32/float64 arrays throughout -- so 1.x and
-    # 2.x can silently disagree on a result dtype. Pinning the floor at 2.0 means there is one
-    # promotion rule to reason about instead of two, which for numerical code is the difference
-    # between a defined behaviour and a version-dependent one.
+    # numpy 2 is required, not merely tolerated: one promotion rule and one set of removed
+    # aliases to reason about rather than two, on a package whose entire state is numpy arrays.
+    #
+    # This comment previously justified the pin by NEP 50 scalar promotion "mixing Python floats
+    # with float32/float64 arrays throughout". That was false and worth correcting rather than
+    # quietly deleting, because shipped metadata gets read as fact: there is not one float32,
+    # float16, longdouble or np.single anywhere in src or tests. DODO is float64 and int64
+    # throughout, so NEP 50 cannot change a result here. The pin is still right, for the plainer
+    # reason above.
     "numpy>=2.0",
     # scipy 1.13.0 is the first release built against numpy 2, so anything older cannot coexist
     # with the pin above. Raised from >=1.10 for that reason, not for a feature.
@@ -106,7 +118,7 @@ starling = ["idptools-starling>=2.0"]
 # implied by the numpy>=2.0 runtime pin rather than a feature requirement.
 viz = ["matplotlib>=3.9"]
 
-all = ["dodo[predictors,lookup,starling,viz]"]
+all = ["idptools-dodo[predictors,lookup,starling,viz]"]
 
 test = [
     "pytest>=8.0",
@@ -121,7 +133,7 @@ test = [
 ]
 
 dev = [
-    "dodo[test]",
+    "idptools-dodo[test]",
     "ruff>=0.6",
     "mypy>=1.11",
     "pre-commit>=3.8",
@@ -246,7 +258,23 @@ convention = "numpy"
 "tests/**" = ["D100", "D101", "D102", "D103", "D104", "N812"]
 
 [tool.mypy]
-python_version = "3.10"
+# NOT the runtime floor, which is 3.10 (requires-python above). This governs the syntax level
+# mypy parses THIRD-PARTY STUBS at, and it has to be >= 3.12 because numpy's own bundled
+# __init__.pyi uses a PEP 695 `type` statement from numpy 2.5 onward:
+#
+#   numpy/__init__.pyi:737: error: Type statement is only supported in Python 3.12 and greater
+#   Found 1 error in 1 file (errors prevented further checking)
+#
+# That is a *syntax* error, so mypy aborts before inspecting anything. With python_version =
+# "3.10" and numpy 2.5.1 installed, the result is exit 2 and ZERO of the 35 source files
+# checked -- so the "mypy --strict clean" guarantee was being verified by a command that
+# examined no code at all. Invisible locally, because a dev machine on numpy 2.4.x has stubs
+# that predate the construct; CI resolves newest and would have gone red on the release commit.
+#
+# What enforces 3.10-compatible SOURCE is ruff's target-version = "py310" above, which is the
+# right tool for it. The residual cost is that mypy will not flag a 3.11/3.12-only stdlib API;
+# the 3.10 leg of the CI test matrix catches those at runtime.
+python_version = "3.12"
 files = ["src/dodo"]
 strict = true
 

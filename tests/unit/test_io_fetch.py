@@ -21,6 +21,7 @@ import threading
 import time
 import types
 import urllib.error
+import warnings
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -727,6 +728,41 @@ class TestFragments:
         assert "does not match sequence retrieved from Uniprot" not in message
         assert "expected to differ" in message
         assert "AF-Q5T4S7-F2" in message
+
+    def test_a_complete_model_is_not_called_a_fragment_even_with_other_entries_listed(
+        self, transport: InstallTransport, tmp_path: Path
+    ) -> None:
+        """Full coverage settles it, whatever else the API lists for the accession.
+
+        Real case, found by running the corpus: AF-O60218-F1 covers residues 1-316 of a
+        316-residue protein -- all of it -- and AFDB listed a second, unrelated prediction id
+        beside it. The check returned early only when there were no other ids AND the model was
+        incomplete, so a complete model warned whenever a second id existed. It announced
+        "AF-O60218-F1 is a *fragment*: it covers UniProt residues 1-316 of O60218, which is 316
+        residues long", giving the numbers that disprove it in the same sentence.
+        """
+        entries = [
+            afdb_entry(
+                "O60218",
+                entry_id="AF-O60218-F1",
+                uniprot_start=1,
+                uniprot_end=316,
+                uniprot_length=316,
+            ),
+            afdb_entry(
+                "O60218",
+                entry_id="AF-0000000016828237",
+                uniprot_start=1,
+                uniprot_end=316,
+                uniprot_length=316,
+            ),
+        ]
+        transport(afdb_routes(entries))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            model = fetch.fetch_alphafold_model("O60218", cache_dir=tmp_path)
+        assert not model.is_fragment
+        assert not [w for w in caught if "fragment" in str(w.message)]
 
     def test_first_fragment_is_chosen_regardless_of_response_order(
         self, transport: InstallTransport, tmp_path: Path

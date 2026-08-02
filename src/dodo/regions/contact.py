@@ -309,7 +309,7 @@ def loop_contact_counts(
     much of the domain happens to be nearby.
 
     Why ``exclude_within`` defaults to 0 here, unlike :func:`contact_profile`
-    ------------------------------------------------------------------------
+    -------------------------------------------------------------------------
     Sequence-adjacent CAs are always within 7 A by covalent geometry, so they contribute a
     near-constant offset of about 4 to every residue's count. Removing that offset does not
     improve discrimination -- measured on two structures, the balanced separation between

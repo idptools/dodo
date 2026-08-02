@@ -16,7 +16,7 @@ Three classes of bond, each against the measured reference in
    is the load-bearing check for everything DODO generates.
 
 What DODO's output actually looks like, and why it drives the design
--------------------------------------------------------------------
+--------------------------------------------------------------------
 A DODO model is deliberately NOT a uniform all-atom structure. Folded domains keep every atom of
 the input and are moved only as rigid bodies; rebuilt regions (IDRs, and loops inside folded
 domains) are **alpha carbon only**, at 3.81 A spacing, with nothing else. The two kinds of

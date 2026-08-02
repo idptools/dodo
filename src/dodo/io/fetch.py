@@ -1,7 +1,7 @@
 """Remote retrieval of AlphaFold models, PDB entries and UniProt sequences.
 
 Why this module exists in the form it does
------------------------------------------
+------------------------------------------
 v1 built AlphaFold download URLs by string formatting::
 
     f'https://alphafold.ebi.ac.uk/files/AF-{accession}-F1-model_v4.pdb'

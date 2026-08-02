@@ -1,7 +1,7 @@
 """The one check no exclusion may suppress: atoms closer than any real bond.
 
 Why this module exists separately
---------------------------------
+---------------------------------
 Every structural validator needs exclusions. A clash detector that flags covalently bonded
 atoms, or 1-3 pairs held at 2.2 A by a bond angle, or sequence neighbours held close by the
 backbone, is useless -- it buries the real findings under thousands of correct ones.
@@ -24,7 +24,7 @@ visible in a viewer as long spurious lines. A validation suite that can be talke
 reporting a 0.000 A separation is not doing its job.
 
 The principle
-------------
+-------------
 **No exclusion may suppress a physically impossible distance.** Two distinct heavy atoms have a
 floor below which no bonding relationship, no strain and no crystallographic oddity can put them.
 Below that floor the question "are these two atoms bonded?" is irrelevant; the geometry is broken

@@ -18,7 +18,7 @@ and are not, and why the report carries a completeness fraction rather than only
 of complaints.
 
 What DODO's output actually looks like
--------------------------------------
+--------------------------------------
 A DODO file legitimately mixes all-atom stretches (folded domains, every atom of the
 input) with CA-only stretches (rebuilt IDRs and loops), and the boundary between them is
 a real chain connection. So this module never assumes a residue has a full backbone: a

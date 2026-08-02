@@ -10,7 +10,7 @@ from sequence. When sparrow is not installed, an analytical polymer scaling law 
 it is sequence-blind and documented as an approximation, not a substitute.
 
 What changed from v1, and why
-----------------------------
+-----------------------------
 v1 expressed its named build modes as **Angstroms per residue** -- ``normal`` was 0.8
 A/residue, ``max_expansion`` 1.65, and so on -- with ``predicted`` as a separate mode that
 called ALBATROSS. That is linear in chain length, but real IDR end-to-end distance scales

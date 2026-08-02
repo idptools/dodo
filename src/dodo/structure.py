@@ -384,7 +384,7 @@ class Structure:
     view can go stale.
 
     Invariants, checked by :meth:`validate`
-    --------------------------------------
+    ---------------------------------------
     * Atoms are ordered by residue: all atoms of residue ``i`` precede all atoms of
       residue ``i + 1``. This is what makes a residue range map to an atom *slice*
       rather than a fancy index, and therefore what makes views zero-copy.

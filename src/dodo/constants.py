@@ -9,12 +9,16 @@ provenance recorded, so a future reader can tell a measured value from a tuned k
 from a guess.
 
 Provenance tags used in comments below:
-  MEASURED  -- derived from structural data; the source is named.
-  TUNED     -- fit empirically against AF2 structures by the original author. The
-               tuning dataset was not preserved, so these should not be changed
-               without re-tuning.
-  DERIVED   -- computed from other constants in this file.
-  CHOICE    -- an arbitrary but deliberate engineering decision.
+
+MEASURED
+    Derived from structural data; the source is named.
+TUNED
+    Fit empirically against AF2 structures by the original author. The tuning dataset was
+    not preserved, so these should not be changed without re-tuning.
+DERIVED
+    Computed from other constants in this file.
+CHOICE
+    An arbitrary but deliberate engineering decision.
 """
 
 from __future__ import annotations
@@ -65,8 +69,8 @@ CLASH_RELAXATION_LADDER: Final[tuple[float, ...]] = (3.20, 2.80, 2.50, 2.00)
 
 #: Residue separation below which a CA pair is exempt from clash checking.
 #:
-#: DERIVED from chain connectivity: |i-j| == 1 are covalently bonded at 3.8 A and
-#: |i-j| == 2 are geometrically constrained by the backbone angle to 5.0-7.5 A.
+#: DERIVED from chain connectivity: ``|i-j| == 1`` are covalently bonded at 3.8 A and
+#: ``|i-j| == 2`` are geometrically constrained by the backbone angle to 5.0-7.5 A.
 #: Neither is a clash. The pre-rewrite code had no such exclusion, which is why
 #: its whole-structure clash check reported every peptide bond as a violation.
 CLASH_EXCLUDE_WITHIN_RESIDUES: Final[int] = 2
@@ -114,7 +118,7 @@ BACKBONE_ANGLE_OBSERVED_MAX: Final[float] = 179.0  # MEASURED
 BACKBONE_ANGLE_MIN: Final[float] = 91.0
 BACKBONE_ANGLE_MAX: Final[float] = 161.0
 
-#: Preferred angle. Candidates are ordered by |angle - ideal| so that a
+#: Preferred angle. Candidates are ordered by ``|angle - ideal|`` so that a
 #: first-non-clashing search naturally prefers realistic geometry.
 BACKBONE_ANGLE_IDEAL: Final[float] = BACKBONE_ANGLE_MEAN
 

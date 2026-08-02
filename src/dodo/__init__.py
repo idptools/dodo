@@ -63,6 +63,11 @@ _LAZY_ATTRS: dict[str, str] = {
     "resolve_uniprot_accession": "dodo.io",
     # Region identification
     "assign_regions": "dodo.regions",
+    # The granular-control entry points. assign_regions_from_spec lets a caller state the
+    # regions outright, and Strategy.PRESET then makes rebuild() build exactly those --
+    # which is what replaced v1's regions_dict= parameter.
+    "assign_regions_from_spec": "dodo.regions",
+    "reposition_folded_domains": "dodo.construct",
     "Strategy": "dodo.regions",
     "RegionAssignment": "dodo.regions",
     # Target dimensions
@@ -93,6 +98,7 @@ if TYPE_CHECKING:
         build_from_sequence,
         predict_end_to_end,
         rebuild,
+        reposition_folded_domains,
         target_dimensions,
     )
     from .exceptions import (
@@ -112,7 +118,12 @@ if TYPE_CHECKING:
         resolve_uniprot_accession,
         write_pdb,
     )
-    from .regions import RegionAssignment, Strategy, assign_regions
+    from .regions import (
+        RegionAssignment,
+        Strategy,
+        assign_regions,
+        assign_regions_from_spec,
+    )
     from .structure import Chain, Domain, DomainKind, Span, Structure
 
 

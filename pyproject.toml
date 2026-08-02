@@ -62,7 +62,7 @@ classifiers = [
 #  - cython REMOVED. Declared, but no Cython source exists anywhere in the project.
 #  - setuptools REMOVED. Never a runtime dependency.
 #  - importlib-resources REMOVED. Only needed below Python 3.10, now the floor.
-#  - matplotlib MOVED to the [viz] extra; it is only used by the debug plotter.
+#  - matplotlib REMOVED. v1 declared it, but nothing in the package plots anything.
 #  - metapredict and getSequence MOVED to extras. Both pull torch transitively, and a
 #    module-scope import made even `dodo --help` pay multi-second torch startup.
 #  - sparrow REMOVED from the dependency list entirely. It was declared as
@@ -114,11 +114,12 @@ lookup = ["getSequence"]
 # not exist on PyPI at all, so `pip install dodo[starling]` and `dodo[all]` both hard-failed.
 starling = ["idptools-starling>=2.0"]
 
-# The matplotlib debug plotter. 3.9 is the first release supporting numpy 2, so it is the floor
-# implied by the numpy>=2.0 runtime pin rather than a feature requirement.
-viz = ["matplotlib>=3.9"]
+# NOTE: there is no "viz" extra. It used to be `viz = ["matplotlib>=3.9"]`, described as "the
+# matplotlib debug plotter" -- but no module in src/dodo imports matplotlib and there is no
+# plotter, so the extra installed a large dependency to enable nothing. An extra that promises a
+# feature the package does not have is worse than a missing feature.
 
-all = ["idptools-dodo[predictors,lookup,starling,viz]"]
+all = ["idptools-dodo[predictors,lookup,starling]"]
 
 test = [
     "pytest>=8.0",
@@ -287,7 +288,6 @@ module = [
     "metapredict.*",
     "starling.*",
     "getSequence.*",
-    "matplotlib.*",
 ]
 ignore_missing_imports = true
 

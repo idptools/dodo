@@ -11,9 +11,11 @@ from .dimensions import (
     target_dimensions,
 )
 from .pipeline import RebuildReport, RegionOutcome, build_from_sequence, rebuild
+from .place import DomainPlacement, reposition_folded_domains
 
 __all__ = [
     "DimensionTarget",
+    "DomainPlacement",
     "RebuildReport",
     "RegionOutcome",
     "albatross_available",
@@ -22,5 +24,6 @@ __all__ = [
     "predict_radius_of_gyration",
     "predict_scaling_exponent",
     "rebuild",
+    "reposition_folded_domains",
     "target_dimensions",
 ]

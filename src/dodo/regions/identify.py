@@ -101,6 +101,18 @@ class Strategy(str, Enum):
     #: threshold). Deliberately does NOT prefer pLDDT: the density method was found to work
     #: better, and pLDDT is available as an explicit choice.
     AUTO = "auto"
+    #: Do not identify anything: use the regions already attached to the structure.
+    #:
+    #: This is the granular-control path. Assign regions however you like -- run
+    #: :func:`assign_regions` and edit the result, call :func:`assign_regions_from_spec`, or
+    #: construct :class:`~dodo.structure.Domain` objects directly -- then hand the structure to
+    #: :func:`~dodo.rebuild` with this strategy and it will build exactly those regions.
+    #:
+    #: It replaces v1's ``regions_dict=`` parameter, which took a parallel stringly-typed
+    #: description of the structure that had to be validated and kept in step with the real
+    #: object. Passing the actual objects means there is one representation, it is already
+    #: validated, and it carries the score profile and threshold that produced it.
+    PRESET = "preset"
 
 
 @dataclass(frozen=True, slots=True)
@@ -551,6 +563,37 @@ def assign_regions(
     """
     strategy = Strategy(strategy)
     assignments: list[RegionAssignment] = []
+
+    if strategy is Strategy.PRESET:
+        # Nothing to identify: the caller has already decided. Report what is there and leave
+        # every Domain object exactly as given, so a hand-tuned boundary survives verbatim.
+        for chain in structure.chains:
+            if not chain.domains:
+                raise InvalidRegionError(
+                    f"strategy={Strategy.PRESET.value!r} builds the regions already attached to "
+                    f"the structure, but chain {chain.chain_id} has none. Assign them first -- "
+                    f"with assign_regions(), assign_regions_from_spec(), or by constructing "
+                    f"Domain objects -- or choose a strategy that identifies them."
+                )
+            folded = np.zeros(len(chain.span), dtype=bool)
+            for domain in chain.domains:
+                if domain.kind is DomainKind.FOLDED:
+                    start = domain.span.start - chain.span.start
+                    folded[start : start + len(domain.span)] = True
+            assignments.append(
+                RegionAssignment(
+                    chain_id=chain.chain_id,
+                    domains=tuple(chain.domains),
+                    strategy=Strategy.PRESET,
+                    # No score was computed and no threshold was applied. NaN says that
+                    # honestly; a zero would read as a real measurement.
+                    score=np.full(len(chain.span), np.nan),
+                    threshold=float("nan"),
+                    folded_mask=folded,
+                    notes=("regions supplied by the caller; none were identified",),
+                )
+            )
+        return assignments
 
     # One structure-wide contact pass, reused across chains. Burial is inherently a
     # whole-structure property: a residue at a chain-chain interface is buried by the

@@ -83,14 +83,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.10 is the floor (3.8 and 3.9 are end-of-life). 3.13 is included so upstream
-        # breakage surfaces before it reaches users. The old matrix was 3.8/3.9/3.10.
+        # Every supported version, and they must match requires-python and the
+        # "Programming Language :: Python" classifiers in pyproject.toml exactly. There is a
+        # test asserting that agreement, because a version claimed in one place and untested in
+        # another is a promise nobody checks.
+        #
+        # 3.11 used to be missing, which was the wrong one to omit: it is the version the
+        # package is developed on, so it was the only leg whose result was already known.
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.10", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
         exclude:
-          # Trim the matrix: the middle version on non-Linux adds little signal.
+          # Trim the matrix: the middle versions on non-Linux add little signal. The floor and
+          # the newest version are tested on all three operating systems.
+          - os: macos-latest
+            python-version: "3.11"
           - os: macos-latest
             python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.11"
           - os: windows-latest
             python-version: "3.12"
 
@@ -128,6 +138,48 @@ jobs:
           flags: unittests
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # The declared dependency floors, which every other job silently avoids testing.
+  #
+  # `pip install -e ".[test]"` resolves the NEWEST numpy and scipy, so `numpy>=2.0` and
+  # `scipy>=1.13` in pyproject.toml were an untested promise -- on Python 3.12 that install
+  # resolves numpy 2.5.x, four minor versions above the floor. This job installs the exact
+  # lower bounds the metadata permits.
+  #
+  # Deliberately NOT done by pinning versions in pyproject.toml: that would force the same
+  # versions on every user and make DODO hard to co-install with anything else. The floors stay
+  # as `>=` ranges for users, and this job is what verifies the low end of those ranges.
+  # ---------------------------------------------------------------------------
+  floors:
+    name: Oldest supported dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          # The oldest Python the floor combination supports: numpy 2.1 dropped 3.9, and
+          # numpy 2.0 is the last release that supports it, so 3.10 is where the true floor of
+          # every declared range coexists.
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install the package, then force the declared minimums
+        run: |
+          python -m pip install -e ".[test]"
+          python -m pip install "numpy==2.0.*" "scipy==1.13.*"
+
+      - name: Show what actually resolved
+        # Printed, because a floor job that silently resolved something newer would pass while
+        # testing nothing. Verified locally at numpy 2.0.0 / scipy 1.13.0 as well.
+        run: |
+          python -c "import numpy, scipy, sys; print(sys.version); print('numpy', numpy.__version__); print('scipy', scipy.__version__)"
+
+      - name: Run tests
+        run: python -m pytest -m "not network" -q
 
   lint:
     name: Lint and type-check

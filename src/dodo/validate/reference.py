@@ -10,7 +10,7 @@ residue's coordinates had been copy-pasted from another's. Measuring is cheap --
 takes 17 seconds -- so there is no reason to guess.
 
 Why AlphaFold structures are the right reference
------------------------------------------------
+------------------------------------------------
 DODO's input is predicted structures, and folded-domain atoms pass through untouched. So the
 question a validator answers is "did DODO preserve the geometry it was given, and is what it
 built consistent with it" -- which makes AlphaFold-derived statistics the correct baseline.
@@ -34,13 +34,13 @@ But validating an experimental structure against them will flag geometry that is
 so a caller working with crystal or EM input should loosen the tolerance and expect to.
 
 How bonded pairs are identified
-------------------------------
+-------------------------------
 By distance, which is unambiguous. Measured over 3,066,489 intra-residue pairs closer than 3.0 A
 in 300 random structures, covalent bonds end at 1.85 A and 1-3 contacts begin at 2.15 A, with
 just 23 pairs in the whole 1.85-2.10 A span. Any cutoff in that gap works; 1.90 is used.
 
 The low-confidence caveat, which matters for tolerances
------------------------------------------------------
+-------------------------------------------------------
 AlphaFold geometry degrades where AlphaFold is unsure. 2.48% of CA-CA virtual bonds fall below
 3.3 A, and those have a mean pLDDT of 38.8 against 72.2 for the rest. Part of that population is
 genuine cis-proline -- proline is 25.6% of short pairs against a ~5% baseline, a 5x enrichment --

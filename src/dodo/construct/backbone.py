@@ -9,7 +9,7 @@ four limitations DODO's own README lists: the ``unusual bond`` warnings VMD emit
 3.8 A "bond", the broken tube and cartoon representations, and CA-only IDRs.
 
 Why it was written from nothing
-------------------------------
+-------------------------------
 v1's all-atom module is dead code that its own docstring calls "hot garbage", and the
 description is accurate. It added *unit* vectors without scaling them by a bond length,
 so CA-C came out at exactly 1.000 A against a real 1.53 and the peptide bond at 2.87 A

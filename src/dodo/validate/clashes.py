@@ -37,23 +37,23 @@ it reports what it measures. What it does instead is refuse to flag the things r
 deposited structures legitimately contain, so that a finding on DODO output is worth
 reading. Measured, over the unmodified fixtures:
 
-===========================  =========  ================================================
-fixture                      violations what they are
-===========================  =========  ================================================
-dnmt3a.pdb (AF2, 7146 atoms)         0   -
-arf19.pdb (AF2, 8467 atoms)          0   -
-p300.pdb (AF2, 18457 atoms)         15   13 from one genuine overlap in the input, where
-                                         AlphaFold superimposed MET121 on PRO659 in a
-                                         pLDDT-30 region; 2 short HIS-TRP contacts
-6kn7.pdb (EM, 61511 atoms)         131   real side-chain overlaps in a 6.60 A model,
-                                         where side chains are not resolved at all; 77
-                                         distinct sequence positions repeated across the
-                                         29 NCS copies
-test.pdb (CA-only)              14,441   a degenerate pre-rewrite trace: CA-CA bonds
-                                         1.23-562 A, 4,259 pseudo-angles below 75 deg
-testing_translation.pdb (v1)     1,301   pre-rewrite output with the orphaned-atom bug
-                                         fixed in commit 026c4f1: atoms at 0.000 A
-===========================  =========  ================================================
+============================  ==========  ================================================
+fixture                       violations  what they are
+============================  ==========  ================================================
+dnmt3a.pdb (AF2, 7146 atoms)           0  -
+arf19.pdb (AF2, 8467 atoms)            0  -
+p300.pdb (AF2, 18457 atoms)           15  13 from one genuine overlap in the input, where
+                                          AlphaFold superimposed MET121 on PRO659 in a
+                                          pLDDT-30 region; 2 short HIS-TRP contacts
+6kn7.pdb (EM, 61511 atoms)           131  real side-chain overlaps in a 6.60 A model,
+                                          where side chains are not resolved at all; 77
+                                          distinct sequence positions repeated across the
+                                          29 NCS copies
+test.pdb (CA-only)                14,441  a degenerate pre-rewrite trace: CA-CA bonds
+                                          1.23-562 A, 4,259 pseudo-angles below 75 deg
+testing_translation.pdb (v1)       1,301  pre-rewrite output with the orphaned-atom bug
+                                          fixed in commit 026c4f1: atoms at 0.000 A
+============================  ==========  ================================================
 
 Zero on well-formed input, five figures on known-bad input, and the two intermediate cases
 are defects that are genuinely present in the file. Three of these fixtures also ship as

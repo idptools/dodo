@@ -1,15 +1,27 @@
-# readthedocs.yml
-
+# Read the Docs configuration.
+#
+# Rewritten for the current schema. The previous version used `build: image: latest` and
+# `python: version: 3.8`, both REMOVED from Read the Docs' config v2 -- so the hosted build
+# failed before it started, and had done for years. It also pinned Python 3.8, which the package
+# itself refuses to install on (requires-python is >=3.10).
 version: 2
 
 build:
-  image: latest
+  os: ubuntu-24.04
+  tools:
+    python: "3.12"
+
+sphinx:
+  configuration: docs/conf.py
+  # A broken cross-reference or a malformed docstring section is a documentation bug, and the
+  # only way that stays true is to fail on it.
+  fail_on_warning: true
 
 python:
-  version: 3.8
   install:
+    # The package itself, so autodoc has something real to introspect, plus the docs extra.
+    # The optional scientific dependencies are mocked in conf.py and deliberately not installed.
     - method: pip
       path: .
-
-conda:
-  environment: docs/requirements.yaml
+      extra_requirements:
+        - docs

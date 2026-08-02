@@ -37,7 +37,7 @@ rejected before it is taken. ``k^(1-nu) > 1`` guarantees the segments have more 
 the target needs, which is why the funnel has room to work.
 
 Junctions are the weak point, and what is done about it
-------------------------------------------------------
+-------------------------------------------------------
 Two independently generated segments butt-joined together have no correct local backbone
 statistics at the joint: nothing relates the last bond of one to the first bond of the
 next, so the CA-CA distance and the two CA-CA-CA angles spanning the joint are whatever

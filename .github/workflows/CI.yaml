@@ -181,6 +181,35 @@ jobs:
       - name: Run tests
         run: python -m pytest -m "not network" -q
 
+  # ---------------------------------------------------------------------------
+  # Docs. Nothing in .github referenced sphinx before, which is why docs/ was still the 2018
+  # cookiecutter: an api.rst pointing at a `dodo.canvas` module that does not exist, a 4-line
+  # getting-started stub, and a readthedocs.yml using `build: image` and `python: version: 3.8`,
+  # both removed from Read the Docs' schema years ago. The hosted build had been failing
+  # silently for as long as it had existed.
+  #
+  # -W matches readthedocs.yml's fail_on_warning, so a broken cross-reference or a malformed
+  # docstring section fails here rather than on Read the Docs.
+  # ---------------------------------------------------------------------------
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install the package and the docs dependencies
+        run: python -m pip install -e ".[docs]"
+
+      - name: Build the docs, warnings as errors
+        run: python -m sphinx -b html -W docs docs/_build/html
+
   lint:
     name: Lint and type-check
     runs-on: ubuntu-latest

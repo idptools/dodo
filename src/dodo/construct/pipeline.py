@@ -178,15 +178,14 @@ def _doomed_atom_mask(structure: Structure) -> np.ndarray:
     doomed = np.zeros(structure.n_atoms, dtype=bool)
     not_ca = structure.atom_name != "CA"
 
-    def mark(start: int, stop: int) -> None:
-        atoms = structure.atom_slice_for_residues(start, stop)
-        doomed[atoms] = not_ca[atoms]
-
+    # Only regions DODO actually generated. A region whose build FAILED keeps its input
+    # coordinates, so stripping it would destroy real side-chain data to no purpose and then
+    # make the result look like DODO's work. Loops used to be stripped unconditionally, which
+    # did exactly that.
     for domain in structure.domains:
-        if domain.kind is DomainKind.IDR and domain.rebuilt:
-            mark(domain.span.start, domain.span.stop)
-        for loop in domain.loops:
-            mark(loop.start, loop.stop)
+        for span in domain.generated_spans():
+            atoms = structure.atom_slice_for_residues(span.start, span.stop)
+            doomed[atoms] = not_ca[atoms]
     return doomed
 
 
@@ -379,32 +378,37 @@ def _rebuild_one_model(
     # Building in residue order instead -- which an earlier version of this pipeline did --
     # lets a floppy terminal tail occupy space that a tightly constrained loop then cannot
     # avoid.
-    loops: list[tuple[Domain, Span]] = [
-        (domain, loop) for domain in structure.folded_domains() for loop in domain.loops
+    loops: list[tuple[Domain, int, Span]] = [
+        (domain, index, loop)
+        for domain in structure.folded_domains()
+        for index, loop in enumerate(domain.loops)
     ]
     idrs = structure.idrs()
     connecting = [d for d in idrs if not d.span.is_terminal]
     terminal = [d for d in idrs if d.span.is_terminal]
 
-    for parent, loop in loops:
-        outcomes.append(
-            _build_region(
-                structure,
-                span=loop,
-                sequence=structure.sequence[loop.slice],
-                # A loop gets NO dimension prediction. Its span is dictated by the folded
-                # domain it bridges: the two anchors are fixed atoms of a domain that is not
-                # ours to move, so the distance is already decided. Predicting an end-to-end
-                # distance here and then failing to achieve it would be inventing a constraint
-                # the geometry has already settled.
-                target=None,
-                model=model,
-                rng=rng,
-                engine=engine,
-                min_length=min_length,
-                label=f"loop in FD {parent.span.start + 1}-{parent.span.stop}",
-            )
+    for parent, loop_index, loop in loops:
+        loop_outcome = _build_region(
+            structure,
+            span=loop,
+            sequence=structure.sequence[loop.slice],
+            # A loop gets NO dimension prediction. Its span is dictated by the folded
+            # domain it bridges: the two anchors are fixed atoms of a domain that is not
+            # ours to move, so the distance is already decided. Predicting an end-to-end
+            # distance here and then failing to achieve it would be inventing a constraint
+            # the geometry has already settled.
+            target=None,
+            model=model,
+            rng=rng,
+            engine=engine,
+            min_length=min_length,
+            label=f"loop in FD {parent.span.start + 1}-{parent.span.stop}",
         )
+        outcomes.append(loop_outcome)
+        # Record success per loop. Without this, a loop that failed to build would still have
+        # its side chains stripped and its inherited geometry attributed to DODO.
+        if loop_outcome.built:
+            parent.rebuilt_loops.add(loop_index)
 
     for domain in connecting + terminal:
         key = (

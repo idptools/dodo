@@ -64,7 +64,10 @@ def _add_common_build_arguments(parser: argparse.ArgumentParser) -> None:
         "--engine",
         default="walk",
         choices=_ENGINE_CHOICES,
-        help="conformation engine (default: walk; starling needs pip install 'dodo[starling]')",
+        help=(
+            "conformation engine (default: walk; starling needs "
+            "pip install 'idptools-dodo[starling]')"
+        ),
     )
     # No --all-atom / --sidechains here. Placing backbone and side-chain atoms on REBUILT
     # regions is priority 2/3 work and is not part of 2.0; the flags are withheld from the CLI

@@ -458,3 +458,70 @@ class TestCli:
     def test_unknown_mode_is_rejected_by_argparse(self) -> None:
         with pytest.raises(SystemExit):
             main(["rebuild", str(DNMT3A), "-o", "x.pdb", "-m", "very_squished"])
+
+
+class TestPresetRegions:
+    """The granular-control path, and the replacement for v1's ``regions_dict=``.
+
+    v1 took a parallel, stringly-typed description of the structure and tried to reconcile it
+    with the real one. The author's assessment of that design was blunt -- "a very bad idea" --
+    and the failure mode bears it out: the two representations could disagree, and v1 accepted
+    overlaps, gaps and out-of-range bounds silently before failing much later with something
+    unrelated.
+
+    So there is no ``regions`` parameter. Instead the caller assigns regions onto the structure
+    however they like and asks :func:`~dodo.rebuild` to build exactly those. One representation,
+    already validated, carrying the score profile and threshold that produced it.
+    """
+
+    def test_rebuild_honours_caller_supplied_regions_verbatim(self) -> None:
+        from dodo.regions import assign_regions_from_spec
+
+        structure = read_structure(DNMT3A)
+        spec = [("idr", 1, 60), ("folded", 61, 800), ("idr", 801, 912)]
+        assign_regions_from_spec(structure, {"A": spec})
+
+        report = rebuild(structure, strategy="preset", seed=0)
+
+        got = [
+            (d.kind.value, d.span.start + 1, d.span.stop)
+            for d in sorted(report.models[0].domains, key=lambda d: d.span.start)
+        ]
+        assert got == spec, f"preset regions were not honoured: {got}"
+        assert report.ok, report.summary()
+        # Both IDRs were rebuilt, and the folded domain was not.
+        assert report.n_built == 2
+
+    def test_preset_differs_from_what_dodo_would_have_chosen(self) -> None:
+        """Guards the premise: if the spec matched the automatic call, the test above is vacuous."""
+        from dodo.regions import assign_regions, assign_regions_from_spec
+
+        automatic = assign_regions(read_structure(DNMT3A))[0]
+        auto_bounds = [(d.kind.value, d.span.start + 1, d.span.stop) for d in automatic.domains]
+
+        structure = read_structure(DNMT3A)
+        spec = [("idr", 1, 60), ("folded", 61, 800), ("idr", 801, 912)]
+        assign_regions_from_spec(structure, {"A": spec})
+        assert auto_bounds != spec, "the spec must differ from the automatic assignment"
+
+    def test_preset_without_any_assignment_explains_itself(self) -> None:
+        from dodo.exceptions import InvalidRegionError
+
+        with pytest.raises(InvalidRegionError, match="assign_regions_from_spec"):
+            rebuild(DNMT3A, strategy="preset")
+
+    def test_preset_reports_that_it_identified_nothing(self) -> None:
+        """A NaN score and threshold, because none was computed. Zero would read as measured."""
+        from dodo.regions import assign_regions, assign_regions_from_spec
+
+        structure = read_structure(DNMT3A)
+        assign_regions_from_spec(structure, {"A": [("idr", 1, 60), ("folded", 61, 912)]})
+        assignment = assign_regions(structure, strategy="preset")[0]
+
+        assert assignment.strategy.value == "preset"
+        assert np.isnan(assignment.threshold)
+        assert np.all(np.isnan(assignment.score))
+        assert any("supplied by the caller" in note for note in assignment.notes)
+        # folded_mask is still real, since it is derivable from the domains themselves.
+        assert assignment.folded_mask[0] is np.False_ or not assignment.folded_mask[0]
+        assert assignment.folded_mask[-1]

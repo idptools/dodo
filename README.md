@@ -249,17 +249,34 @@ Four strategies behind one flag:
 Every assignment keeps its score profile and threshold, so a boundary you disagree with can be
 audited rather than just re-run with different numbers.
 
-You can also supply regions explicitly:
+### Overriding the regions yourself
+
+If you disagree with a boundary, say so and DODO will build exactly what you asked for:
 
 ```python
-from dodo.regions import assign_regions_from_spec
+import dodo
 
-assign_regions_from_spec(structure, {"A": [("idr", 1, 40), ("folded", 41, 290)]})
+structure = dodo.read_structure("model.pdb")
+dodo.assign_regions_from_spec(structure, {"A": [("idr", 1, 40), ("folded", 41, 290)]})
+report = dodo.rebuild(structure, strategy="preset")
 ```
 
-Bounds here are **1-based inclusive**, matching what you read off a PDB file. Overlaps, gaps
-and out-of-range bounds are rejected with an explanation — v1 accepted all of them silently and
-failed later with something unrelated.
+`strategy="preset"` means *identify nothing, build what is already there*. Bounds are **1-based
+inclusive**, matching what you read off a PDB file. Overlaps, gaps and out-of-range bounds are
+rejected with an explanation — v1 accepted all of them silently and failed later with something
+unrelated.
+
+This replaces v1's `regions_dict=` parameter. That took a separate, stringly-typed description of
+the structure alongside the real one, so the two could disagree; here there is one representation,
+it is already validated, and it carries the score profile that produced it. You can equally start
+from DODO's own answer and adjust it:
+
+```python
+structure = dodo.read_structure("model.pdb")
+dodo.assign_regions(structure)                       # DODO's call, with its evidence
+structure.chains[0].domains[1].span                  # inspect, then edit as you like
+report = dodo.rebuild(structure, strategy="preset")  # build your version
+```
 
 ## Multi-model output is now a real ensemble
 
@@ -465,11 +482,11 @@ A full rewrite. The 1.x API is gone; see [Migrating from 1.x](#migrating-from-1x
 | `num_models=N` | `n_models=N` / `-n N` |
 | `mode='normal'` (0.8 Å/residue) | `mode='predicted'` (1.0× predicted) — see [Build modes](#build-modes) |
 | `use_metapredict=True` | `strategy='metapredict'` |
-| `regions_dict={...}` | `assign_regions_from_spec(...)`, 1-based inclusive |
+| `regions_dict={...}` | `assign_regions_from_spec(...)` then `rebuild(..., strategy='preset')` |
 | `attempts_per_region`, `attempts_per_coord` | removed; retry budgets are internal and reported on failure |
-| `graph=True` | removed; use `dodo.regions` and plot the models yourself |
+| `graph=True` | removed; no plotting is included |
 | `beta_for_FD_IDR=True` | `write_pdb(..., annotate_regions=True)` |
-| `just_fds=True` | not yet reimplemented |
+| `just_fds=True` | removed in 2.0 |
 | functions returned `None` and printed | functions return a `RebuildReport` |
 
 ## Copyright

@@ -141,32 +141,6 @@ class UnsatisfiableTargetError(BuildError):
         super().__init__(message)
 
 
-class ClashResolutionError(BuildError):
-    """No non-clashing position could be found, even after relaxing the threshold.
-
-    Records how far the clash threshold was relaxed before giving up, which is the
-    information needed to decide whether to retry with a different seed or to accept
-    that the target is too compact for the available space.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        relaxed_to: float | None = None,
-        residue_index: int | None = None,
-    ):
-        self.relaxed_to = relaxed_to
-        self.residue_index = residue_index
-        details = []
-        if residue_index is not None:
-            details.append(f"residue index {residue_index}")
-        if relaxed_to is not None:
-            details.append(f"clash threshold relaxed to {relaxed_to:.2f} A")
-        if details:
-            message = f"{message} ({'; '.join(details)})"
-        super().__init__(message)
-
-
 class ExhaustedAttemptsError(BuildError):
     """A region could not be built within the allotted number of attempts.
 

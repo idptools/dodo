@@ -1078,11 +1078,6 @@ def _local_frames(ca: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, n
     return distance, x_axis, e1, e2
 
 
-def _contact_limit(left: str, right: str) -> float:
-    """Hard-sphere minimum separation for two atom names, in Angstroms."""
-    return _MIN_CONTACT[frozenset((_ELEMENT_OF[left], _ELEMENT_OF[right]))]
-
-
 def _pair_key(separation: int, earlier: str, later: str) -> tuple[int, str, str]:
     """Canonical key into :data:`_LOCALLY_SCORED` for one atom pair."""
     if separation == 0 and earlier > later:

@@ -107,16 +107,6 @@ class StructureReport:
         return self.ok
 
     @property
-    def n_findings(self) -> int:
-        """Total findings across every check."""
-        return (
-            len(self.impossible)
-            + (len(self.bonds.violations) if self.bonds else 0)
-            + (len(self.clashes.violations) if self.clashes else 0)
-            + (len(self.conect.violations) if self.conect else 0)
-        )
-
-    @property
     def n_inherited_bond_violations(self) -> int:
         """Bond findings on geometry DODO did not build, so did not cause.
 

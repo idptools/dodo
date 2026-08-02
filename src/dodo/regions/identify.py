@@ -329,29 +329,7 @@ def _folded_mask_from_metapredict(chain: Chain, threshold: float) -> tuple[np.nd
     return order, order >= threshold
 
 
-def _looks_like_alphafold(structure: Structure, chain: Chain) -> bool:
-    """Guess whether a chain's B-factors are pLDDT rather than crystallographic B-factors.
-
-    pLDDT is a percentage in [0, 100] and, in a real model, spans a wide range with most
-    residues confident. Crystallographic B-factors are unbounded above and typically sit in
-    the 5-60 range with a different shape. The discriminating check is the upper bound
-    together with some spread: a B-factor column that never exceeds 100 and reaches above 70
-    somewhere is almost certainly pLDDT.
-
-    Deliberately conservative -- a wrong guess here silently changes which residues get
-    rebuilt -- so :data:`Strategy.AUTO` reports which strategy it chose.
-    """
-    values = structure.b_factor[chain.span.slice]
-    if values.size == 0:
-        return False
-    if np.all(values == values[0]):
-        # A constant column carries no information either way; do not claim pLDDT.
-        return False
-    return bool(values.max() <= 100.0 and values.max() >= 70.0 and values.min() >= 0.0)
-
-
 def _detect_loops(
-    structure: Structure,
     span: Span,
     loop_counts: np.ndarray,
     *,
@@ -490,9 +468,7 @@ def _tile_chain(
 
     for start, stop in folded_blocks:
         add_idr(cursor, start)
-        loops = _detect_loops(
-            structure, Span(start, stop), loop_counts, min_loop_length=min_loop_length
-        )
+        loops = _detect_loops(Span(start, stop), loop_counts, min_loop_length=min_loop_length)
         domains.append(
             Domain(
                 structure=structure,

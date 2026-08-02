@@ -654,8 +654,12 @@ class Structure:
         if obstacle_indices.size == 0:
             return np.zeros(query_xyz.shape[0], dtype=bool)
 
-        tree = cKDTree(self.xyz[obstacle_indices])
-        neighbours = tree.query_ball_point(query_xyz, cutoff)
+        # Through kdtree(), not a bare cKDTree, so the one spatial-index entry point in this
+        # class actually has a caller. It was public API with zero call sites and zero coverage,
+        # which is how a method quietly stops matching what everything else does.
+        mask = np.zeros(self.n_atoms, dtype=bool)
+        mask[obstacle_indices] = True
+        neighbours = self.kdtree(mask).query_ball_point(query_xyz, cutoff)
 
         clashing = np.zeros(query_xyz.shape[0], dtype=bool)
         if query_residue_index is None or exclude_within <= 0:

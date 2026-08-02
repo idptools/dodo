@@ -80,18 +80,36 @@ _LAZY_ATTRS: dict[str, str] = {
     "RebuildReport": "dodo.construct",
 }
 
+# Every public subpackage. geometry, validate and engines were missing, which made
+# ``dodo.geometry`` succeed or fail depending on import ORDER: absent in a fresh interpreter,
+# but present after ``dodo.construct``, because importing construct registers geometry as a side
+# effect. An attribute that works only if you happened to touch something else first is worse
+# than one that is cleanly absent -- readers file it as a bug, and rightly.
 _LAZY_MODULES: tuple[str, ...] = (
     "constants",
     "construct",
+    "engines",
     "exceptions",
+    "geometry",
     "io",
     "regions",
     "structure",
+    "validate",
 )
 
 if TYPE_CHECKING:
     # Give type checkers and IDEs the real thing; this branch never runs.
-    from . import constants, construct, exceptions, io, regions, structure
+    from . import (
+        constants,
+        construct,
+        engines,
+        exceptions,
+        geometry,
+        io,
+        regions,
+        structure,
+        validate,
+    )
     from .construct import (
         RebuildReport,
         albatross_available,

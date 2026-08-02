@@ -56,7 +56,6 @@ The optional extras that *are* on PyPI:
 pip install "idptools-dodo[predictors]"   # metapredict, for sequence-only region identification
 pip install "idptools-dodo[lookup]"       # resolve protein names to UniProt accessions
 pip install "idptools-dodo[starling]"     # STARLING generative IDR ensembles (~2.4 GB of weights)
-pip install "idptools-dodo[viz]"          # matplotlib debug plotting
 pip install "idptools-dodo[all]"          # everything above
 ```
 

@@ -638,7 +638,6 @@ def place_between_anchors(
         # real request (a single missing residue), and it still must not be written on
         # top of an anchor, so place it one bond length away along the anchor axis.
         return _place_single_residue(
-            chain,
             anchor_n,
             anchor_c,
             rng,
@@ -832,7 +831,6 @@ def _rigid_place(
 
 
 def _place_single_residue(
-    chain: np.ndarray,
     anchor_n: np.ndarray | None,
     anchor_c: np.ndarray | None,
     rng: np.random.Generator,

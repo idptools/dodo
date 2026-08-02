@@ -271,6 +271,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 check_clashes=not args.no_clashes,
             )
             print(result.describe(args.max_findings))
+            if result.n_inherited_bond_violations:
+                # Say this out loud. Otherwise a user validating DODO's own output reads
+                # "INVALID" and concludes DODO broke their structure, when DODO faithfully
+                # preserved a defect that arrived in the file -- folded-domain atoms are moved
+                # rigidly and never regenerated.
+                print(
+                    f"\nnote: {result.n_inherited_bond_violations} of these bond findings are on "
+                    f"atoms DODO did not build. If this file is DODO output, that geometry came "
+                    f"in with the input and was preserved, not introduced.",
+                    file=sys.stderr,
+                )
             # 0 clean, 2 findings. Distinct from 1, which means the file could not be read.
             return 0 if result.ok else 2
 

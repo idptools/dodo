@@ -116,15 +116,59 @@ class StructureReport:
             + (len(self.conect.violations) if self.conect else 0)
         )
 
+    @property
+    def n_inherited_bond_violations(self) -> int:
+        """Bond findings on geometry DODO did not build, so did not cause.
+
+        DODO moves folded domains as rigid bodies and never regenerates their atoms, so a bad
+        bond that arrived in the input is still there afterwards -- faithfully. Reporting that
+        without saying so makes DODO look responsible for its input: validating a rebuilt dnmt3a
+        prints three bond violations, and all three are AlphaFold's distorted HIS613 imidazole
+        ring, at 2.547 A in the input file and 2.548 A in the output.
+
+        Two cases, because provenance is only *derivable* in one of them:
+
+        * Validating a :class:`~dodo.structure.Structure` in process, straight from
+          :func:`~dodo.rebuild`, the domains know which regions were rebuilt and each violation
+          is labelled ``"rebuilt"`` or ``"input"`` exactly.
+        * Validating a **file**, that metadata is gone and every violation is ``"unknown"``. But
+          in 2.0 DODO only ever builds alpha carbons, so its only possible bond contribution is a
+          CA-CA virtual bond. Any other kind of bond violation is inherited by construction, and
+          that inference is sound rather than a guess.
+
+        Returns 0 when the structure shows no sign of having been through DODO, so this stays
+        quiet on ordinary deposited files where "DODO did not build this" is vacuous.
+        """
+        if self.bonds is None:
+            return 0
+        exact = self.bonds.of_provenance("input")
+        if exact:
+            return len(exact)
+        if not self.bonds.n_ca_only_residues:
+            return 0
+        # bond_class, not kind: "ca_ca" is a category of bond, while kind is the sort of defect
+        # ("bond_length", "chain_break", ...). Comparing kind to "ca_ca" is always true, which
+        # would have counted every violation as inherited. mypy caught that.
+        return sum(1 for v in self.bonds.violations if v.bond_class != "ca_ca")
+
     def summary(self) -> str:
-        """One-line summary of every check."""
+        """One-line summary of every check.
+
+        Bond findings are split by provenance when any are inherited, because "INVALID: 3 bond"
+        on DODO's own correct output is a misleading thing to print at someone.
+        """
         parts = []
         if self.impossible:
             coincident = sum(1 for p in self.impossible if p.coincident)
             detail = f" ({coincident} coincident)" if coincident else ""
             parts.append(f"{len(self.impossible)} IMPOSSIBLE{detail}")
         if self.bonds is not None:
-            parts.append(f"{len(self.bonds.violations)} bond")
+            total = len(self.bonds.violations)
+            inherited = self.n_inherited_bond_violations
+            if inherited:
+                parts.append(f"{total} bond ({inherited} inherited from the input)")
+            else:
+                parts.append(f"{total} bond")
         if self.clashes is not None:
             parts.append(f"{len(self.clashes.violations)} clash")
         if self.conect is not None:

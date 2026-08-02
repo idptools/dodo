@@ -38,6 +38,7 @@ from typing import Literal
 
 from ..constants import (
     ALBATROSS_MIN_LENGTH,
+    CA_CA_BOND_LENGTH,
     DEFAULT_MODE,
     contour_length,
     flory_end_to_end,
@@ -297,6 +298,7 @@ def target_dimensions(
     prefer_albatross: bool = True,
     warn_on_fallback: bool = True,
     clamp: bool = True,
+    warn_on_clamp: bool = True,
 ) -> DimensionTarget:
     """Resolve a sequence and a build mode into a concrete dimension target.
 
@@ -318,6 +320,11 @@ def target_dimensions(
         Reduce a target that exceeds what the chain can physically span. When False, an
         unachievable target raises instead, which is what a caller wanting to fail loudly
         should choose.
+    warn_on_clamp
+        Warn when a target is reduced. On by default: the predicted distance is what a user
+        believes they are getting, so substituting a different one silently would change the
+        science without saying so. Turn it off only when the caller surfaces the
+        :attr:`DimensionTarget.clamped` flag itself.
 
     Returns
     -------
@@ -357,6 +364,38 @@ def target_dimensions(
                 f"Mode {mode!r} asks for an end-to-end distance no {n}-residue chain can reach.",
                 target=requested,
                 achievable=ceiling,
+            )
+        if warn_on_clamp:
+            # Say so. The predicted distance is the default and the thing a user believes they
+            # are getting, so silently substituting a different one changes the science without
+            # telling them. Clamping is still the right behaviour -- the alternative is refusing
+            # to build a region at all -- but it has to be visible.
+            #
+            # Two distinct cases, and conflating them would make the message wrong. A request
+            # above the contour length is unreachable at any conformation. A request between the
+            # ceiling and the contour length IS reachable, but only as an almost-straight rod
+            # with essentially one conformation, which is not a plausible chain and leaves the
+            # sampler no freedom to avoid a clash.
+            full = contour_length(n)
+            why = (
+                f"no chain of {n} residues can reach it: {n - 1} bonds of "
+                f"{CA_CA_BOND_LENGTH:.2f} A span at most {full:.1f} A fully extended"
+                if requested > full
+                else (
+                    f"a chain of {n} residues can only reach it by straightening almost "
+                    f"completely, since its fully extended span is {full:.1f} A -- leaving no "
+                    f"conformational freedom and no way to avoid a clash"
+                )
+            )
+            warnings.warn(
+                f"The requested end-to-end distance for this {n}-residue region is "
+                f"{requested:.1f} A, and {why}. Building to {ceiling:.1f} A instead, which is "
+                f"{_MAX_CONTOUR_FRACTION:.0%} of the contour length and the largest distance "
+                f"that still admits a physically plausible conformation. The region will come "
+                f"out more extended than a real chain of this composition would be, because the "
+                f"request itself was not physically achievable.",
+                UserWarning,
+                stacklevel=2,
             )
         return DimensionTarget(
             end_to_end=ceiling,

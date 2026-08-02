@@ -1,0 +1,1672 @@
+[
+ {
+  "accession": "Q15642",
+  "stratum": "C/conn_long",
+  "n_residues": 601,
+  "n_folded": 3,
+  "terminal": [],
+  "connecting": [
+   73,
+   161
+  ],
+  "loops": []
+ },
+ {
+  "accession": "P26640",
+  "stratum": "C/conn_medium",
+  "n_residues": 1264,
+  "n_folded": 5,
+  "terminal": [],
+  "connecting": [
+   26,
+   28,
+   31,
+   85
+  ],
+  "loops": []
+ },
+ {
+  "accession": "P48444",
+  "stratum": "C/conn_medium",
+  "n_residues": 511,
+  "n_folded": 2,
+  "terminal": [],
+  "connecting": [
+   138
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q496M5",
+  "stratum": "C/conn_medium",
+  "n_residues": 336,
+  "n_folded": 3,
+  "terminal": [],
+  "connecting": [
+   32,
+   105
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q9NV88",
+  "stratum": "C/conn_medium",
+  "n_residues": 658,
+  "n_folded": 2,
+  "terminal": [],
+  "connecting": [
+   86
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q06210",
+  "stratum": "C/conn_short",
+  "n_residues": 699,
+  "n_folded": 2,
+  "terminal": [],
+  "connecting": [
+   35
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q8N5Z0",
+  "stratum": "C/conn_short",
+  "n_residues": 425,
+  "n_folded": 2,
+  "terminal": [],
+  "connecting": [
+   36
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q9NTZ6",
+  "stratum": "CL/conn_long",
+  "n_residues": 932,
+  "n_folded": 4,
+  "terminal": [],
+  "connecting": [
+   46,
+   213,
+   228
+  ],
+  "loops": [
+   10
+  ]
+ },
+ {
+  "accession": "O43847",
+  "stratum": "CL/conn_medium",
+  "n_residues": 1151,
+  "n_folded": 2,
+  "terminal": [],
+  "connecting": [
+   142
+  ],
+  "loops": [
+   10,
+   12
+  ]
+ },
+ {
+  "accession": "Q9BYG8",
+  "stratum": "CL/conn_medium",
+  "n_residues": 508,
+  "n_folded": 3,
+  "terminal": [],
+  "connecting": [
+   30,
+   71
+  ],
+  "loops": [
+   11
+  ]
+ },
+ {
+  "accession": "Q9NQX4",
+  "stratum": "CL/conn_medium",
+  "n_residues": 1742,
+  "n_folded": 8,
+  "terminal": [],
+  "connecting": [
+   27,
+   33,
+   38,
+   40,
+   44,
+   115,
+   149
+  ],
+  "loops": [
+   11
+  ]
+ },
+ {
+  "accession": "Q9UBK8",
+  "stratum": "CL/conn_medium",
+  "n_residues": 698,
+  "n_folded": 2,
+  "terminal": [],
+  "connecting": [
+   71
+  ],
+  "loops": [
+   12
+  ]
+ },
+ {
+  "accession": "Q92636",
+  "stratum": "CL/conn_short",
+  "n_residues": 917,
+  "n_folded": 2,
+  "terminal": [],
+  "connecting": [
+   33
+  ],
+  "loops": [
+   12,
+   13
+  ]
+ },
+ {
+  "accession": "Q9UKW4",
+  "stratum": "CL/conn_short",
+  "n_residues": 847,
+  "n_folded": 2,
+  "terminal": [],
+  "connecting": [
+   38
+  ],
+  "loops": [
+   12,
+   20
+  ]
+ },
+ {
+  "accession": "O60218",
+  "stratum": "FOLDED_ONLY",
+  "n_residues": 316,
+  "n_folded": 1,
+  "terminal": [],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "P00918",
+  "stratum": "FOLDED_ONLY",
+  "n_residues": 260,
+  "n_folded": 1,
+  "terminal": [],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "P07316",
+  "stratum": "FOLDED_ONLY",
+  "n_residues": 175,
+  "n_folded": 1,
+  "terminal": [],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q14232",
+  "stratum": "FOLDED_ONLY",
+  "n_residues": 305,
+  "n_folded": 1,
+  "terminal": [],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q14691",
+  "stratum": "FOLDED_ONLY",
+  "n_residues": 196,
+  "n_folded": 1,
+  "terminal": [],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q9Y5S8",
+  "stratum": "FOLDED_ONLY",
+  "n_residues": 564,
+  "n_folded": 1,
+  "terminal": [],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "P48594",
+  "stratum": "L",
+  "n_residues": 390,
+  "n_folded": 1,
+  "terminal": [],
+  "connecting": [],
+  "loops": [
+   14,
+   14
+  ]
+ },
+ {
+  "accession": "A6NKF2",
+  "stratum": "T/term_long",
+  "n_residues": 412,
+  "n_folded": 1,
+  "terminal": [
+   97,
+   192
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "P78423",
+  "stratum": "T/term_long",
+  "n_residues": 397,
+  "n_folded": 1,
+  "terminal": [
+   47,
+   307
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q8N9X3",
+  "stratum": "T/term_long",
+  "n_residues": 169,
+  "n_folded": 0,
+  "terminal": [
+   169
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q9BRS2",
+  "stratum": "T/term_long",
+  "n_residues": 568,
+  "n_folded": 1,
+  "terminal": [
+   82,
+   163
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "P10176",
+  "stratum": "T/term_medium",
+  "n_residues": 69,
+  "n_folded": 0,
+  "terminal": [
+   69
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q5I0G3",
+  "stratum": "T/term_medium",
+  "n_residues": 518,
+  "n_folded": 1,
+  "terminal": [
+   52
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q6EIG7",
+  "stratum": "T/term_medium",
+  "n_residues": 209,
+  "n_folded": 1,
+  "terminal": [
+   54
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q9UK39",
+  "stratum": "T/term_medium",
+  "n_residues": 431,
+  "n_folded": 1,
+  "terminal": [
+   7,
+   107
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "A0AAG2SXZ4",
+  "stratum": "T/term_short",
+  "n_residues": 98,
+  "n_folded": 1,
+  "terminal": [
+   18
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q01459",
+  "stratum": "T/term_short",
+  "n_residues": 385,
+  "n_folded": 1,
+  "terminal": [
+   6,
+   47
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q14390",
+  "stratum": "T/term_short",
+  "n_residues": 218,
+  "n_folded": 1,
+  "terminal": [
+   9,
+   20
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q7Z769",
+  "stratum": "T/term_short",
+  "n_residues": 313,
+  "n_folded": 1,
+  "terminal": [
+   12,
+   17
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "P10636",
+  "stratum": "T/term_very_long",
+  "n_residues": 758,
+  "n_folded": 0,
+  "terminal": [
+   758
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q13427",
+  "stratum": "T/term_very_long",
+  "n_residues": 754,
+  "n_folded": 1,
+  "terminal": [
+   6,
+   580
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q63HN1",
+  "stratum": "T/term_very_long",
+  "n_residues": 556,
+  "n_folded": 0,
+  "terminal": [
+   556
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q6NYC8",
+  "stratum": "T/term_very_long",
+  "n_residues": 613,
+  "n_folded": 0,
+  "terminal": [
+   613
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q6ZWJ1",
+  "stratum": "TC/conn_long",
+  "n_residues": 553,
+  "n_folded": 3,
+  "terminal": [
+   21,
+   26
+  ],
+  "connecting": [
+   104,
+   236
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q8N3A8",
+  "stratum": "TC/conn_long",
+  "n_residues": 854,
+  "n_folded": 4,
+  "terminal": [
+   5,
+   7
+  ],
+  "connecting": [
+   37,
+   54,
+   226
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q8NF99",
+  "stratum": "TC/conn_long",
+  "n_residues": 534,
+  "n_folded": 2,
+  "terminal": [
+   4,
+   44
+  ],
+  "connecting": [
+   152
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q9HC58",
+  "stratum": "TC/conn_long",
+  "n_residues": 644,
+  "n_folded": 2,
+  "terminal": [
+   11,
+   90
+  ],
+  "connecting": [
+   168
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q9UIF8",
+  "stratum": "TC/conn_long",
+  "n_residues": 2168,
+  "n_folded": 6,
+  "terminal": [
+   4,
+   737
+  ],
+  "connecting": [
+   26,
+   65,
+   85,
+   199,
+   298
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q6NSJ5",
+  "stratum": "TC/conn_medium",
+  "n_residues": 796,
+  "n_folded": 3,
+  "terminal": [
+   8
+  ],
+  "connecting": [
+   39,
+   61
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q6ZNL6",
+  "stratum": "TC/conn_medium",
+  "n_residues": 1462,
+  "n_folded": 3,
+  "terminal": [
+   892
+  ],
+  "connecting": [
+   32,
+   66
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q96SB3",
+  "stratum": "TC/conn_medium",
+  "n_residues": 817,
+  "n_folded": 2,
+  "terminal": [
+   43,
+   480
+  ],
+  "connecting": [
+   105
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q9BYV8",
+  "stratum": "TC/conn_medium",
+  "n_residues": 373,
+  "n_folded": 2,
+  "terminal": [
+   40,
+   105
+  ],
+  "connecting": [
+   96
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q9H156",
+  "stratum": "TC/conn_medium",
+  "n_residues": 845,
+  "n_folded": 2,
+  "terminal": [
+   24,
+   271
+  ],
+  "connecting": [
+   93
+  ],
+  "loops": []
+ },
+ {
+  "accession": "A6NNY8",
+  "stratum": "TC/conn_short",
+  "n_residues": 438,
+  "n_folded": 2,
+  "terminal": [
+   16,
+   74
+  ],
+  "connecting": [
+   27
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q14849",
+  "stratum": "TC/conn_short",
+  "n_residues": 445,
+  "n_folded": 2,
+  "terminal": [
+   6,
+   47
+  ],
+  "connecting": [
+   50
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q5TEA6",
+  "stratum": "TC/conn_short",
+  "n_residues": 688,
+  "n_folded": 2,
+  "terminal": [
+   18,
+   26
+  ],
+  "connecting": [
+   47
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q6ZRH7",
+  "stratum": "TC/conn_short",
+  "n_residues": 1159,
+  "n_folded": 2,
+  "terminal": [
+   42,
+   66
+  ],
+  "connecting": [
+   44
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q96N03",
+  "stratum": "TC/conn_short",
+  "n_residues": 204,
+  "n_folded": 2,
+  "terminal": [
+   40,
+   41
+  ],
+  "connecting": [
+   37
+  ],
+  "loops": []
+ },
+ {
+  "accession": "O15169",
+  "stratum": "TC/conn_very_long",
+  "n_residues": 862,
+  "n_folded": 2,
+  "terminal": [
+   80
+  ],
+  "connecting": [
+   571
+  ],
+  "loops": []
+ },
+ {
+  "accession": "P41182",
+  "stratum": "TC/conn_very_long",
+  "n_residues": 706,
+  "n_folded": 2,
+  "terminal": [
+   16,
+   26
+  ],
+  "connecting": [
+   401
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q14005",
+  "stratum": "TC/conn_very_long",
+  "n_residues": 1332,
+  "n_folded": 4,
+  "terminal": [
+   14,
+   211
+  ],
+  "connecting": [
+   38,
+   49,
+   628
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q9BXF6",
+  "stratum": "TC/conn_very_long",
+  "n_residues": 653,
+  "n_folded": 3,
+  "terminal": [
+   15,
+   18
+  ],
+  "connecting": [
+   30,
+   436
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q9UJU3",
+  "stratum": "TC/conn_very_long",
+  "n_residues": 913,
+  "n_folded": 2,
+  "terminal": [
+   29,
+   32
+  ],
+  "connecting": [
+   448
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q70CQ2",
+  "stratum": "TCL/conn_long",
+  "n_residues": 1400,
+  "n_folded": 4,
+  "terminal": [
+   5
+  ],
+  "connecting": [
+   27,
+   67,
+   376
+  ],
+  "loops": [
+   10,
+   11
+  ]
+ },
+ {
+  "accession": "Q7Z2Z1",
+  "stratum": "TCL/conn_long",
+  "n_residues": 1910,
+  "n_folded": 3,
+  "terminal": [
+   1118
+  ],
+  "connecting": [
+   34,
+   180
+  ],
+  "loops": [
+   11
+  ]
+ },
+ {
+  "accession": "Q8IX03",
+  "stratum": "TCL/conn_long",
+  "n_residues": 1113,
+  "n_folded": 4,
+  "terminal": [
+   10,
+   10
+  ],
+  "connecting": [
+   53,
+   198,
+   236
+  ],
+  "loops": [
+   12
+  ]
+ },
+ {
+  "accession": "Q8N2M8",
+  "stratum": "TCL/conn_long",
+  "n_residues": 674,
+  "n_folded": 3,
+  "terminal": [
+   34,
+   65
+  ],
+  "connecting": [
+   79,
+   361
+  ],
+  "loops": [
+   13
+  ]
+ },
+ {
+  "accession": "Q9C000",
+  "stratum": "TCL/conn_long",
+  "n_residues": 1473,
+  "n_folded": 4,
+  "terminal": [
+   5,
+   11
+  ],
+  "connecting": [
+   29,
+   89,
+   194
+  ],
+  "loops": [
+   10,
+   12,
+   14
+  ]
+ },
+ {
+  "accession": "Q9P212",
+  "stratum": "TCL/conn_long",
+  "n_residues": 2302,
+  "n_folded": 8,
+  "terminal": [
+   65,
+   520
+  ],
+  "connecting": [
+   29,
+   33,
+   36,
+   76,
+   104,
+   120,
+   160
+  ],
+  "loops": [
+   10,
+   11,
+   13
+  ]
+ },
+ {
+  "accession": "P11230",
+  "stratum": "TCL/conn_medium",
+  "n_residues": 501,
+  "n_folded": 2,
+  "terminal": [
+   8,
+   27
+  ],
+  "connecting": [
+   90
+  ],
+  "loops": [
+   11
+  ]
+ },
+ {
+  "accession": "Q6ZTR5",
+  "stratum": "TCL/conn_medium",
+  "n_residues": 1400,
+  "n_folded": 3,
+  "terminal": [
+   12,
+   39
+  ],
+  "connecting": [
+   55,
+   81
+  ],
+  "loops": [
+   10,
+   10,
+   12
+  ]
+ },
+ {
+  "accession": "Q7Z6W7",
+  "stratum": "TCL/conn_medium",
+  "n_residues": 309,
+  "n_folded": 2,
+  "terminal": [
+   67
+  ],
+  "connecting": [
+   71
+  ],
+  "loops": [
+   17
+  ]
+ },
+ {
+  "accession": "Q86UP8",
+  "stratum": "TCL/conn_medium",
+  "n_residues": 949,
+  "n_folded": 3,
+  "terminal": [
+   104
+  ],
+  "connecting": [
+   34,
+   148
+  ],
+  "loops": [
+   17
+  ]
+ },
+ {
+  "accession": "Q8WXS5",
+  "stratum": "TCL/conn_medium",
+  "n_residues": 425,
+  "n_folded": 2,
+  "terminal": [
+   20,
+   193
+  ],
+  "connecting": [
+   71
+  ],
+  "loops": [
+   13
+  ]
+ },
+ {
+  "accession": "Q9HAU4",
+  "stratum": "TCL/conn_medium",
+  "n_residues": 748,
+  "n_folded": 3,
+  "terminal": [
+   8,
+   11
+  ],
+  "connecting": [
+   35,
+   67
+  ],
+  "loops": [
+   18
+  ]
+ },
+ {
+  "accession": "P27540",
+  "stratum": "TCL/conn_short",
+  "n_residues": 789,
+  "n_folded": 3,
+  "terminal": [
+   94,
+   326
+  ],
+  "connecting": [
+   27,
+   35
+  ],
+  "loops": [
+   12,
+   12
+  ]
+ },
+ {
+  "accession": "Q13200",
+  "stratum": "TCL/conn_short",
+  "n_residues": 908,
+  "n_folded": 2,
+  "terminal": [
+   5,
+   49
+  ],
+  "connecting": [
+   30
+  ],
+  "loops": [
+   12
+  ]
+ },
+ {
+  "accession": "Q8NDZ6",
+  "stratum": "TCL/conn_short",
+  "n_residues": 487,
+  "n_folded": 2,
+  "terminal": [
+   4,
+   7
+  ],
+  "connecting": [
+   45
+  ],
+  "loops": [
+   18
+  ]
+ },
+ {
+  "accession": "Q8WY07",
+  "stratum": "TCL/conn_short",
+  "n_residues": 619,
+  "n_folded": 2,
+  "terminal": [
+   8,
+   25
+  ],
+  "connecting": [
+   27
+  ],
+  "loops": [
+   10
+  ]
+ },
+ {
+  "accession": "Q9UBS8",
+  "stratum": "TCL/conn_short",
+  "n_residues": 474,
+  "n_folded": 2,
+  "terminal": [
+   5,
+   17
+  ],
+  "connecting": [
+   38
+  ],
+  "loops": [
+   11
+  ]
+ },
+ {
+  "accession": "Q9Y285",
+  "stratum": "TCL/conn_short",
+  "n_residues": 508,
+  "n_folded": 2,
+  "terminal": [
+   6,
+   19
+  ],
+  "connecting": [
+   26
+  ],
+  "loops": [
+   14
+  ]
+ },
+ {
+  "accession": "P49792",
+  "stratum": "TCL/conn_very_long",
+  "n_residues": 1400,
+  "n_folded": 2,
+  "terminal": [
+   7,
+   97
+  ],
+  "connecting": [
+   434
+  ],
+  "loops": [
+   10
+  ]
+ },
+ {
+  "accession": "Q8TF40",
+  "stratum": "TCL/conn_very_long",
+  "n_residues": 1166,
+  "n_folded": 4,
+  "terminal": [
+   33
+  ],
+  "connecting": [
+   68,
+   118,
+   445
+  ],
+  "loops": [
+   12
+  ]
+ },
+ {
+  "accession": "Q96T51",
+  "stratum": "TCL/conn_very_long",
+  "n_residues": 708,
+  "n_folded": 2,
+  "terminal": [
+   10,
+   108
+  ],
+  "connecting": [
+   404
+  ],
+  "loops": [
+   10
+  ]
+ },
+ {
+  "accession": "Q9BTC0",
+  "stratum": "TCL/conn_very_long",
+  "n_residues": 2240,
+  "n_folded": 5,
+  "terminal": [
+   36,
+   269
+  ],
+  "connecting": [
+   189,
+   265,
+   349,
+   726
+  ],
+  "loops": [
+   16
+  ]
+ },
+ {
+  "accession": "Q9H0E9",
+  "stratum": "TCL/conn_very_long",
+  "n_residues": 1235,
+  "n_folded": 3,
+  "terminal": [
+   17,
+   24
+  ],
+  "connecting": [
+   290,
+   582
+  ],
+  "loops": [
+   15
+  ]
+ },
+ {
+  "accession": "Q9P2P1",
+  "stratum": "TCL/conn_very_long",
+  "n_residues": 1898,
+  "n_folded": 4,
+  "terminal": [
+   10,
+   15
+  ],
+  "connecting": [
+   69,
+   146,
+   560
+  ],
+  "loops": [
+   10
+  ]
+ },
+ {
+  "accession": "P12757",
+  "stratum": "TL/term_long",
+  "n_residues": 684,
+  "n_folded": 1,
+  "terminal": [
+   145,
+   330
+  ],
+  "connecting": [],
+  "loops": [
+   11
+  ]
+ },
+ {
+  "accession": "Q9C098",
+  "stratum": "TL/term_long",
+  "n_residues": 648,
+  "n_folded": 1,
+  "terminal": [
+   4,
+   352
+  ],
+  "connecting": [],
+  "loops": [
+   13
+  ]
+ },
+ {
+  "accession": "Q9NSI8",
+  "stratum": "TL/term_long",
+  "n_residues": 373,
+  "n_folded": 1,
+  "terminal": [
+   66,
+   165
+  ],
+  "connecting": [],
+  "loops": [
+   20
+  ]
+ },
+ {
+  "accession": "Q9NUC0",
+  "stratum": "TL/term_long",
+  "n_residues": 356,
+  "n_folded": 1,
+  "terminal": [
+   76,
+   210
+  ],
+  "connecting": [],
+  "loops": [
+   13
+  ]
+ },
+ {
+  "accession": "Q9UC07",
+  "stratum": "TL/term_long",
+  "n_residues": 566,
+  "n_folded": 1,
+  "terminal": [
+   15,
+   175
+  ],
+  "connecting": [],
+  "loops": [
+   10
+  ]
+ },
+ {
+  "accession": "P02730",
+  "stratum": "TL/term_medium",
+  "n_residues": 911,
+  "n_folded": 1,
+  "terminal": [
+   22,
+   54
+  ],
+  "connecting": [],
+  "loops": [
+   11
+  ]
+ },
+ {
+  "accession": "Q6P4F1",
+  "stratum": "TL/term_medium",
+  "n_residues": 479,
+  "n_folded": 1,
+  "terminal": [
+   4,
+   78
+  ],
+  "connecting": [],
+  "loops": [
+   11
+  ]
+ },
+ {
+  "accession": "Q8N8A8",
+  "stratum": "TL/term_medium",
+  "n_residues": 192,
+  "n_folded": 1,
+  "terminal": [
+   8,
+   89
+  ],
+  "connecting": [],
+  "loops": [
+   10
+  ]
+ },
+ {
+  "accession": "Q8NB46",
+  "stratum": "TL/term_medium",
+  "n_residues": 1076,
+  "n_folded": 1,
+  "terminal": [
+   9,
+   78
+  ],
+  "connecting": [],
+  "loops": [
+   10,
+   12
+  ]
+ },
+ {
+  "accession": "Q96GJ1",
+  "stratum": "TL/term_medium",
+  "n_residues": 504,
+  "n_folded": 1,
+  "terminal": [
+   79
+  ],
+  "connecting": [],
+  "loops": [
+   11
+  ]
+ },
+ {
+  "accession": "A1A5B4",
+  "stratum": "TL/term_short",
+  "n_residues": 782,
+  "n_folded": 1,
+  "terminal": [
+   32,
+   33
+  ],
+  "connecting": [],
+  "loops": [
+   18
+  ]
+ },
+ {
+  "accession": "O14683",
+  "stratum": "TL/term_short",
+  "n_residues": 189,
+  "n_folded": 1,
+  "terminal": [
+   7,
+   22
+  ],
+  "connecting": [],
+  "loops": [
+   10
+  ]
+ },
+ {
+  "accession": "O43542",
+  "stratum": "TL/term_short",
+  "n_residues": 346,
+  "n_folded": 1,
+  "terminal": [
+   8,
+   12
+  ],
+  "connecting": [],
+  "loops": [
+   16
+  ]
+ },
+ {
+  "accession": "P05543",
+  "stratum": "TL/term_short",
+  "n_residues": 415,
+  "n_folded": 1,
+  "terminal": [
+   38
+  ],
+  "connecting": [],
+  "loops": [
+   20
+  ]
+ },
+ {
+  "accession": "Q9UL63",
+  "stratum": "TL/term_short",
+  "n_residues": 735,
+  "n_folded": 1,
+  "terminal": [
+   12,
+   14
+  ],
+  "connecting": [],
+  "loops": [
+   11,
+   14
+  ]
+ },
+ {
+  "accession": "Q5TCX8",
+  "stratum": "TL/term_very_long",
+  "n_residues": 1036,
+  "n_folded": 1,
+  "terminal": [
+   42,
+   597
+  ],
+  "connecting": [],
+  "loops": [
+   13
+  ]
+ },
+ {
+  "accession": "Q8IUR6",
+  "stratum": "TL/term_very_long",
+  "n_residues": 639,
+  "n_folded": 1,
+  "terminal": [
+   20,
+   433
+  ],
+  "connecting": [],
+  "loops": [
+   10,
+   25
+  ]
+ },
+ {
+  "accession": "Q9H329",
+  "stratum": "TL/term_very_long",
+  "n_residues": 900,
+  "n_folded": 1,
+  "terminal": [
+   84,
+   480
+  ],
+  "connecting": [],
+  "loops": [
+   13
+  ]
+ },
+ {
+  "accession": "Q9NQV8",
+  "stratum": "TL/term_very_long",
+  "n_residues": 689,
+  "n_folded": 1,
+  "terminal": [
+   20,
+   509
+  ],
+  "connecting": [],
+  "loops": [
+   13
+  ]
+ },
+ {
+  "accession": "Q9UKN5",
+  "stratum": "TL/term_very_long",
+  "n_residues": 801,
+  "n_folded": 1,
+  "terminal": [
+   52,
+   463
+  ],
+  "connecting": [],
+  "loops": [
+   18
+  ]
+ },
+ {
+  "accession": "O14647",
+  "stratum": "extreme/many_domains",
+  "n_residues": 1828,
+  "n_folded": 5,
+  "terminal": [
+   261,
+   263
+  ],
+  "connecting": [
+   26,
+   36,
+   134,
+   143
+  ],
+  "loops": [
+   10,
+   11,
+   18
+  ]
+ },
+ {
+  "accession": "P35499",
+  "stratum": "extreme/many_domains",
+  "n_residues": 1836,
+  "n_folded": 5,
+  "terminal": [
+   16,
+   94
+  ],
+  "connecting": [
+   26,
+   53,
+   67,
+   191
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q5H8C1",
+  "stratum": "extreme/many_domains",
+  "n_residues": 2179,
+  "n_folded": 5,
+  "terminal": [
+   25
+  ],
+  "connecting": [
+   26,
+   47,
+   69,
+   71
+  ],
+  "loops": [
+   25
+  ]
+ },
+ {
+  "accession": "Q6DHV5",
+  "stratum": "extreme/many_domains",
+  "n_residues": 1437,
+  "n_folded": 5,
+  "terminal": [
+   286
+  ],
+  "connecting": [
+   31,
+   37,
+   56,
+   110
+  ],
+  "loops": [
+   17
+  ]
+ },
+ {
+  "accession": "O15013",
+  "stratum": "extreme/multiple_loops",
+  "n_residues": 1369,
+  "n_folded": 4,
+  "terminal": [
+   313
+  ],
+  "connecting": [
+   41,
+   80,
+   112
+  ],
+  "loops": [
+   10,
+   13,
+   16
+  ]
+ },
+ {
+  "accession": "Q8N7B1",
+  "stratum": "extreme/multiple_loops",
+  "n_residues": 307,
+  "n_folded": 1,
+  "terminal": [
+   9,
+   21
+  ],
+  "connecting": [],
+  "loops": [
+   15,
+   16,
+   19
+  ]
+ },
+ {
+  "accession": "Q9H799",
+  "stratum": "extreme/multiple_loops",
+  "n_residues": 1400,
+  "n_folded": 4,
+  "terminal": [
+   10
+  ],
+  "connecting": [
+   30,
+   41,
+   55
+  ],
+  "loops": [
+   10,
+   10,
+   10,
+   10,
+   12,
+   12,
+   12
+  ]
+ },
+ {
+  "accession": "C0HM83",
+  "stratum": "extreme/tiny",
+  "n_residues": 58,
+  "n_folded": 0,
+  "terminal": [
+   58
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "P80098",
+  "stratum": "extreme/tiny",
+  "n_residues": 99,
+  "n_folded": 1,
+  "terminal": [
+   7,
+   44
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q02747",
+  "stratum": "extreme/tiny",
+  "n_residues": 115,
+  "n_folded": 1,
+  "terminal": [
+   17,
+   73
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "O60271",
+  "stratum": "extreme/very_long_connecting",
+  "n_residues": 1321,
+  "n_folded": 6,
+  "terminal": [
+   31
+  ],
+  "connecting": [
+   30,
+   33,
+   42,
+   152,
+   558
+  ],
+  "loops": [
+   11
+  ]
+ },
+ {
+  "accession": "Q8IVL0",
+  "stratum": "extreme/very_long_connecting",
+  "n_residues": 2385,
+  "n_folded": 3,
+  "terminal": [
+   66,
+   75
+  ],
+  "connecting": [
+   64,
+   1612
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q9H694",
+  "stratum": "extreme/very_long_connecting",
+  "n_residues": 974,
+  "n_folded": 2,
+  "terminal": [
+   38,
+   47
+  ],
+  "connecting": [
+   464
+  ],
+  "loops": [
+   12
+  ]
+ },
+ {
+  "accession": "Q7Z3T8",
+  "stratum": "extreme/very_long_terminal",
+  "n_residues": 1539,
+  "n_folded": 2,
+  "terminal": [
+   756
+  ],
+  "connecting": [
+   190
+  ],
+  "loops": []
+ },
+ {
+  "accession": "Q96PV7",
+  "stratum": "extreme/very_long_terminal",
+  "n_residues": 902,
+  "n_folded": 0,
+  "terminal": [
+   902
+  ],
+  "connecting": [],
+  "loops": []
+ },
+ {
+  "accession": "Q9C0C2",
+  "stratum": "extreme/very_long_terminal",
+  "n_residues": 1729,
+  "n_folded": 0,
+  "terminal": [
+   1729
+  ],
+  "connecting": [],
+  "loops": []
+ }
+]

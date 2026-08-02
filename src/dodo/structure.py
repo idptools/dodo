@@ -149,10 +149,18 @@ class Domain:
     #: empty for an IDR (an IDR is rebuilt in its entirety, so a "loop" within it is
     #: not a distinct concept).
     loops: tuple[Span, ...] = ()
-    #: Whether this domain's coordinates have been rebuilt in the current run. Used to
-    #: restrict clash checking to already-placed geometry, so that a region is not
-    #: rejected for colliding with something that has yet to move.
+    #: Whether this domain has been **placed**, meaning its coordinates are final and it can
+    #: act as an obstacle. Set for a folded domain once it has been repositioned, and for an
+    #: IDR once it has been rebuilt.
+    #:
+    #: NOT the same question as "did DODO generate these coordinates" -- a folded domain is
+    #: placed but only translated and rotated, never regenerated. Use :meth:`generated_spans`
+    #: for that, and see its docstring: conflating the two made the validators attribute
+    #: AlphaFold's own broken geometry to DODO.
     rebuilt: bool = False
+    #: Indices into :attr:`loops` of the loops that were **successfully** rebuilt. A loop whose
+    #: build failed keeps its input coordinates, so it is absent here.
+    rebuilt_loops: set[int] = field(default_factory=set)
     #: Optional label carried through to output, e.g. for beta-factor annotation.
     label: str | None = None
 
@@ -166,6 +174,29 @@ class Domain:
 
     def __len__(self) -> int:
         return len(self.span)
+
+    def generated_spans(self) -> tuple[Span, ...]:
+        """Spans whose coordinates DODO actually generated, as opposed to merely moved.
+
+        The distinction matters and getting it wrong is not cosmetic. Two things are *not*
+        DODO-generated even though they live inside a domain marked :attr:`rebuilt`:
+
+        * **A folded domain.** It is translated and rotated as a rigid body and its atoms are
+          never regenerated, so every bond inside it is exactly the input's.
+        * **A region whose build failed.** Its input coordinates are deliberately left in
+          place, so it is input geometry too.
+
+        Both used to be reported as DODO's work. Measured on AF-Q9BTC0-F1, whose 1393-1408 loop
+        cannot be closed because its own anchors are 3.04 A apart: DODO left that loop alone,
+        correctly, and the validator then attributed six of AlphaFold's short CA-CA bonds
+        (3.42-3.58 A) and a 0.634 A atom pair to DODO. All seven are present in the input file
+        at identical values, and that input carries 92 impossible pairs of its own.
+        """
+        spans: list[Span] = []
+        if self.kind is DomainKind.IDR and self.rebuilt:
+            spans.append(self.span)
+        spans.extend(self.loops[index] for index in sorted(self.rebuilt_loops))
+        return tuple(spans)
 
     @property
     def atom_slice(self) -> slice:

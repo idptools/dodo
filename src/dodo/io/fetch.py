@@ -580,7 +580,15 @@ class AlphaFoldModel:
 
         The case v1 mishandled. When it is True, the model's sequence is *expected* to
         differ from the UniProt sequence, and comparing the two is not a validity check.
+
+        Decided on coverage, and only on coverage. The presence of other prediction ids for the
+        accession used to be treated as sufficient on its own, but AFDB lists ids that are not
+        fragments of this model -- AF-O60218-F1 covers residues 1-316 of a 316-residue protein,
+        all of it, alongside an unrelated id, and was reported as a fragment because of it.
         """
+        start, stop = self.residue_range
+        if self.uniprot_length > 0 and start <= 1 and stop >= self.uniprot_length:
+            return False
         if bool(self.fragment_entry_ids):
             return True
         return 0 < self.n_modelled_residues < self.uniprot_length
@@ -923,6 +931,18 @@ def _fragment_message(
     """
     start, stop = residue_range
     n_modelled = max(0, stop - start + 1)
+    # Covering the whole protein settles it: this is not a fragment, whatever else the API
+    # happens to list alongside it. That test has to come first and on its own.
+    #
+    # The previous condition returned None only when there were no other prediction ids AND the
+    # model was incomplete, so a COMPLETE model warned whenever AFDB listed anything else for
+    # the accession. Real example: AF-O60218-F1 covers residues 1-316 of a 316-residue protein
+    # -- all of it -- and was reported as "a *fragment*: it covers UniProt residues 1-316 of
+    # O60218, which is 316 residues long", listing a second, unrelated prediction id as its
+    # fellow fragment. Telling a user their complete model is a fragment, and in the same
+    # sentence giving them the numbers that disprove it, is worse than saying nothing.
+    if uniprot_length > 0 and start <= 1 and stop >= uniprot_length:
+        return None
     if not fragment_ids and not 0 < n_modelled < uniprot_length:
         return None
     message = (

@@ -724,21 +724,21 @@
   "loops": []
  },
  {
-  "accession": "Q70CQ2",
+  "accession": "O94983",
   "stratum": "TCL/conn_long",
-  "n_residues": 1400,
+  "n_residues": 1202,
   "n_folded": 4,
   "terminal": [
-   5
+   35,
+   67
   ],
   "connecting": [
-   27,
-   67,
-   376
+   29,
+   229,
+   321
   ],
   "loops": [
-   10,
-   11
+   12
   ]
  },
  {
@@ -853,22 +853,19 @@
   ]
  },
  {
-  "accession": "Q6ZTR5",
+  "accession": "Q96GM8",
   "stratum": "TCL/conn_medium",
-  "n_residues": 1400,
-  "n_folded": 3,
+  "n_residues": 510,
+  "n_folded": 2,
   "terminal": [
-   12,
-   39
+   5,
+   32
   ],
   "connecting": [
-   55,
-   81
+   94
   ],
   "loops": [
-   10,
-   10,
-   12
+   10
   ]
  },
  {
@@ -1034,19 +1031,21 @@
   ]
  },
  {
-  "accession": "P49792",
+  "accession": "O43379",
   "stratum": "TCL/conn_very_long",
-  "n_residues": 1400,
+  "n_residues": 1518,
   "n_folded": 2,
   "terminal": [
-   7,
-   97
+   58,
+   58
   ],
   "connecting": [
-   434
+   652
   ],
   "loops": [
-   10
+   10,
+   10,
+   17
   ]
  },
  {
@@ -1527,26 +1526,23 @@
   ]
  },
  {
-  "accession": "Q9H799",
+  "accession": "P06400",
   "stratum": "extreme/multiple_loops",
-  "n_residues": 1400,
-  "n_folded": 4,
+  "n_residues": 928,
+  "n_folded": 3,
   "terminal": [
-   10
+   53,
+   157
   ],
   "connecting": [
-   30,
-   41,
-   55
+   29,
+   36
   ],
   "loops": [
    10,
-   10,
-   10,
-   10,
-   12,
-   12,
-   12
+   11,
+   13,
+   20
   ]
  },
  {

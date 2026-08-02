@@ -598,7 +598,7 @@ class HierarchicalEngine:
             what the arrangement aims at, adjusted only where the anchors demand it.
         obstacles
             ``(m, 3)`` coordinates the finished chain must clear -- typically
-            ``structure.xyz[structure.rebuilt_atom_mask()]``, minus the anchor residues'
+            ``structure.xyz[structure.placed_atom_mask()]``, minus the anchor residues'
             own atoms. Applied when the assembled chain is placed on its anchors, not
             during assembly; see the module docstring for why.
         rng

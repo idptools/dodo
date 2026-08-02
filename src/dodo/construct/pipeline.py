@@ -274,6 +274,7 @@ def _build_region(
     structure.set_ca_xyz(np.arange(span.start, span.stop), result.ca_coords[0])
     if domain is not None:
         domain.rebuilt = True
+        domain.placed = True
 
     achieved = float(np.linalg.norm(result.ca_coords[0][-1] - result.ca_coords[0][0]))
     return outcome(
@@ -310,7 +311,7 @@ def _obstacles_for_span(structure: Structure, span: Span) -> np.ndarray | None:
     shortest bond in any protein -- in output the pipeline reported as clean. See
     :data:`~dodo.constants.ANCHOR_EXEMPT_ATOMS` for the measurement behind the atom list.
     """
-    mask = structure.rebuilt_atom_mask()
+    mask = structure.placed_atom_mask()
     mask[structure.atom_slice_for_residues(span.start, span.stop)] = False
     # Do not ask the engine to avoid atoms that will not survive into the output. Rebuilt
     # regions are reduced to alpha carbons by _drop_non_ca_from_rebuilt, so their N/C/O and side
@@ -363,9 +364,9 @@ def _rebuild_one_model(
 
     outcomes: list[RegionOutcome] = []
     # Folded domains are already positioned (step 3 ran before this), so they are obstacles
-    # from the outset. Their atoms are never rebuilt.
+    # from the outset. `placed`, not `rebuilt`: their atoms are moved rigidly, never generated.
     for domain in structure.folded_domains():
-        domain.rebuilt = True
+        domain.placed = True
 
     # BUILD ORDER, and it is deliberate: loops, then connecting IDRs, then terminal IDRs.
     #
@@ -434,6 +435,12 @@ def _rebuild_one_model(
                 domain=domain,
             )
         )
+        # Placed whatever happened. On success _build_region has already set it; on failure or
+        # a skip the region keeps its input coordinates, and nothing will move them again -- so
+        # it is final, and every region built after this one must avoid it. Leaving a failed
+        # region out of the obstacle set is how AF-O14683-F1 ended up with a rebuilt alpha
+        # carbon 1.27 A from an atom of the region that had just failed beside it.
+        domain.placed = True
 
     return outcomes
 

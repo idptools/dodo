@@ -497,7 +497,7 @@ class ConformationEngine(Protocol):
         obstacles
             ``(n_obstacles, 3)`` coordinates of already-placed atoms that generated
             residues must not collide with, or ``None`` for free space. Obtain it from
-            ``structure.xyz[structure.rebuilt_atom_mask()]``, minus the atoms of the two
+            ``structure.xyz[structure.placed_atom_mask()]``, minus the atoms of the two
             anchor residues -- see :class:`IDRRequest`.
         rng
             Seeded generator. Every stochastic decision an engine makes must come from

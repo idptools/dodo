@@ -149,15 +149,30 @@ class Domain:
     #: empty for an IDR (an IDR is rebuilt in its entirety, so a "loop" within it is
     #: not a distinct concept).
     loops: tuple[Span, ...] = ()
-    #: Whether this domain has been **placed**, meaning its coordinates are final and it can
-    #: act as an obstacle. Set for a folded domain once it has been repositioned, and for an
-    #: IDR once it has been rebuilt.
+    #: Whether DODO **generated** this domain's coordinates. Set only for an IDR whose build
+    #: succeeded. Never set for a folded domain, which is translated and rotated but never
+    #: regenerated, and never set for a region whose build failed.
     #:
-    #: NOT the same question as "did DODO generate these coordinates" -- a folded domain is
-    #: placed but only translated and rotated, never regenerated. Use :meth:`generated_spans`
-    #: for that, and see its docstring: conflating the two made the validators attribute
-    #: AlphaFold's own broken geometry to DODO.
+    #: This is the provenance question, and it is NOT the same as :attr:`placed`. Conflating
+    #: them made the validators attribute AlphaFold's own broken geometry to DODO -- see
+    #: :meth:`generated_spans`.
     rebuilt: bool = False
+    #: Whether this domain's coordinates are **final**, so it must be avoided as an obstacle.
+    #:
+    #: Deliberately a different question from :attr:`rebuilt`, and all three combinations are
+    #: real:
+    #:
+    #: * a folded domain is placed once repositioned, and never generated;
+    #: * an IDR that built successfully is both placed and generated;
+    #: * an IDR whose build FAILED is placed but not generated -- it keeps its input
+    #:   coordinates, and nothing will move them again.
+    #:
+    #: That last case is why this field exists. While ``rebuilt`` served both purposes, a failed
+    #: region was excluded from the obstacle set for the rest of the run, so a later region
+    #: could be built straight through it. Measured on AF-O14683-F1, whose IDR at 179-190 fails:
+    #: the loop at 47-60 was then built into the same space, leaving A:ILE56 CA 1.27 A from
+    #: A:ARG184 O -- the single worst contact DODO produced anywhere in a 117-structure corpus.
+    placed: bool = False
     #: Indices into :attr:`loops` of the loops that were **successfully** rebuilt. A loop whose
     #: build failed keeps its input coordinates, so it is absent here.
     rebuilt_loops: set[int] = field(default_factory=set)
@@ -592,15 +607,18 @@ class Structure:
             )
         return cKDTree(coords)
 
-    def rebuilt_atom_mask(self) -> np.ndarray:
-        """Boolean atom mask selecting atoms belonging to already-rebuilt domains.
+    def placed_atom_mask(self) -> np.ndarray:
+        """Boolean atom mask selecting atoms whose coordinates are final.
 
-        The obstacle set for clash checking during a build: geometry that has yet to be
-        placed should not veto a candidate conformation.
+        The obstacle set for clash checking during a build. Geometry that has yet to be placed
+        should not veto a candidate conformation -- but geometry that is final must, and that
+        includes a region whose build FAILED. Its input coordinates are staying, so a later
+        region must avoid it. Keying this on :attr:`Domain.rebuilt` instead left failed regions
+        invisible for the rest of the run.
         """
         mask = np.zeros(self.n_atoms, dtype=bool)
         for domain in self.domains:
-            if domain.rebuilt:
+            if domain.placed:
                 mask[domain.atom_slice] = True
         return mask
 

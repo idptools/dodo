@@ -147,6 +147,30 @@ in a viewer shows only the disordered regions moving.
   the regions DODO does **not** rebuild — 2.0 does that unconditionally, so folded domains keep
   full atomic detail and only rebuilt regions are alpha-carbon only.
 
+### Known limitations
+
+Stated with measurements, over a 117-structure corpus stratified by region topology.
+
+- **21 marginal steric contacts across 117 structures**, between 2.2 Å and 3.2 Å against a 3.20 Å
+  limit. None is below the 1.00 Å floor below which no real bond exists, and none appears in an
+  unmodified input. Almost all have one cause: a rebuilt region's *anchor* must be partly exempt
+  from clash checking, because a residue bonded to an anchor legitimately comes closer to its
+  backbone than the clash distance — the median real junction is 3.280 Å, already inside the limit.
+  That exemption currently covers the whole region rather than just the bonded residue. Narrowing
+  it to the anchor's alpha carbon was measured and is not an improvement: contacts fall 19 → 1 but
+  region failures rise 2 → 8. The per-residue fix is the first item after 2.0.
+- **Rebuilt regions are alpha-carbon only.** Deliberate. Regions DODO does *not* rebuild keep every
+  atom.
+- **A region that fails to build can be built through by one built before it.** Observed once in
+  117 structures. Regions are built in order of constraint, and a failed region keeps its input
+  coordinates; later regions avoid them, but earlier ones have already committed.
+- **Assembly rebuilding is not implemented.** Multi-chain input is read and written correctly and
+  regions are identified per chain, but rebuilding unmodelled regions of an EM assembly against the
+  deposited sequence is not wired up.
+- **Reported failures are honest, not silent.** A region DODO cannot build keeps its input
+  coordinates and appears in `report.failures` with a reason. It is never replaced with degenerate
+  output — 1.x could return coordinate arrays of exact `(0, 0, 0)` rows, or NaN.
+
 ### Migrating from 1.x
 
 | 1.x | 2.0 |

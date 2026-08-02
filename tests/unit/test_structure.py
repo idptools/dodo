@@ -447,14 +447,28 @@ class TestClashDetection:
         )
         assert clashing[0]
 
-    def test_rebuilt_mask_selects_only_rebuilt_domains(self, structure: Structure) -> None:
+    def test_placed_mask_selects_only_placed_domains(self, structure: Structure) -> None:
+        """Keyed on ``placed``, not ``rebuilt``. The two are different questions.
+
+        A folded domain is placed but never generated, and a region whose build FAILED is
+        placed but not generated either -- it keeps its input coordinates, which nothing will
+        move again, so a later region still has to avoid it.
+        """
         chain = structure.chains[0]
-        placed = Domain(structure, Span(0, 5), DomainKind.FOLDED, rebuilt=True)
-        pending = Domain(structure, Span(5, 10), DomainKind.IDR, rebuilt=False)
+        placed = Domain(structure, Span(0, 5), DomainKind.FOLDED, placed=True)
+        pending = Domain(structure, Span(5, 10), DomainKind.IDR, placed=False)
         chain.domains = [placed, pending]
-        mask = structure.rebuilt_atom_mask()
+        mask = structure.placed_atom_mask()
         assert mask[:20].all()
         assert not mask[20:].any()
+
+    def test_a_failed_region_is_placed_but_not_generated(self, structure: Structure) -> None:
+        """The combination that did not exist while one flag served both purposes."""
+        chain = structure.chains[0]
+        failed = Domain(structure, Span(0, 5), DomainKind.IDR, placed=True, rebuilt=False)
+        chain.domains = [failed]
+        assert structure.placed_atom_mask()[:20].all(), "a failed region must be an obstacle"
+        assert failed.generated_spans() == (), "a failed region generated nothing"
 
     def test_query_index_length_must_match(self, structure: Structure) -> None:
         with pytest.raises(GeometryError, match="query points"):

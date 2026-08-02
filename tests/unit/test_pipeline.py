@@ -320,8 +320,9 @@ class TestAnchorObstacles:
         structure = read_structure(DNMT3A)
         assign_regions(structure)
         # Mark everything placed, so the obstacle set is limited only by the exemptions.
+        # `placed`, not `rebuilt`: the obstacle set is about final coordinates, not provenance.
         for domain in structure.domains:
-            domain.rebuilt = True
+            domain.placed = True
         span = next(
             d.span
             for d in structure.domains

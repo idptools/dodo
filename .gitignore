@@ -6,6 +6,10 @@ __pycache__/
 # C extensions
 *.so
 
+CLAUDE.md
+.CLAUDE.md
+*/CLAUDE.md
+
 .DS_Store
 
 # Distribution / packaging

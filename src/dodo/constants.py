@@ -488,6 +488,17 @@ BACKBONE_ATOMS: Final[tuple[str, ...]] = ("N", "CA", "C", "O")
 #: 0.937 A (ASN ND2) and 0.944 A (LYS CD) in output that every other check called clean.
 ANCHOR_EXEMPT_ATOMS: Final[frozenset[str]] = frozenset(BACKBONE_ATOMS)
 
+#: The anchor atoms that are exempt from clash checking **unconditionally**.
+#:
+#: A rebuilt region is bonded to its anchors' alpha carbons -- that bond is what attaches the
+#: region to the structure at all -- so treating them as obstacles would make every valid
+#: attachment a clash and leave nothing to build. This exemption is not a trade-off; there is no
+#: version of the algorithm without it.
+#:
+#: :data:`ANCHOR_EXEMPT_ATOMS` above is the *discretionary* part, granted only when a region
+#: cannot otherwise be built. See ``_obstacles_for_span``.
+ANCHOR_ALWAYS_EXEMPT_ATOMS: Final[frozenset[str]] = frozenset({"CA"})
+
 #: Per-residue additions to :data:`ANCHOR_EXEMPT_ATOMS`. See above for the measurement.
 ANCHOR_EXEMPT_ATOMS_BY_RESIDUE: Final[dict[str, frozenset[str]]] = {
     "PRO": frozenset({"CD"}),

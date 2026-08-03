@@ -349,38 +349,59 @@ Honestly stated, with what's fixed since 1.x marked.
    correctly, and regions are identified per chain, but rebuilding unmodelled regions of an EM
    assembly against the deposited sequence isn't wired up yet.
 
-6. **A few marginal steric contacts survive, at region junctions.** Measured over the
-   117-structure corpus: **21 contacts across 117 structures**, between 2.2 Å and 3.2 Å against a
-   3.20 Å limit. None is below the 1.00 Å impossible floor, and none appears in an unmodified
-   input. See [Junction contacts](#junction-contacts) for the cause and the measured trade-off.
+6. **A single marginal steric contact survives, across the whole test corpus.** Measured over
+   117 structures: **one** contact, at 3.02 Å against a 3.20 Å limit. None is below the 1.00 Å
+   impossible floor, and none appears in an unmodified input. See
+   [Anchor exemptions](#anchor-exemptions) for why one remains and why that is the right place to
+   stop.
 
-7. **A region that fails to build can be built *through* by one built before it.** Regions are
-   built in order of constraint — loops, then connecting IDRs, then terminal IDRs — and a region
-   that fails keeps its input coordinates. A region built *later* now avoids those coordinates,
-   but one built earlier already committed. Observed once in 117 structures, on AF-O14683-F1,
-   where a loop was built into space that an IDR later failed to vacate.
+7. **Three regions out of 117 structures are left unbuilt, and two are not DODO's doing.**
+   Measured:
 
-### Junction contacts
+   - One input has two *fixed* residues 3.04 Å apart — already closer than the clash distance
+     DODO is required to satisfy — so it is asked to thread a 16-residue loop between anchors
+     that clash with each other.
+   - One input contains a chain break: consecutive alpha carbons 5.26 Å apart where a real chain
+     is 3.81 Å. DODO needs that residue to constrain a junction angle and cannot.
+   - One is a genuine build failure: a 7-residue tail at the very end of a 189-residue chain,
+     where the walk exhausted its attempts.
 
-Almost all of the residual contacts have one cause, and it is worth stating precisely because the
-fix is a real trade-off rather than an oversight.
+   In every case the region keeps its input coordinates and the reason is reported. DODO never
+   substitutes degenerate output for a region it could not build.
 
-When DODO rebuilds a region, the region's *anchors* — the fixed residues on either side — must be
-partly exempt from clash checking, because a residue bonded to an anchor legitimately comes closer
-to its backbone than the clash distance. Measured over 649,658 sequence-neighbour pairs from the
-human proteome, an alpha carbon sits 2.379 Å from the next residue's N at the 0.1st percentile and
-3.280 Å at the median — so the *median* real junction is already inside the 3.20 Å limit.
+### Anchor exemptions
 
-That exemption currently applies to the whole region rather than only to the residue actually
-bonded to the anchor. So a residue 3 to 16 positions further along, which has no such licence, can
-also be placed against the anchor's backbone.
+Rebuilding a region means attaching it to the fixed residues on either side, and that requires
+exempting those *anchors* from clash checking to some degree. This is unavoidable, so it is worth
+being plain about it.
 
-The correct fix is to scope the exemption per residue, which requires the conformation engine to
-know which step it is placing. The blunt alternative — exempting only the anchor's alpha carbon —
-was measured over 36 structures and is **not** an improvement: contacts fall from 19 to 1, but
-region build failures rise from 2 to 8. Losing six whole regions to unmodified AlphaFold spaghetti
-is a worse outcome for a figure than six contacts a fraction of an Ångström inside the limit, so
-2.0 keeps the wider exemption. The per-residue fix is the first thing after 2.0.
+The anchors' **alpha carbons** are always exempt. The region is bonded to them; treating them as
+obstacles would make every valid attachment register as a clash and there would be nothing to
+build. There is no version of the algorithm without this.
+
+The anchors' **backbone** — N, C, O — is a judgement call, and DODO makes it per region rather than
+globally. A residue bonded to an anchor genuinely does come closer to its backbone than the clash
+distance: measured over 649,658 sequence-neighbour pairs from the human proteome, an alpha carbon
+sits 2.379 Å from the next residue's N at the 0.1st percentile and 3.280 Å at the median, so the
+*median* real junction is already inside the 3.20 Å limit. But that exemption is not per-residue,
+so granting it also licenses a residue 3 to 16 positions further along, which has no such claim.
+
+So DODO tries twice. First with only the alpha carbons exempt, which is the honest constraint. Only
+if the region cannot be built that way does it retry with the backbone exempt as well — and when it
+does, it says so, both on the region's outcome and in the run summary.
+
+The measured effect of doing it this way, over the 117-structure corpus:
+
+| | contacts DODO introduces | regions left unbuilt |
+|---|---|---|
+| backbone always exempt | 21 | 4 |
+| backbone never exempt | 1 | 8 |
+| **two passes, strict first** | **1** | **3** |
+
+Both halves improve, which is why this is the default. A region left unbuilt stays as AlphaFold
+spaghetti and is glaringly visible in a figure; a contact a fraction of an Ångström inside the limit
+is not visible at all. Given DODO is a visualization tool, that is the trade worth making — and the
+remaining contact is one, not a class.
 
 ### Atoms in the output
 

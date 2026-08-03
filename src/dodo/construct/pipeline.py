@@ -36,6 +36,7 @@ from pathlib import Path
 import numpy as np
 
 from ..constants import (
+    ANCHOR_ALWAYS_EXEMPT_ATOMS,
     ANCHOR_EXEMPT_ATOMS,
     ANCHOR_EXEMPT_ATOMS_BY_RESIDUE,
     CA_CA_BOND_LENGTH,
@@ -140,6 +141,16 @@ class RebuildReport:
         if self.failures:
             lines.append(f"  {len(self.failures)} failure(s):")
             lines += [f"    {f}" for f in self.failures]
+        # Surface relaxed builds here too, not only on the individual outcome. A region built
+        # against the relaxed anchor exemption may sit closer to its anchors' backbone than the
+        # clash distance; that is a deliberate trade against leaving the region unbuilt, but it
+        # has to be visible in the summary a CLI user actually reads.
+        relaxed = [o for o in self.outcomes if o.built and o.reason]
+        if relaxed:
+            lines.append(
+                f"  {len(relaxed)} region(s) needed a relaxed anchor exemption to be buildable:"
+            )
+            lines += [f"    {o}" for o in relaxed]
         lines += [f"  note: {n}" for n in self.notes]
         return "\n".join(lines)
 
@@ -248,28 +259,56 @@ def _build_region(
     else:
         requested = requested_override if requested_override is not None else target.end_to_end
 
-    try:
-        result = engine.generate(  # type: ignore[attr-defined]
-            IDRRequest(
-                sequence=sequence,
-                n_residues=len(sequence),
-                target_end_to_end=requested,
-                n_anchor_xyz=n_anchor_xyz,
-                c_anchor_xyz=c_anchor_xyz,
-                n_anchor_prev_xyz=_outer_ca(structure, span.n_anchor, step=-1),
-                c_anchor_next_xyz=_outer_ca(structure, span.c_anchor, step=+1),
-                n_conformations=1,
-            ),
-            obstacles=_obstacles_for_span(structure, span),
-            rng=rng,
-        )
-    except DodoError as exc:
-        return outcome(built=False, reason=f"{label}: {type(exc).__name__}: {exc}")
+    request = IDRRequest(
+        sequence=sequence,
+        n_residues=len(sequence),
+        target_end_to_end=requested,
+        n_anchor_xyz=n_anchor_xyz,
+        c_anchor_xyz=c_anchor_xyz,
+        n_anchor_prev_xyz=_outer_ca(structure, span.n_anchor, step=-1),
+        c_anchor_next_xyz=_outer_ca(structure, span.c_anchor, step=+1),
+        n_conformations=1,
+    )
 
-    if not bool(result.success[0]):
-        return outcome(
-            built=False, reason=f"{label}: the engine reported failure for this conformer"
-        )
+    # TWO PASSES over the anchor exemption, strictest first.
+    #
+    # A region is bonded to its anchors' alpha carbons, so those must always be exempt from
+    # clash checking -- without that there is no way to attach the region at all. The anchors'
+    # BACKBONE atoms are a different matter. The residue actually bonded to an anchor does come
+    # closer to them than the clash distance (measured over 649,658 sequence-neighbour pairs, an
+    # alpha carbon sits 2.379 A from the next residue's N at the 0.1st percentile and 3.280 A at
+    # the median), but a residue further along the region has no such licence -- and exempting
+    # them region-wide let residues 3 to 16 positions away be placed against anchor backbone.
+    #
+    # So: try with only the alpha carbons exempt, which is the honest constraint, and fall back
+    # to exempting the backbone only for a region that would otherwise not be built at all.
+    # Measured over 36 structures, the strict pass alone takes contacts from 19 to 1 but takes
+    # unbuilt regions from 2 to 8, and an unbuilt region is far more visible in a figure than a
+    # contact a fraction of an Angstrom inside the limit. This gets both: strict where it is
+    # free, relaxed only where the alternative is leaving the region as AlphaFold spaghetti.
+    result = None
+    failure: str | None = None
+    relaxed = False
+    for exempt_backbone in (False, True):
+        try:
+            attempt = engine.generate(  # type: ignore[attr-defined]
+                request,
+                obstacles=_obstacles_for_span(
+                    structure, span, exempt_anchor_backbone=exempt_backbone
+                ),
+                rng=rng,
+            )
+        except DodoError as exc:
+            failure = f"{label}: {type(exc).__name__}: {exc}"
+            continue
+        if bool(attempt.success[0]):
+            result = attempt
+            relaxed = exempt_backbone
+            break
+        failure = f"{label}: the engine reported failure for this conformer"
+
+    if result is None:
+        return outcome(built=False, reason=failure)
 
     structure.set_ca_xyz(np.arange(span.start, span.stop), result.ca_coords[0])
     if domain is not None:
@@ -282,6 +321,13 @@ def _build_region(
         target=target,
         achieved_end_to_end=achieved,
         requested_end_to_end=requested,
+        reason=(
+            "built against a relaxed anchor exemption: the anchors' backbone atoms had to be "
+            "exempted from clash checking for this region to be buildable at all, so it may "
+            "sit closer to them than the clash distance"
+            if relaxed
+            else None
+        ),
     )
 
 
@@ -297,19 +343,42 @@ def _outer_ca(structure: Structure, anchor: int | None, *, step: int) -> np.ndar
     return coords
 
 
-def _obstacles_for_span(structure: Structure, span: Span) -> np.ndarray | None:
+def _obstacles_for_span(
+    structure: Structure, span: Span, *, exempt_anchor_backbone: bool = True
+) -> np.ndarray | None:
     """Already-placed atoms the region must avoid.
 
     The region's own residues are excluded, since the engine handles self-avoidance internally.
-    Its anchors are only *partly* excluded: the atoms a bonded neighbour legitimately comes
-    within a clash distance of -- the anchor's backbone, plus proline's CD -- and nothing else.
+    Its anchors are only *partly* excluded, and how far is the caller's choice -- see
+    :func:`_build_region`, which tries the strict setting first.
 
-    Exempting the whole anchor residue, as this once did, is a real defect and not a
-    conservative simplification. The first residue of a rebuilt region is bonded to the anchor's
-    CA but has no bonded relationship to the anchor's *side chain*, so a blanket exemption lets
-    the walk place a CA straight through it. That produced overlaps at 0.871-0.944 A -- below the
-    shortest bond in any protein -- in output the pipeline reported as clean. See
-    :data:`~dodo.constants.ANCHOR_EXEMPT_ATOMS` for the measurement behind the atom list.
+    Parameters
+    ----------
+    structure
+        The structure being built.
+    span
+        The region about to be rebuilt.
+    exempt_anchor_backbone
+        Also exempt the anchors' N, C and O (and proline's CD), not just their alpha carbons.
+
+        The alpha carbons are *always* exempt: the region is bonded to them, and treating them
+        as obstacles would leave no way to attach the region at all.
+
+        The backbone is a judgement call. The residue actually bonded to an anchor does come
+        closer to that backbone than the clash distance -- measured over 649,658
+        sequence-neighbour pairs, an alpha carbon sits 2.379 A from the next residue's N at the
+        0.1st percentile and 3.280 A at the median, so the median real junction is already inside
+        the 3.20 A limit. But this exemption is not per-residue, so granting it also lets a
+        residue 3 to 16 positions further along be placed against anchor backbone, which has no
+        such justification. Hence: off for the first attempt, on only as a fallback.
+
+    Notes
+    -----
+    Exempting the whole anchor *residue*, as this once did, is a defect rather than a
+    conservative simplification: the region is bonded to the anchor's CA but has no bonded
+    relationship to its *side chain*, so a blanket exemption let the walk place an alpha carbon
+    straight through it, producing overlaps at 0.871-0.944 A -- below the shortest bond in any
+    protein -- in output the pipeline reported as clean.
     """
     mask = structure.placed_atom_mask()
     mask[structure.atom_slice_for_residues(span.start, span.stop)] = False
@@ -323,9 +392,12 @@ def _obstacles_for_span(structure: Structure, span: Span) -> np.ndarray | None:
         if anchor is None:
             continue
         atoms = structure.atom_slice_for_residues(anchor, anchor + 1)
-        exempt = ANCHOR_EXEMPT_ATOMS | ANCHOR_EXEMPT_ATOMS_BY_RESIDUE.get(
-            str(structure.residue_name[anchor]), frozenset()
-        )
+        exempt = set(ANCHOR_ALWAYS_EXEMPT_ATOMS)
+        if exempt_anchor_backbone:
+            exempt |= ANCHOR_EXEMPT_ATOMS
+            exempt |= ANCHOR_EXEMPT_ATOMS_BY_RESIDUE.get(
+                str(structure.residue_name[anchor]), frozenset()
+            )
         names = structure.atom_name[atoms]
         mask[atoms] = mask[atoms] & ~np.isin(names, list(exempt))
     if not mask.any():

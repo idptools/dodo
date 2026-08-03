@@ -151,14 +151,18 @@ in a viewer shows only the disordered regions moving.
 
 Stated with measurements, over a 117-structure corpus stratified by region topology.
 
-- **21 marginal steric contacts across 117 structures**, between 2.2 Å and 3.2 Å against a 3.20 Å
-  limit. None is below the 1.00 Å floor below which no real bond exists, and none appears in an
-  unmodified input. Almost all have one cause: a rebuilt region's *anchor* must be partly exempt
-  from clash checking, because a residue bonded to an anchor legitimately comes closer to its
-  backbone than the clash distance — the median real junction is 3.280 Å, already inside the limit.
-  That exemption currently covers the whole region rather than just the bonded residue. Narrowing
-  it to the anchor's alpha carbon was measured and is not an improvement: contacts fall 19 → 1 but
-  region failures rise 2 → 8. The per-residue fix is the first item after 2.0.
+- **One marginal steric contact across 117 structures**, at 3.02 Å against a 3.20 Å limit. Nothing
+  below the 1.00 Å floor below which no real bond exists, and nothing that was not already in the
+  input. Attaching a rebuilt region to the structure requires exempting its *anchors* from clash
+  checking; DODO exempts only their alpha carbons by default and falls back to their backbone only
+  for a region that would otherwise not be built at all — reporting it when it does. Measured over
+  the corpus, that two-pass approach gives 1 contact and 3 unbuilt regions, against 21 and 4 for
+  always exempting the backbone, and 1 and 8 for never exempting it.
+- **Three regions out of 117 structures are left unbuilt, and two of those are input defects**: one
+  file has two fixed residues 3.04 Å apart, already closer than the clash distance DODO must
+  satisfy, and one contains a chain break with consecutive alpha carbons 5.26 Å apart. The third is
+  a genuine failure on a 7-residue terminal tail. Every one keeps its input coordinates and is
+  reported with a reason.
 - **Rebuilt regions are alpha-carbon only.** Deliberate. Regions DODO does *not* rebuild keep every
   atom.
 - **A region that fails to build can be built through by one built before it.** Observed once in

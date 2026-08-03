@@ -126,7 +126,7 @@ print(assignment.describe())                     # chain A: IDR 1-31; FD 32-290;
 print(assignment.score, assignment.threshold)    # the evidence behind every boundary
 
 target = target_dimensions("GSGSGSGS" * 18, mode="compact")
-print(target)   # 62.6 A (compact, 0.7x of 89.4 A) via albatross over 144 residues
+print(target)   # 55.9 A (compact, 0.7x of 79.8 A) via albatross over 144 residues
 ```
 
 ### Overriding the regions
@@ -137,17 +137,20 @@ If you disagree with a boundary, say so, and DODO will build exactly what you as
 import dodo
 
 structure = dodo.read_structure("model.pdb")
-dodo.assign_regions_from_spec(structure, {"A": [("idr", 1, 40), ("folded", 41, 290)]})
+dodo.assign_regions_from_spec(structure, {"A": [("idr", 1, 40), ("folded", 41, 912)]})
 report = dodo.rebuild(structure, strategy="preset")
 ```
 
 `strategy="preset"` means *identify nothing, build what is already there*. Bounds are **1-based
-inclusive**, matching what you read off a PDB file. Overlaps, gaps and out-of-range bounds are
-rejected with an explanation.
+inclusive**, matching what you read off a PDB file, and the regions must **tile the whole chain** —
+every residue belongs to exactly one. Overlaps, gaps and out-of-range bounds are rejected with an
+explanation naming the offending residue.
 
 You can equally start from DODO's own answer and adjust it:
 
 ```python
+import dodo
+
 structure = dodo.read_structure("model.pdb")
 dodo.assign_regions(structure)                       # DODO's call, with its evidence
 structure.chains[0].domains[1].span                  # inspect, then edit as you like

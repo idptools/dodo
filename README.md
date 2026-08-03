@@ -24,7 +24,7 @@ nice for visualization.
 > **DODO 2.0 is a rewrite and it breaks the 1.x API.** The `build.pdb_from_name()` /
 > `pdb_from_pdb()` / `pdb_from_sequence()` functions and the three `pdb-from-*` console
 > scripts are gone, replaced by `dodo.rebuild()` / `dodo.build_from_sequence()` and a single
-> `dodo` command. See [Migrating from 1.x](#migrating-from-1x). The scientific behaviour also
+> `dodo` command. See [What changed, and migrating from 1.x](#what-changed-and-migrating-from-1x). The scientific behaviour also
 > changed in ways worth reading about: build modes are now length-independent, and a
 > multi-model run produces a genuine ensemble rather than one conformation repeated.
 
@@ -142,8 +142,8 @@ assignment = assign_regions(structure, strategy=Strategy.PLDDT)[0]
 print(assignment.describe())                     # chain A: IDR 1-31; FD 32-290; ...
 print(assignment.score, assignment.threshold)    # the evidence behind every boundary
 
-target = target_dimensions("GSGSGSGS...", mode="compact")
-print(target)   # 62.6 A (compact, 0.7x of 89.4 A) via albatross over 144 residues
+target = target_dimensions("GSGSGSGS" * 18, mode="compact")
+print(target)   # 55.9 A (compact, 0.7x of 79.8 A) via albatross over 144 residues
 ```
 
 The core `Structure` is a struct-of-arrays type: one coordinate array, with `Domain` and
@@ -260,14 +260,15 @@ If you disagree with a boundary, say so and DODO will build exactly what you ask
 import dodo
 
 structure = dodo.read_structure("model.pdb")
-dodo.assign_regions_from_spec(structure, {"A": [("idr", 1, 40), ("folded", 41, 290)]})
+dodo.assign_regions_from_spec(structure, {"A": [("idr", 1, 40), ("folded", 41, 912)]})
 report = dodo.rebuild(structure, strategy="preset")
 ```
 
 `strategy="preset"` means *identify nothing, build what is already there*. Bounds are **1-based
-inclusive**, matching what you read off a PDB file. Overlaps, gaps and out-of-range bounds are
-rejected with an explanation — v1 accepted all of them silently and failed later with something
-unrelated.
+inclusive**, matching what you read off a PDB file, and the regions must **tile the whole chain** —
+every residue belongs to exactly one. Overlaps, gaps and out-of-range bounds are rejected with an
+explanation naming the offending residue, where v1 accepted all of them silently and failed later
+with something unrelated.
 
 This replaces v1's `regions_dict=` parameter. That took a separate, stringly-typed description of
 the structure alongside the real one, so the two could disagree; here there is one representation,
@@ -275,6 +276,8 @@ it is already validated, and it carries the score profile that produced it. You 
 from DODO's own answer and adjust it:
 
 ```python
+import dodo
+
 structure = dodo.read_structure("model.pdb")
 dodo.assign_regions(structure)                       # DODO's call, with its evidence
 structure.chains[0].domains[1].span                  # inspect, then edit as you like
@@ -444,107 +447,23 @@ pre-commit install
 Tests marked `network` hit the AlphaFold database, RCSB and UniProt; CI deselects them from the
 main matrix and runs them separately so an upstream outage doesn't redden a pull request.
 
-## Changes
+## What changed, and migrating from 1.x
 
-### 2.0 — in development
+**2.0 breaks the 1.x API deliberately.** The full list — every behaviour change, the complete
+old-to-new translation table, and the known limitations with their measurements — lives in
+[CHANGELOG.md](CHANGELOG.md), which is the single copy so the two cannot drift.
 
-A full rewrite. The 1.x API is gone; see [Migrating from 1.x](#migrating-from-1x).
+The three that will bite hardest:
 
-**Correctness fixes that changed output**
-
-- **AlphaFold downloads work again.** v1 hardcoded `AF-{id}-F1-model_v4.pdb`; EBI has since
-  published `model_v6` and retired the older URLs, so v4 and v5 both 404 and *every*
-  `pdb_from_name` call in 1.x fails today. The URL is now resolved from the AFDB API, which
-  survives future version bumps.
-- **Build modes are length-independent** (see [Build modes](#build-modes)).
-- **Multi-model output is a real ensemble** (see [above](#multi-model-output-is-now-a-real-ensemble)).
-- **Region identification: two domain-merging bugs fixed.** A single candidate folded block
-  yielded *zero* folded domains, so a clean single-domain protein came out entirely disordered
-  and its real domain was replaced by a random walk. And the gap before the last block was
-  never tested, so an IDR between the last two blocks was absorbed into the final domain and
-  never rebuilt.
-- **The folded/disordered score no longer depends on composition.** v1 thresholded a raw
-  atom-*pair* count, which scales with a residue's own heavy-atom count: measured within one
-  folded domain, every glycine fell below the cutoff while 94% of Trp/Phe/Tyr sat above it. The
-  score now counts neighbouring residues by their alpha carbons, so composition can't bias it —
-  and it's invariant to whether side chains are present, which matters because DODO must handle
-  full models, structures with unmodelled side chains, and its own output.
-- **Reader data loss fixed.** Mid-chain selenomethionine no longer vanishes (which fabricated a
-  phantom chain break); insertion codes keep residues 10 and 10A distinct; alternate conformers
-  no longer duplicate atoms; multi-model files are no longer merged into one impossible
-  structure; and hybrid-36 serials are decoded, so files over 99,999 atoms — i.e. the EM
-  assemblies this tool targets — no longer crash outright.
-- **CA–CA bond length is 3.81 Å everywhere.** v1 had 3.8, 3.856 and 3.89 live simultaneously.
-- **Generated angles are restricted to what can be reconstructed to all-atom.** A CA
-  pseudo-angle is coupled to N–CA–C for a trans peptide, so generating a wide angle can make the
-  output un-reconstructable by construction.
-- **Failure is never silent.** v1 builders returned coordinate arrays full of exact `(0,0,0)`
-  rows on total failure, samplers returned NaN, and the domain placer returned positions it had
-  already determined to be clashing. Everything now raises or reports an explicit success mask.
-
-**New**
-
-- Single `dodo` CLI with `rebuild` / `fetch` / `sequence` / `regions` subcommands.
-- mmCIF reading, including `entity_poly`, `struct_ref` and unobserved-residue records.
-- pLDDT-based region identification.
-- Bond-length regularization for generative-model output (`dodo.geometry.regularize`). STARLING
-  is a diffusion model, so its CA–CA distances scatter rather than sitting on the bond length.
-  This is a constrained projection, not a rebuild: measured bond error 0.43–1.13 Å → 5×10⁻⁷ Å
-  while preserving radius of gyration to within 0.03%.
-- Seeds throughout, so output is reproducible.
-- Type annotations, `mypy --strict` clean, `py.typed` shipped.
-
-**Packaging and infrastructure**
-
-- Python 3.10+; 3.8 and 3.9 are end-of-life.
-- Base install needs only numpy and scipy. Everything heavy is an extra.
-- **The distribution now contains the package.** 1.x shipped a wheel that excluded the entire
-  backend — 12.7 KB with none of the engine — while `pip install .` still exited 0.
-- **CI now runs.** The workflow's trigger key was `off:`, which YAML parses as boolean false, so
-  GitHub never ran anything on a 3,800-line numerics package.
-
-### 1.x
-
-<details>
-<summary>Earlier changelog</summary>
-
-- **0.15** — 2024-07-09. Fixed building from local PDBs with metapredict when the structure was
-  predicted fully disordered; fixed multiple models for fully disordered local PDBs.
-- **0.14** — 2024-04-09. Fixed manual region assignment in `pdb_from_pdb`.
-- **0.13** — 2023-12-11. Fixed fully-disordered proteins failing to build. Thanks to GitHub user
-  alexpmagalhaes for a well-reported bug.
-- **0.12** — 2023-11-15. Save predicted folded domains as individual PDBs.
-- **0.11** — 2023-10-30. Small fixes, docs, typos.
-- **0.10** — 2023-10-24. Multiple IDR models in one PDB for simulation-like visualization;
-  command-line functionality.
-- **0.06** — 2023-10-17. Approximate linear arrangement of folded domains.
-- **0.05** — 2023-10-05. Backend overhaul; IDR-from-sequence.
-- **0.04** — 2023-09-29. Keep folded-domain atoms.
-- **0.03** — 2023-09-28. Save sequence-only IDRs.
-- **0.02** — 2023-09-26. IDR coordinates from sequence.
-- **0.01** — 2023-09-25. Initial release.
-
-</details>
-
-## Migrating from 1.x
-
-| 1.x | 2.0 |
-|---|---|
-| `build.pdb_from_pdb(path, out_path=...)` | `dodo.rebuild(path)` → `dodo.write_pdb(report.models, out)` |
-| `build.pdb_from_name(name, out_path=...)` | `dodo.fetch_alphafold(accession)` then `dodo.rebuild(...)`, or `dodo fetch` |
-| `build.pdb_from_sequence(seq, out_path=...)` | `dodo.build_from_sequence(seq)` |
-| `pdb-from-pdb file -o out` | `dodo rebuild file -o out` |
-| `pdb-from-name "human p53" -o out` | `dodo fetch "human p53" -o out` |
-| `pdb-from-sequence SEQ -o out` | `dodo sequence SEQ -o out` |
-| `num_models=N` | `n_models=N` / `-n N` |
-| `mode='normal'` (0.8 Å/residue) | `mode='predicted'` (1.0× predicted) — see [Build modes](#build-modes) |
-| `use_metapredict=True` | removed; `density` is the default and now runs in 7 ms |
-| `regions_dict={...}` | `assign_regions_from_spec(...)` then `rebuild(..., strategy='preset')` |
-| `attempts_per_region`, `attempts_per_coord` | removed; retry budgets are internal and reported on failure |
-| `graph=True` | removed; no plotting is included |
-| `beta_for_FD_IDR=True` | `write_pdb(..., annotate_regions=True)` |
-| `just_fds=True` | removed in 2.0 |
-| functions returned `None` and printed | functions return a `RebuildReport` |
+1. **Build modes mean something different.** 1.x's were Ångströms per residue; 2.0's are
+   multipliers on the predicted end-to-end distance. Short regions come out **larger** than 1.x
+   made them, long ones smaller, crossing over near 80 residues. Regenerating a 1.x figure will
+   not reproduce it, and 2.0's version is the correct one.
+2. **The entry points are gone.** `build.pdb_from_name()` / `pdb_from_pdb()` /
+   `pdb_from_sequence()` and the three `pdb-from-*` commands are replaced by `dodo.rebuild()` /
+   `dodo.build_from_sequence()` and a single `dodo` command.
+3. **Functions return a report** instead of returning `None` and printing, so a script can finally
+   tell whether a region was actually rebuilt.
 
 ## Copyright
 

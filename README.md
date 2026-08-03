@@ -36,28 +36,30 @@ Requires Python 3.10 or newer.
 pip install git+https://github.com/idptools/dodo.git
 ```
 
-The base install depends only on **numpy (2.0+) and scipy (1.13+)**, so it's fast and light. It
-gets you structure reading and writing, region identification, and IDR rebuilding with the
-random-walk engine.
+Two installs, and that is the whole story:
 
-**Most users should also install sparrow**, which provides ALBATROSS. Without it DODO falls back
-to an analytical polymer scaling law that is blind to sequence composition — see
-[Dimension prediction](#dimension-prediction) for how good that actually is. It is a separate
-step rather than an extra because sparrow is not published on PyPI, and PyPI does not permit an
-extra to point at a git URL:
+```bash
+pip install idptools-dodo                 # everything you need to rebuild a structure
+pip install "idptools-dodo[starling]"     # adds STARLING ensembles (large: ~2.4 GB of weights)
+```
+
+The base install depends on **numpy, scipy and getSequence** — small, fast, and no torch. It gets
+you structure reading and writing, region identification, IDR rebuilding, protein-name lookup for
+`dodo fetch`, and the validator.
+
+STARLING is the only extra, because it is the only dependency heavy enough to be worth opting into.
+
+**Most users should also install sparrow**, which provides ALBATROSS:
 
 ```bash
 pip install git+https://github.com/idptools/sparrow.git
 ```
 
-The optional extras that *are* on PyPI:
-
-```bash
-pip install "idptools-dodo[predictors]"   # metapredict, for sequence-only region identification
-pip install "idptools-dodo[lookup]"       # resolve protein names to UniProt accessions
-pip install "idptools-dodo[starling]"     # STARLING generative IDR ensembles (~2.4 GB of weights)
-pip install "idptools-dodo[all]"          # everything above
-```
+Without it DODO falls back to an analytical polymer scaling law that is blind to sequence
+composition — for a 100-residue poly-glutamate region ALBATROSS predicts 122.2 Å and the fallback
+estimates 68.8 Å. DODO warns when it has fallen back, but install sparrow. It is a separate step
+rather than an extra because sparrow is not published on PyPI, and PyPI does not permit an extra to
+reference a git URL.
 
 The distribution is named `idptools-dodo` because PyPI's `dodo` belongs to an unrelated 2014
 project. The import name is unaffected — it is always `import dodo`.
@@ -72,7 +74,7 @@ dodo rebuild AF-P04637-F1-model_v6.pdb -o p53_dodo.pdb
 
 # Download from the AlphaFold database and rebuild
 dodo fetch P04637 -o p53_dodo.pdb
-dodo fetch "human p53" -o p53_dodo.pdb        # needs dodo[lookup]
+dodo fetch "human p53" -o p53_dodo.pdb        # names work out of the box
 
 # Build a disordered region from sequence alone
 dodo sequence GRNQNGGGYQNYNNQGYQGHGGQHQNNYNQYPCNYFGPGYNN -o my_idr.pdb
@@ -89,12 +91,15 @@ dodo regions AF-P04637-F1-model_v6.pdb
 | `-m`, `--mode` | `predicted` | Target dimension as a multiplier on the predicted end-to-end distance |
 | `-n`, `--models` | `1` | Number of conformers. Folded domains are positioned once and held fixed across all models; only the disordered regions differ |
 | `-e`, `--engine` | `walk` | `walk` or `starling` |
-| `-s`, `--strategy` | `auto` | How to identify regions: `auto`, `density`, `contact`, `plddt`, `metapredict` |
+| `-s`, `--strategy` | `auto` | How to identify regions: `auto`, `density`, `contact`, `plddt` |
 | `--seed` | none | Makes output reproducible |
 | `--no-conect` | off | Omit CONECT records — **not recommended**, see [below](#why-conect-records-matter) |
 | `-q`, `--quiet` | off | Suppress the per-region report |
 
-Exit status is `0` on success, `2` if some regions could not be built, `1` on error.
+Exit status is `0` on success, `2` if a region of 10 residues or more could not be rebuilt, `1` on
+error. A shorter region that could not be rebuilt is reported and left as it arrived, and does not
+fail the run — a few residues of AlphaFold geometry do not spoil a figure, whereas a long extended
+region does.
 
 ## Python API
 
@@ -110,7 +115,7 @@ dodo.write_pdb(report.models, "p53_dodo.pdb")
 happened before committing to output:
 
 ```python
-report.ok            # True if every region in every model was rebuilt
+report.ok            # True if every region that matters was rebuilt (see below)
 report.models        # list[Structure] -- the conformers
 report.failures      # regions that could not be built, each with a reason
 report.assignments   # what DODO decided was folded vs disordered, with the evidence
@@ -240,7 +245,6 @@ Four strategies behind one flag:
   comparison and for CA-only input, but it is not the validated method.
 - **`plddt`** — AlphaFold's own per-residue confidence, from the B-factor column. Cheap, but
   the density method beats disorder-based calls, so this is an explicit opt-in.
-- **`metapredict`** — sequence-only. The backup, and the only option with no structure at all.
 - **`auto`** (default) — `density` for all-atom input, `contact` for CA-only input (where a
   pair count can't be compared against the tuned threshold). It never picks pLDDT on its own,
   and it tells you what it chose.
@@ -534,7 +538,7 @@ A full rewrite. The 1.x API is gone; see [Migrating from 1.x](#migrating-from-1x
 | `pdb-from-sequence SEQ -o out` | `dodo sequence SEQ -o out` |
 | `num_models=N` | `n_models=N` / `-n N` |
 | `mode='normal'` (0.8 Å/residue) | `mode='predicted'` (1.0× predicted) — see [Build modes](#build-modes) |
-| `use_metapredict=True` | `strategy='metapredict'` |
+| `use_metapredict=True` | removed; `density` is the default and now runs in 7 ms |
 | `regions_dict={...}` | `assign_regions_from_spec(...)` then `rebuild(..., strategy='preset')` |
 | `attempts_per_region`, `attempts_per_coord` | removed; retry budgets are internal and reported on failure |
 | `graph=True` | removed; no plotting is included |

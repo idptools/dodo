@@ -22,9 +22,6 @@ Strategies
     AlphaFold's own per-residue confidence, from the B-factor column. Cheap, and it is the
     model's own account of where it was guessing -- but the density method reportedly beats
     disorder-based calls, so this is an explicit opt-in rather than a default.
-``METAPREDICT``
-    Sequence-only disorder prediction. The backup, and the only option when there is no
-    structure at all.
 
 :data:`Strategy.AUTO` resolves to ``DENSITY`` for all-atom input and ``CONTACT`` for CA-only
 input, where a pair count cannot be compared against the tuned threshold.
@@ -68,7 +65,7 @@ from ..constants import (
     MIN_LOOP_LENGTH,
     PLDDT_DISORDER_THRESHOLD,
 )
-from ..exceptions import InvalidRegionError, MissingDependencyError
+from ..exceptions import InvalidRegionError
 from ..structure import Chain, Domain, DomainKind, Span, Structure
 from .contact import contact_profile, density_profile, is_loop_like, loop_contact_counts
 
@@ -94,8 +91,6 @@ class Strategy(str, Enum):
     CONTACT = "contact"
     #: AlphaFold pLDDT, read from the B-factor column.
     PLDDT = "plddt"
-    #: Sequence-only disorder prediction via metapredict.
-    METAPREDICT = "metapredict"
     #: Resolves to :attr:`DENSITY` when the structure has side chains to measure, and to
     #: :attr:`CONTACT` when it is CA-only (where a pair count is not comparable to the tuned
     #: threshold). Deliberately does NOT prefer pLDDT: the density method was found to work
@@ -303,32 +298,6 @@ def _folded_mask_from_plddt(
     return score, score >= threshold
 
 
-def _folded_mask_from_metapredict(chain: Chain, threshold: float) -> tuple[np.ndarray, np.ndarray]:
-    """Score by sequence-only disorder prediction.
-
-    Returns *order* (1 - disorder) so that higher means more folded, matching the sign
-    convention of the other two strategies. Keeping every strategy's score oriented the
-    same way is what lets one thresholding path serve all three.
-    """
-    try:
-        import metapredict
-    except ImportError as exc:
-        raise MissingDependencyError(
-            package="metapredict",
-            purpose="Sequence-based region identification",
-            extra="predictors",
-        ) from exc
-
-    disorder = np.asarray(metapredict.predict_disorder(chain.sequence), dtype=np.float64)
-    if disorder.shape[0] != len(chain):
-        raise InvalidRegionError(
-            f"metapredict returned {disorder.shape[0]} scores for a {len(chain)}-residue "
-            f"chain. This is a version incompatibility; DODO expects one score per residue."
-        )
-    order = 1.0 - disorder
-    return order, order >= threshold
-
-
 def _detect_loops(
     span: Span,
     loop_counts: np.ndarray,
@@ -508,7 +477,7 @@ def assign_regions(
     threshold
         Cutoff on the strategy's score. Defaults to the strategy's own tuned value:
         :data:`~dodo.constants.CONTACT_SCORE_THRESHOLD` for contacts,
-        :data:`~dodo.constants.PLDDT_DISORDER_THRESHOLD` for pLDDT, and 0.5 for metapredict.
+        :data:`~dodo.constants.PLDDT_DISORDER_THRESHOLD` for pLDDT.
     max_internal_gap
         Longest run of non-folded residues that stays inside one folded domain. Split from
         ``min_folded_length``: the pre-rewrite code used a single ``gap_thresh`` knob for
@@ -530,8 +499,6 @@ def assign_regions(
 
     Raises
     ------
-    MissingDependencyError
-        If ``strategy`` is ``METAPREDICT`` and metapredict is not installed.
     InvalidRegionError
         If the resulting tiling is inconsistent, which would be a bug here rather than bad
         input -- the check exists so such a bug surfaces immediately instead of as a
@@ -596,9 +563,6 @@ def assign_regions(
         if resolved is Strategy.PLDDT:
             cutoff = PLDDT_DISORDER_THRESHOLD if threshold is None else threshold
             score, folded_mask = _folded_mask_from_plddt(structure, chain, cutoff)
-        elif resolved is Strategy.METAPREDICT:
-            cutoff = 0.5 if threshold is None else threshold
-            score, folded_mask = _folded_mask_from_metapredict(chain, cutoff)
         elif resolved is Strategy.CONTACT:
             cutoff = CA_CONTACT_SCORE_THRESHOLD if threshold is None else threshold
             score, folded_mask = _folded_mask_from_contact(structure, chain, cutoff)

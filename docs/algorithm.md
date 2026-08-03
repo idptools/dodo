@@ -87,9 +87,6 @@ Alternatives, selectable with `-s` / `strategy=`:
 : AlphaFold's own per-residue confidence, from the B-factor column. An explicit opt-in — the
   density method was found to draw better boundaries.
 
-`metapredict`
-: Sequence-only disorder prediction. The backup, and the only option with no structure at all.
-
 `auto`
 : `density` for all-atom input, `contact` for CA-only input, where a pair count cannot be compared
   against the tuned threshold. It reports which it chose. It deliberately never picks `plddt`.

@@ -42,6 +42,7 @@ from ..constants import (
     CA_CA_BOND_LENGTH,
     DEFAULT_MODE,
     MIN_IDR_LENGTH,
+    SHORT_REGION_TOLERANCE,
 )
 from ..exceptions import BuildError, DodoError, InvalidParameterError
 from ..regions.identify import RegionAssignment, Strategy, assign_regions
@@ -75,13 +76,26 @@ class RegionOutcome:
     requested_end_to_end: float | None = None
     reason: str | None = None
 
+    @property
+    def tolerated(self) -> bool:
+        """True if this region was not rebuilt but that is acceptable, because it is short.
+
+        A short disordered stretch left as AlphaFold drew it does not look wrong in a figure.
+        It is the long regions that trail across the image as extended spaghetti, and those are
+        what DODO exists to fix -- so under
+        :data:`~dodo.constants.SHORT_REGION_TOLERANCE` residues a failure is reported and the run
+        still succeeds. See :attr:`RebuildReport.ok`.
+        """
+        return not self.built and self.n_residues < SHORT_REGION_TOLERANCE
+
     def __str__(self) -> str:
         where = (
             f"model {self.model} chain {self.chain_id} "
             f"residues {self.residues[0]}-{self.residues[1]}"
         )
         if not self.built:
-            return f"{where}: NOT BUILT ({self.reason})"
+            label = "not rebuilt, left as-is" if self.tolerated else "NOT BUILT"
+            return f"{where}: {label} ({self.reason})"
         detail = ""
         if self.achieved_end_to_end is not None:
             asked = self.requested_end_to_end
@@ -114,8 +128,25 @@ class RebuildReport:
 
     @property
     def failures(self) -> list[RegionOutcome]:
-        """Regions that could not be built. Their input coordinates were left in place."""
+        """Every region that was not rebuilt. Their input coordinates were left in place.
+
+        Includes the short ones that :attr:`ok` tolerates -- use :attr:`blocking_failures` for
+        the subset that makes a run unsuccessful.
+        """
         return [o for o in self.outcomes if not o.built]
+
+    @property
+    def blocking_failures(self) -> list[RegionOutcome]:
+        """Regions long enough that failing to rebuild them is a real failure.
+
+        See :attr:`RegionOutcome.tolerated` for where the line is drawn and why.
+        """
+        return [o for o in self.failures if not o.tolerated]
+
+    @property
+    def tolerated_failures(self) -> list[RegionOutcome]:
+        """Regions not rebuilt, but short enough that it does not matter for a figure."""
+        return [o for o in self.failures if o.tolerated]
 
     @property
     def n_built(self) -> int:
@@ -124,8 +155,16 @@ class RebuildReport:
 
     @property
     def ok(self) -> bool:
-        """True if every region in every model was rebuilt."""
-        return not self.failures
+        """True if every region that matters was rebuilt.
+
+        A region shorter than :data:`~dodo.constants.SHORT_REGION_TOLERANCE` residues that could
+        not be rebuilt does NOT make this False. Such a region is reported, and left with its
+        input coordinates, but a few residues of AlphaFold geometry do not spoil a figure --
+        whereas a long extended region does, which is the whole reason DODO exists.
+
+        This is what the CLI's exit status reflects.
+        """
+        return not self.blocking_failures
 
     def summary(self) -> str:
         """Multi-line human-readable summary."""
@@ -138,9 +177,16 @@ class RebuildReport:
         if moved:
             lines.append(f"  {len(moved)} folded domain(s) repositioned:")
             lines += [f"    {p}" for p in moved]
-        if self.failures:
-            lines.append(f"  {len(self.failures)} failure(s):")
-            lines += [f"    {f}" for f in self.failures]
+        if self.blocking_failures:
+            lines.append(f"  {len(self.blocking_failures)} failure(s):")
+            lines += [f"    {f}" for f in self.blocking_failures]
+        if self.tolerated_failures:
+            lines.append(
+                f"  {len(self.tolerated_failures)} short region(s) left as-is, under the "
+                f"{SHORT_REGION_TOLERANCE}-residue threshold where this is not treated as a "
+                f"failure:"
+            )
+            lines += [f"    {f}" for f in self.tolerated_failures]
         # Surface relaxed builds here too, not only on the individual outcome. A region built
         # against the relaxed anchor exemption may sit closer to its anchors' backbone than the
         # clash distance; that is a deliberate trade against leaving the region unbuilt, but it

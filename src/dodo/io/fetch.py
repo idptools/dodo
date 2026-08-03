@@ -25,7 +25,7 @@ Three further v1 behaviours are deliberately not reproduced:
 
 * No request had a timeout, so a hung connection hung DODO forever. Every request here
   takes one, and it is a required argument of the private helpers so it cannot be
-  forgotten. The one call DODO does not make itself -- the optional ``getSequence``
+  forgotten. The one call DODO does not make itself -- the ``getSequence``
   name lookup, which uses ``requests`` internally and accepts no timeout -- is bounded
   from the outside instead, so no path through this module can wait indefinitely.
 * ``[0]`` of the API response was assumed to be the model of the requested accession.
@@ -1100,7 +1100,7 @@ def _search_uniprot(name: str, *, timeout: float) -> str | None:
     """Return the top-hit accession for a free-text protein name, or None.
 
     Uses the UniProtKB REST search directly, so the base install can resolve names
-    without the optional ``lookup`` extra (which pulls torch transitively).
+    without getSequence installed.
 
     Raises
     ------
@@ -1212,7 +1212,7 @@ def _call_with_deadline(work: Callable[[], Any], *, timeout: float, description:
 
 
 def _accession_from_getsequence(name: str, *, timeout: float) -> str | None:
-    """Resolve a name with the optional ``getSequence`` package, or return None.
+    """Resolve a name with the ``getSequence`` package, or return None.
 
     ``getseq`` returns ``[header, sequence]`` with a header like
     ``sp|P04637|P53_HUMAN ...``, but the exact shape has changed across releases, so
@@ -1348,19 +1348,20 @@ def resolve_uniprot_accession(name: str, *, timeout: float = 30.0) -> str:
             # Blaming a missing optional package here would send the user to install
             # torch to fix their wifi.
             raise transport_failure from exc
+        # getSequence is a normal dependency, so reaching here means an installation is
+        # broken rather than incomplete -- no extra to name.
         raise MissingDependencyError(
             package="getSequence",
             purpose=(
                 f"Resolving the protein name {name!r} to a UniProt accession, after "
                 f"DODO's built-in UniProt search returned no match for it"
             ),
-            extra="lookup",
         ) from exc
 
     if fallback is not None:
         warnings.warn(
-            f"Resolved the name {name!r} to {fallback} with the optional getSequence "
-            f"package, not with DODO's own UniProt search, which found no match for it. "
+            f"Resolved the name {name!r} to {fallback} with getSequence rather than with "
+            f"DODO's own UniProt search, which found no match for it. "
             f"getSequence applies its own ranking, queries services outside DODO's "
             f"allowlist, and returns a plausible-looking accession even for a name that "
             f"has no real match, so confirm that {fallback} is the protein you meant "

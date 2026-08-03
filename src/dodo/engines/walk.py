@@ -1917,11 +1917,14 @@ def _check_fixed_context(request: IDRRequest) -> None:
         bond = float(np.linalg.norm(outer - anchor))
         if abs(bond - CA_CA_BOND_LENGTH) > _OUTER_BOND_SLACK:
             raise GeometryError(
-                f"The fixed residue beyond an anchor is {bond:.2f} A from it, but consecutive "
-                f"alpha carbons are {CA_CA_BOND_LENGTH:.2f} A apart. This coordinate is only "
-                f"meaningful as the anchor's chain neighbour -- it exists to pin the "
-                f"pseudo-angle centred on the anchor -- so a separation this far off means it "
-                f"is not that residue."
+                f"The chain is broken next to this region's anchor: the anchor and the fixed "
+                f"residue beyond it are {bond:.2f} A apart, where consecutive alpha carbons are "
+                f"{CA_CA_BOND_LENGTH:.2f} A. That residue exists only to pin the pseudo-angle "
+                f"centred on the anchor, and a separation this far off means it is not the "
+                f"anchor's chain neighbour. This is a problem with the coordinates handed in, "
+                f"not with the region: no conformer can repair a break in the fixed chain, so "
+                f"the region is left as it arrived. Real AlphaFold models do contain these -- "
+                f"one measured example has a single 5.26 A step in an otherwise sound chain."
             )
 
     for i, (index_a, name_a, point_a) in enumerate(fixed):

@@ -348,6 +348,77 @@ class TestAnchorObstacles:
             else:
                 assert key in present, f"anchor side-chain {name} must remain an obstacle"
 
+    def test_the_alpha_carbon_exemption_is_unconditional(self) -> None:
+        """Always exempt, and separately from the discretionary backbone exemption.
+
+        A rebuilt region is bonded to its anchors' alpha carbons. Treating those as obstacles
+        would make every valid attachment register as a clash, so there is no version of the
+        algorithm without this exemption -- it is not a trade-off to be tuned.
+        """
+        from dodo.constants import ANCHOR_ALWAYS_EXEMPT_ATOMS, ANCHOR_EXEMPT_ATOMS
+
+        assert frozenset({"CA"}) == ANCHOR_ALWAYS_EXEMPT_ATOMS
+        # The discretionary set is the anchor BACKBONE. It happens to contain CA as well, which
+        # is harmless -- but the unconditional set is what guarantees the alpha carbon stays
+        # exempt even when the backbone exemption is withheld.
+        assert "CA" in ANCHOR_EXEMPT_ATOMS
+        assert "N" not in ANCHOR_ALWAYS_EXEMPT_ATOMS, "N must be discretionary, not unconditional"
+
+    def test_strict_pass_keeps_anchor_backbone_as_an_obstacle(self) -> None:
+        """The strict setting exempts only the alpha carbons; the fallback adds the backbone."""
+        from dodo.construct.pipeline import _obstacles_for_span
+        from dodo.regions import assign_regions
+
+        structure = read_structure(DNMT3A)
+        assign_regions(structure)
+        for domain in structure.domains:
+            domain.placed = True
+        span = next(
+            d.span
+            for d in structure.domains
+            if d.kind is DomainKind.IDR and d.span.c_anchor is not None
+        )
+        anchor = span.c_anchor
+        assert anchor is not None
+        atoms = structure.atom_slice_for_residues(anchor, anchor + 1)
+        names = [str(n) for n in structure.atom_name[atoms]]
+        coords = structure.xyz[atoms]
+
+        def present(*, exempt_backbone: bool) -> set[tuple[float, ...]]:
+            obstacles = _obstacles_for_span(structure, span, exempt_anchor_backbone=exempt_backbone)
+            assert obstacles is not None
+            return {tuple(np.round(row, 4)) for row in obstacles}
+
+        strict, relaxed = present(exempt_backbone=False), present(exempt_backbone=True)
+        for name, xyz in zip(names, coords, strict=True):
+            key = tuple(np.round(xyz, 4))
+            if name == "CA":
+                assert key not in strict, "the anchor CA must be exempt in BOTH passes"
+                assert key not in relaxed
+            elif name in ("N", "C", "O"):
+                assert key in strict, f"strict pass must keep anchor {name} as an obstacle"
+                assert key not in relaxed, f"fallback must exempt anchor {name}"
+            else:
+                assert key in strict, f"anchor side-chain {name} is never exempt"
+                assert key in relaxed, f"anchor side-chain {name} is never exempt"
+
+    @pytest.mark.slow
+    def test_a_relaxed_build_says_so(self) -> None:
+        """Whenever the fallback is used it must be visible, not silent.
+
+        The relaxed pass lets a region sit closer to its anchors' backbone than the clash
+        distance. That is a deliberate trade -- an unbuilt region is far more visible in a figure
+        than a marginal contact -- but the user has to be able to tell it happened.
+        """
+        report = rebuild(DNMT3A, seed=0)
+        for outcome in report.outcomes:
+            if outcome.built and outcome.reason:
+                assert "relaxed anchor exemption" in outcome.reason, outcome.reason
+        # And the wording reaches the summary a CLI user actually reads.
+        relaxed = [o for o in report.outcomes if o.built and o.reason]
+        if relaxed:
+            assert "relaxed anchor exemption" in report.summary()
+
     def test_proline_cd_is_exempt(self) -> None:
         """Proline's CD is bonded to its own backbone N, so it is 1-3 from the preceding C.
 

@@ -170,13 +170,13 @@ jobs:
       - name: Install the package, then force the declared minimums
         run: |
           python -m pip install -e ".[test]"
-          python -m pip install "numpy==2.0.*" "scipy==1.13.*"
+          python -m pip install "numpy==2.0.*" "scipy==1.13.*" "getSequence==3.0.*"
 
       - name: Show what actually resolved
         # Printed, because a floor job that silently resolved something newer would pass while
         # testing nothing. Verified locally at numpy 2.0.0 / scipy 1.13.0 as well.
         run: |
-          python -c "import numpy, scipy, sys; print(sys.version); print('numpy', numpy.__version__); print('scipy', scipy.__version__)"
+          python -c "import sys, numpy, scipy, importlib.metadata as m; print(sys.version); print('numpy', numpy.__version__); print('scipy', scipy.__version__); print('getSequence', m.version('getSequence'))"
 
       - name: Run tests
         run: python -m pytest -m "not network" -q

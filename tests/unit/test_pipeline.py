@@ -597,3 +597,107 @@ class TestPresetRegions:
         # folded_mask is still real, since it is derivable from the domains themselves.
         assert assignment.folded_mask[0] is np.False_ or not assignment.folded_mask[0]
         assert assignment.folded_mask[-1]
+
+
+class TestShortRegionsAreTolerated:
+    """A short region DODO cannot rebuild is reported, not treated as a failed run.
+
+    DODO is a visualization tool first. A handful of residues left as AlphaFold drew them does not
+    look wrong in a figure -- it is the long regions, the ones that trail across the image as
+    extended spaghetti, that DODO exists to fix. So the threshold is about what a reader would
+    actually notice, not about what the builder would prefer.
+
+    Measured on the 117-structure corpus, this changes one outcome: a 7-residue terminal tail on
+    AF-O14683-F1 that the walk cannot fit. The 16-residue loop and 71-residue linker that also fail
+    stay failures, and both of those are input defects -- one file has two fixed residues 3.04 A
+    apart, the other a chain break with consecutive alpha carbons 5.26 A apart.
+    """
+
+    def _outcome(self, *, n_residues: int, built: bool) -> object:
+        from dodo.construct.pipeline import RegionOutcome
+
+        return RegionOutcome(
+            model=1,
+            chain_id="A",
+            residues=(1, n_residues),
+            n_residues=n_residues,
+            built=built,
+            reason=None if built else "could not be built",
+        )
+
+    def test_the_threshold_is_ten_residues(self) -> None:
+        from dodo.constants import SHORT_REGION_TOLERANCE
+
+        assert SHORT_REGION_TOLERANCE == 10
+
+    @pytest.mark.parametrize(
+        ("n_residues", "tolerated"), [(1, True), (9, True), (10, False), (71, False)]
+    )
+    def test_tolerance_is_decided_by_length(self, n_residues: int, *, tolerated: bool) -> None:
+        outcome = self._outcome(n_residues=n_residues, built=False)
+        assert outcome.tolerated is tolerated
+
+    def test_a_built_region_is_never_tolerated(self) -> None:
+        """`tolerated` describes a failure, so a success must not report it."""
+        assert self._outcome(n_residues=3, built=True).tolerated is False
+
+    def test_ok_ignores_short_failures_but_not_long_ones(self) -> None:
+        from dodo.construct.pipeline import RebuildReport
+
+        short = RebuildReport(outcomes=[self._outcome(n_residues=7, built=False)])
+        assert short.ok, "a 7-residue region left as-is must not fail the run"
+        assert short.failures and not short.blocking_failures
+        assert short.tolerated_failures
+
+        long = RebuildReport(outcomes=[self._outcome(n_residues=71, built=False)])
+        assert not long.ok, "a 71-residue region left unbuilt is a real failure"
+        assert long.blocking_failures and not long.tolerated_failures
+
+    def test_both_kinds_are_named_distinctly_in_the_summary(self) -> None:
+        """A tolerated region must not be printed as though it were a failure."""
+        from dodo.construct.pipeline import RebuildReport
+
+        report = RebuildReport(
+            outcomes=[
+                self._outcome(n_residues=7, built=False),
+                self._outcome(n_residues=71, built=False),
+            ]
+        )
+        summary = report.summary()
+        assert "1 failure(s)" in summary
+        assert "left as-is" in summary
+        assert "NOT BUILT" in summary
+
+
+class TestMetapredictIsGone:
+    """metapredict was dropped along with its only reason for existing.
+
+    In 1.x it provided faster region identification than the all-atom density metric. That metric
+    now runs in 7 ms on a 1,086-residue model, down from 10.1 s, so the tradeoff is gone -- and
+    metapredict requires torch, pytorch-lightning, cython and matplotlib, which is most of the
+    weight a light install avoids.
+    """
+
+    def test_the_strategy_no_longer_exists(self) -> None:
+        from dodo.regions import Strategy
+
+        assert not hasattr(Strategy, "METAPREDICT")
+        with pytest.raises(ValueError, match="metapredict"):
+            Strategy("metapredict")
+
+    def test_the_cli_does_not_offer_it(self) -> None:
+        from dodo.cli import _STRATEGY_CHOICES
+
+        assert "metapredict" not in _STRATEGY_CHOICES
+        assert set(_STRATEGY_CHOICES) == {"auto", "density", "contact", "plddt"}
+
+    def test_nothing_imports_it(self) -> None:
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[2] / "src" / "dodo"
+        offenders = [
+            path.relative_to(root)
+            for path in root.rglob("*.py")
+            if "metapredict" in path.read_text()
+        ]
+        assert not offenders, f"metapredict still referenced in {offenders}"

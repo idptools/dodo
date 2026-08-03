@@ -12,9 +12,9 @@ remembering to add a page. A hand-maintained file per module drifts within days:
 ``assign_regions_from_spec`` and ``reposition_folded_domains`` became public during a single
 afternoon's work on this branch.
 
-**The optional dependencies are mocked.** sparrow, metapredict, STARLING and getSequence are
-heavy -- STARLING alone is ~2.4 GB of weights -- and a docs build must not need any of them. DODO
-imports them lazily and inside functions, so autodoc only ever meets them in annotations.
+**sparrow and STARLING are mocked.** Neither is a hard dependency -- sparrow is not on PyPI and
+STARLING is ~2.4 GB of weights -- and a docs build must not need either. DODO imports them lazily
+and inside functions, so autodoc only ever meets them in annotations.
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ autodoc_default_options = {
 autodoc_typehints = "description"
 autodoc_typehints_description_target = "documented_params"
 autodoc_preserve_defaults = True
-autodoc_mock_imports = ["sparrow", "metapredict", "starling", "getSequence"]
+autodoc_mock_imports = ["sparrow", "starling"]
 
 napoleon_google_docstring = False
 napoleon_numpy_docstring = True

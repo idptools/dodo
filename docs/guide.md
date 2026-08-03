@@ -10,7 +10,7 @@ dodo rebuild AF-P04637-F1-model_v6.pdb -o p53_dodo.pdb
 
 # Download from the AlphaFold database and rebuild
 dodo fetch P04637 -o p53_dodo.pdb
-dodo fetch "human p53" -o p53_dodo.pdb        # name resolution needs [lookup]
+dodo fetch "human p53" -o p53_dodo.pdb        # names work out of the box
 
 # Build a disordered region from sequence alone
 dodo sequence GRNQNGGGYQNYNNQGYQGHGGQHQNNYNQYPCNYFGPGYNN -o my_idr.pdb
@@ -22,7 +22,10 @@ dodo regions AF-P04637-F1-model_v6.pdb
 dodo validate p53_dodo.pdb
 ```
 
-Exit status is `0` on success, `2` if some regions could not be built, `1` on error.
+Exit status is `0` on success, `2` if a region of 10 residues or more could not be rebuilt, `1` on
+error. A shorter region that could not be rebuilt is reported and left as it arrived, and does not
+fail the run — a few residues of AlphaFold geometry do not spoil a figure, whereas a long extended
+region does.
 
 ### Shared flags
 
@@ -32,7 +35,7 @@ Exit status is `0` on success, `2` if some regions could not be built, `1` on er
 | `-m`, `--mode` | `predicted` | Multiplier on the predicted end-to-end distance |
 | `-n`, `--models` | `1` | Number of conformers |
 | `-e`, `--engine` | `walk` | `walk` or `starling` |
-| `-s`, `--strategy` | `auto` | Region identification: `auto`, `density`, `contact`, `plddt`, `metapredict` |
+| `-s`, `--strategy` | `auto` | Region identification: `auto`, `density`, `contact`, `plddt` |
 | `--seed` | none | Makes output bit-identical |
 | `--ca-only` | off | Alpha carbons only, folded domains included |
 | `-b`, `--annotate-regions` | off | Encode region type in the B-factor column, for colouring |
@@ -84,12 +87,22 @@ dodo.write_pdb(report.models, "out.pdb")
 committing to output:
 
 ```python
-report.ok            # True if every region in every model was rebuilt
+report.ok            # True if every region that matters was rebuilt (see below)
 report.models        # list[Structure] -- the conformers
 report.failures      # regions that could not be built, each with a reason
 report.assignments   # what DODO decided was folded vs disordered, with the evidence
 report.outcomes      # per region per model: target, achieved dimension, or why it failed
 report.placements    # where every folded domain ended up
+```
+
+`report.ok` tolerates short regions. A region under 10 residues that could not be rebuilt is
+reported but does not make the run unsuccessful, because a few residues left as AlphaFold drew them
+do not look wrong — it is the long extended regions DODO exists to fix. The three relevant fields:
+
+```python
+report.failures            # every region not rebuilt, short ones included
+report.blocking_failures   # the subset long enough to matter; report.ok is `not this`
+report.tolerated_failures  # the short ones, reported and left alone
 ```
 
 From sequence alone:

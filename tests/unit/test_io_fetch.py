@@ -1068,14 +1068,22 @@ class TestResolveUniprotAccession:
             assert fetch.resolve_uniprot_accession("tumour protein 53") == "P04637"
         assert fake_getsequence == ["tumour protein 53"]
 
-    def test_missing_getsequence_names_the_extra(
+    def test_missing_getsequence_names_no_extra_because_there_is_none(
         self, transport: InstallTransport, no_getsequence: None
     ) -> None:
+        """A missing getSequence is now a broken install, not an uninstalled extra.
+
+        It used to live behind a ``[lookup]`` extra, on the belief that it pulls torch
+        transitively. getSequence 3.x requires only urllib3, requests and protfasta, so the extra
+        bought nothing and cost `dodo fetch "human p53"` a confusing failure. The message must
+        therefore not send the user off to install an extra that does not exist.
+        """
         transport({"search": json_route({"results": []})})
         with pytest.raises(MissingDependencyError) as excinfo:
             fetch.resolve_uniprot_accession("something obscure")
         message = str(excinfo.value)
-        assert "dodo[lookup]" in message
+        assert "lookup" not in message, message
+        assert "getSequence" in message
         assert "built-in UniProt search returned no match" in message
 
     def test_network_failure_is_not_blamed_on_a_missing_package(

@@ -17,19 +17,35 @@ before upgrading a script.
 The scientific behaviour changed too, in ways you can see in your output. The two that matter
 most: build modes now mean something different, and a multi-model run is now a real ensemble.
 
-### The install name changed
+### Installing is simpler: one package, one extra
 
 ```bash
-pip install "idptools-dodo[starling]"     # was: dodo[starling]
+pip install idptools-dodo                 # everything you need
+pip install "idptools-dodo[starling]"     # adds STARLING ensembles (~2.4 GB of weights)
 ```
 
 `import dodo` is unchanged and always will be. Only the distribution name moved, because PyPI's
 `dodo` belongs to an unrelated project from 2014.
 
-There is no longer an `[albatross]` extra. It pointed at a PyPI package called `sparrow` that is
-**not** the sparrow DODO needs — PyPI's `sparrow` is an RDF/SPARQL library, and installing that
-extra quietly put the wrong package on your import path. sparrow is not published on PyPI, and an
-extra is not allowed to reference a git URL, so it is now an explicit step:
+**metapredict is gone**, and with it the `[predictors]` extra and the `metapredict` region-
+identification strategy. Its only purpose in 1.x was faster region identification, and that reason
+no longer exists: the all-atom density metric it was a workaround for now runs in **7 ms** on a
+1,086-residue model, down from 10.1 s. metapredict requires torch, pytorch-lightning, cython and
+matplotlib, so dropping it is most of what makes the base install light.
+
+**`[lookup]` is gone** — getSequence is now installed by default, so `dodo fetch "human p53"` works
+out of the box. It is three small packages (urllib3, requests, protfasta) with no torch in the
+chain; putting it behind an extra bought nothing and cost a confusing failure for anyone who had
+not read the README.
+
+**`[viz]` is gone.** It installed matplotlib for a debug plotter that did not exist.
+
+**`[all]` is gone.** With one extra left there is nothing to union.
+
+There is no `[albatross]` extra either, and there never should be. It pointed at a PyPI package
+called `sparrow` that is **not** the sparrow DODO needs — PyPI's `sparrow` is an RDF/SPARQL library,
+and installing that extra quietly put the wrong package on your import path. sparrow is not
+published on PyPI and an extra may not reference a git URL, so it is an explicit step:
 
 ```bash
 pip install git+https://github.com/idptools/sparrow.git
@@ -37,7 +53,15 @@ pip install git+https://github.com/idptools/sparrow.git
 
 Install it. Without it DODO falls back to a sequence-blind approximation, and says so.
 
-The `[viz]` extra is also gone. It installed matplotlib for a plotter that did not exist.
+### Short regions that cannot be rebuilt no longer fail the run
+
+A region under **10 residues** that DODO cannot rebuild is now reported and left with its input
+coordinates, and the run still succeeds — `report.ok` stays `True` and the CLI exits `0`. A few
+residues of AlphaFold geometry do not look wrong in a figure; it is the long extended regions that
+do, and those still fail loudly.
+
+`report.blocking_failures` and `report.tolerated_failures` split the two, and `report.failures`
+remains everything that was not rebuilt.
 
 ### Build modes mean something different — check your figures
 
@@ -95,8 +119,8 @@ in a viewer shows only the disordered regions moving.
   `.ok`, `.models`, `.failures`, `.assignments` and `.outcomes`. In 1.x these functions returned
   `None` and printed, so a script could not tell whether a region had actually been rebuilt.
 - **Region identification strategies**, selectable with `-s`: `density` (DODO's original all-atom
-  metric, and the default), `contact` (a CA-only alternative), `plddt`, and `metapredict`.
-  `auto` picks between the first two based on whether your input has side chains, and tells you.
+  metric, and the default), `contact` (a CA-only alternative), and `plddt`. `auto` picks between
+  the first two based on whether your input has side chains, and tells you.
 - **Granular control from Python.** Assign regions however you like, then pass
   `strategy='preset'` and DODO builds exactly those:
 
@@ -188,12 +212,12 @@ Stated with measurements, over a 117-structure corpus stratified by region topol
 | `-o`, `--out_path` | `-o`, `--out` |
 | `-c`, `--no_CONECT_lines` | `--no-conect` (no short form) |
 | `-s`, `--silent` | `-q`, `--quiet` (`-s` now means `--strategy`) |
-| `-u`, `--use_metapredict` | `-s metapredict` |
+| `-u`, `--use_metapredict` | removed; `density` is the default and now takes 7 ms |
 | `-f`, `--no_FD_atoms` | `--ca-only` |
 | `-b`, `--beta_for_FD_IDR` | `-b`, `--annotate-regions` |
 | `num_models=N` | `n_models=N`, or `-n N` |
 | `mode='normal'` (0.8 Å/residue) | `mode='predicted'` — **different result**, see above |
-| `use_metapredict=True` | `strategy='metapredict'` |
+| `use_metapredict=True` | removed; see above |
 | `regions_dict={...}` | `assign_regions_from_spec(...)` + `strategy='preset'` |
 | `beta_for_FD_IDR=True` | `write_pdb(..., annotate_regions=True)` |
 | functions returned `None` and printed | functions return a `RebuildReport` |

@@ -241,6 +241,17 @@ MIN_FOLDED_SEED_RUN: Final[int] = 2
 #: there is no meaningful polymer statistics to impose on 3 residues.
 MIN_IDR_LENGTH: Final[int] = 4
 
+#: Region length, in residues, below which failing to rebuild is a warning rather than a failure.
+#:
+#: CHOICE, on Ryan's judgement, and it follows from what DODO is for. A short disordered stretch
+#: left as AlphaFold drew it does not look wrong in a figure -- it is the long regions, the ones
+#: that trail across the image as extended spaghetti, that DODO exists to fix. So a region under
+#: this length that cannot be rebuilt is reported and left alone, and the run still succeeds;
+#: a longer one is a genuine failure, because the picture will visibly show it.
+#:
+#: This governs :attr:`dodo.construct.RebuildReport.ok` and therefore the CLI's exit status.
+SHORT_REGION_TOLERANCE: Final[int] = 10
+
 #: pLDDT below which an AF2 residue is treated as disordered. CHOICE, following the
 #: widely used AF2 confidence bands (<50 very low, 50-70 low, 70-90 confident).
 #: pLDDT is already in the B-factor column and the pre-rewrite code never looked at

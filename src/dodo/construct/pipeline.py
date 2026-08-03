@@ -477,6 +477,28 @@ def _rebuild_one_model(
                 "The starling engine was requested but is not available. Install it with "
                 "pip install 'idptools-dodo[starling]', or pass engine='walk'."
             )
+        # Say this out loud, every time. It is the most important thing to understand about
+        # this engine and it is not guessable from the output: STARLING is a model of isolated
+        # IDRs. It is given a SEQUENCE and nothing else -- not the folded domains, not their
+        # positions, not the space they occupy. DODO then selects the conformer whose own
+        # end-to-end distance best fits the anchor separation and places it as a rigid body.
+        # So the conformer's internal statistics are STARLING's, and its relationship to the
+        # rest of the structure is DODO's, and STARLING never had the chance to account for
+        # the folded domains at all.
+        warnings.warn(
+            "The starling engine generates each disordered region from its SEQUENCE ALONE. "
+            "STARLING models isolated IDRs: it is never shown the folded domains, their "
+            "positions, or the space they occupy, so a conformer cannot avoid them and its "
+            "conformational statistics do not account for them. DODO picks the conformer that "
+            "best matches the distance the anchors demand and places it rigidly between them, "
+            "then reports any region it could not fit. That makes the region's internal "
+            "geometry STARLING's and its placement DODO's -- but nothing makes the ensemble "
+            "conditioned on the rest of the structure. Treat a STARLING region as a realistic "
+            "IDR conformation that has been positioned, not as one sampled in the presence of "
+            "the domains it sits between.",
+            UserWarning,
+            stacklevel=2,
+        )
     else:
         raise InvalidParameterError(f"Unknown engine {engine_name!r}. Use 'walk' or 'starling'.")
 
@@ -570,6 +592,7 @@ def rebuild(
     n_models: int = 1,
     strategy: Strategy | str = Strategy.AUTO,
     engine: str = "walk",
+    backbone: bool = False,
     min_length: int = MIN_IDR_LENGTH,
     seed: int | None = None,
 ) -> RebuildReport:
@@ -592,6 +615,20 @@ def rebuild(
     engine
         ``"walk"`` (always available) or ``"starling"``, which needs
         ``pip install 'idptools-dodo[starling]'``.
+    backbone
+        Place N, C and O on the rebuilt regions, from four consecutive alpha carbons, then refine.
+        **Opt-in and off by default.** Folded domains are untouched either way: they keep every
+        atom they arrived with, and only regions DODO generated gain a backbone.
+
+        Held out against all-atom simulation: N 0.16 A, C 0.22 A, O 0.63 A, with every bond
+        length exact by construction.
+
+        What keeps it opt-in is the seams. Where a rebuilt region meets a folded domain, an exact
+        peptide bond is not merely hard but geometrically impossible: a peptide unit reaches
+        2.854 A from an alpha carbon to the nitrogen it bonds to, and a rebuilt alpha carbon sits
+        3.2-4.5 A from that fixed nitrogen. DODO aims the carbon at it, leaving the bond long --
+        about 2.2 A against an ideal 1.329 -- rather than writing two atoms on top of each other,
+        and reports every seam it does this at.
     min_length
         Shortest region worth rebuilding. Shorter ones keep their input coordinates.
     seed
@@ -711,8 +748,15 @@ def rebuild(
                 model_targets=model_targets,
             )
         report.outcomes.extend(outcomes)
-        # Rebuilt regions are CA-only, so drop the atoms that did not move with them.
-        report.models.append(_drop_non_ca_from_rebuilt(working))
+        # Rebuilt regions are CA-only, so drop the atoms that did not move with them. This has to
+        # happen BEFORE any backbone placement: it deletes every non-CA atom in a generated region,
+        # which would otherwise take the N, C and O placed just below straight back out again.
+        final = _drop_non_ca_from_rebuilt(working)
+        if backbone:
+            from .ca_backbone import add_backbone_to_rebuilt
+
+            final = add_backbone_to_rebuilt(final)
+        report.models.append(final)
 
     return report
 
@@ -730,6 +774,7 @@ def build_from_sequence(
     mode: str = DEFAULT_MODE,
     n_models: int = 1,
     engine: str = "walk",
+    backbone: bool = False,
     seed: int | None = None,
 ) -> RebuildReport:
     """Build coordinates for a disordered sequence with no input structure.
@@ -741,8 +786,10 @@ def build_from_sequence(
     ----------
     sequence
         One-letter amino acid sequence.
-    mode, n_models, engine, seed
-        As for :func:`rebuild`.
+    mode, n_models, engine, backbone, seed
+        As for :func:`rebuild`. Note that ``backbone`` is cleaner here than on
+        :func:`rebuild`: with no input structure there are no folded domains and so no seams,
+        which is where the strained bonds in a rebuild come from.
 
     Returns
     -------
@@ -806,6 +853,10 @@ def build_from_sequence(
             structure.chains[0].domains = [
                 Domain(structure=structure, span=Span(0, n), kind=DomainKind.IDR, rebuilt=True)
             ]
+            if backbone:
+                from .ca_backbone import add_backbone_to_rebuilt
+
+                structure = add_backbone_to_rebuilt(structure)
             report.models.append(structure)
 
         report.outcomes.append(

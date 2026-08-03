@@ -10,6 +10,7 @@ repeated.
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +21,7 @@ from dodo.construct.pipeline import build_from_sequence, rebuild
 from dodo.geometry.metrics import end_to_end, validate_ca_trace
 from dodo.io import read_structure
 from dodo.structure import DomainKind
+from dodo.validate import find_impossible_pairs, validate_bonds
 
 FIXTURES = Path(__file__).resolve().parents[1] / "data" / "structures"
 DNMT3A = FIXTURES / "dnmt3a.pdb"
@@ -701,3 +703,123 @@ class TestMetapredictIsGone:
             if "metapredict" in path.read_text()
         ]
         assert not offenders, f"metapredict still referenced in {offenders}"
+
+
+class TestBackboneFlag:
+    """The opt-in ``backbone=`` flag on the two entry points.
+
+    Opt-in rather than default because of the seams: where a rebuilt region joins a residue DODO did
+    not touch, that residue's existing N or C still points toward where the region ran in the
+    *original* model, and folded-domain atoms are not DODO's to move. See
+    :meth:`test_folded_domains_keep_every_atom`.
+    """
+
+    def test_off_by_default(self) -> None:
+        report = build_from_sequence("GRNQNGGGYQNYNNQGYQGHGG", seed=0)
+        assert {str(n) for n in report.models[0].atom_name} == {"CA"}
+
+    def test_on_when_asked(self) -> None:
+        report = build_from_sequence("GRNQNGGGYQNYNNQGYQGHGG", seed=0, backbone=True)
+        assert {str(n) for n in report.models[0].atom_name} == {"N", "CA", "C", "O"}
+
+    def test_alpha_carbons_are_identical_either_way(self) -> None:
+        """The flag adds atoms; it must not change DODO's actual answer.
+
+        Same seed, so the alpha carbons are the same coordinates to the bit. If this drifts, the
+        backbone pass is perturbing the trace rather than decorating it.
+        """
+        plain = build_from_sequence("GRNQNGGGYQNYNNQGYQGHGG", seed=0).models[0]
+        with_backbone = build_from_sequence("GRNQNGGGYQNYNNQGYQGHGG", seed=0, backbone=True).models[
+            0
+        ]
+        assert np.array_equal(plain.ca_xyz, with_backbone.ca_xyz)
+
+    def test_folded_domains_keep_every_atom(self) -> None:
+        """The constraint that makes this additive: folded domains are untouched.
+
+        DODO never regenerates folded-domain geometry, so a folded domain must come through with
+        its side chains intact whether or not the rebuilt regions gained a backbone.
+        """
+        source = FIXTURES / "dnmt3a.pdb"
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            report = rebuild(source, seed=0, backbone=True)
+        model = report.models[0]
+        names = {str(n) for n in model.atom_name}
+        # Side-chain atoms only a real folded domain has; a CA-plus-backbone output has four names.
+        assert len(names) > 10, f"folded domains lost their side chains; only {names}"
+        assert {"CB", "CG", "N", "C", "O", "CA"} <= names
+
+    def test_every_rebuilt_residue_gets_exactly_a_backbone(self) -> None:
+        """Generated residues end up with N, CA, C, O and nothing else."""
+        source = FIXTURES / "dnmt3a.pdb"
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            fancy = rebuild(source, seed=0, backbone=True).models[0]
+        generated = {
+            residue
+            for domain in fancy.domains
+            for span in domain.generated_spans()
+            for residue in range(span.start, span.stop)
+        }
+        assert generated, "nothing was rebuilt, so this proves nothing"
+        for residue in sorted(generated):
+            atoms = fancy.atom_slice_for_residues(residue, residue + 1)
+            names = {str(n) for n in fancy.atom_name[atoms]}
+            assert names == {"N", "CA", "C", "O"}, f"residue {residue} has {sorted(names)}"
+
+    def test_every_generated_bond_violation_is_at_a_seam(self) -> None:
+        """The seams are strained, and nothing else is. That is the measured limit of this flag.
+
+        An exact peptide bond onto a folded domain is not reachable from a rebuilt alpha carbon: a
+        peptide unit spans at most 2.854 A to the nitrogen it bonds to, and the measured distance
+        across 17 seams in three structures was 3.2-4.5 A. So the requirement is not that these
+        bonds be ideal -- they cannot be -- but that every violation sit AT a seam, so the interior
+        of a rebuilt region is known to be clean.
+
+        Leaving the seam residue un-rebuilt does not fix it, which is worth recording because it is
+        the obvious idea and it very nearly works. Its alpha carbon being input geometry does make
+        the bond reachable -- 2.45-2.52 A at all 17 seams. But closing onto it means re-placing its
+        nitrogen, and that residue's side chain was built around where its nitrogen used to be, so
+        the new one is driven into its own CB (measured 1.405 A against a correct 2.45) and, for
+        proline, snaps the ring bond to CD (3.444 A against 1.47).
+        """
+        source = FIXTURES / "dnmt3a.pdb"
+        for seed in (0, 1, 2):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                fancy = rebuild(source, seed=seed, backbone=True).models[0]
+            seams = {
+                residue
+                for domain in fancy.domains
+                for span in domain.generated_spans()
+                for residue in (span.start, span.start - 1, span.stop - 1, span.stop)
+            }
+            for violation in validate_bonds(fancy).violations:
+                if violation.provenance != "rebuilt":
+                    continue
+                assert set(violation.residue_indices) & seams, (
+                    f"seed {seed}: a violation away from any seam -- {violation.message}"
+                )
+
+    def test_introduces_no_impossible_contacts(self) -> None:
+        """Whatever the seams do, they must not put two atoms on top of each other.
+
+        The seam fallback exists for this: when no carbon can satisfy both the CA-C bond and the
+        peptide bond to an untouched neighbour, it aims at the neighbour and leaves the seam bond
+        long rather than writing an impossible pair. A strained bond is a visible, reportable
+        compromise; a 0.6 A contact is a broken file.
+        """
+        source = FIXTURES / "dnmt3a.pdb"
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            fancy = rebuild(source, seed=0, backbone=True).models[0]
+        inherited = {
+            (p.residue_labels, p.atom_names) for p in find_impossible_pairs(read_structure(source))
+        }
+        introduced = [
+            p
+            for p in find_impossible_pairs(fancy)
+            if (p.residue_labels, p.atom_names) not in inherited
+        ]
+        assert introduced == [], f"backbone placement introduced {introduced}"

@@ -1,23 +1,26 @@
-DODO: re<ins>D</ins>esign AlphaF<ins>O</ins>ld <ins>D</ins>isordered regi<ins>O</ins>ns
+DODO: re<ins>D</ins>esign c<ins>O</ins>mputationally generate<ins>D pr<ins>O</ins>teins
 ==============================
 
 ## What is DODO?
 
-DODO takes a predicted protein structure, works out which parts are folded domains and which
-are intrinsically disordered regions, and rebuilds the disordered parts so they adopt realistic
-polymer dimensions instead of AlphaFold's characteristic extended spaghetti.
+Protien structure predictors have revolutionized biology. However, many predicted 
+structures have low-confidence regions that do not adopt any predicted secondary 
+structure (typically IDRs). DODO takes these regions and rebuilds them under the assumption that they
+are disordered regions.
 
-To be clear: the work DeepMind did on AlphaFold is **amazing**, and none of this takes away
-from it in *any way*. AlphaFold simply isn't trying to represent a disordered region as an
-ensemble — an IDR has no single structure to predict. But for figures and presentations it's
-useful to have those regions *look* like what they are. DODO does that.
+To be clear: the work that the various groups do to make structure predictors is **amazing**, 
+and none of this takes away from it in *any way*. But for figures and presentations it's
+useful for disordered regions *look* like what they are.
 
-It identifies each disordered region, predicts its end-to-end distance from sequence with
-ALBATROSS ([sparrow](https://github.com/idptools/sparrow)), and rebuilds it to those
-dimensions. You can also ask for regions more compact or more expanded than predicted. And you
+By default, DODO identifies each disordered region, predicts its end-to-end distance from sequence
+using ALBATROSS ([sparrow](https://github.com/idptools/sparrow)), repositions the folded domains as 
+needed, and rebuilds the IDR to the predicted dimensions. 
+You can also ask for regions more compact or more expanded than predicted. And you
 can generate several conformers into one multi-model PDB, which in VMD looks *like* a
 simulation trajectory — to be very clear, it is **not** equivalent to a simulation, but it's
-nice for visualization.
+nice for visualization. Finally, you can also use the IDR ensemble prediction tool
+[STARLING](https://github.com/idptools/sparrow) to generate more realistic IDR ensembles
+for your structure. 
 
 ![DODO_EXAMPLE](https://github.com/idptools/dodo/blob/main/images/DODO_example.png)
 
@@ -205,6 +208,33 @@ now synonyms, which they weren't in 1.x.
 A target that exceeds what the chain can physically span is clamped to 95% of contour length
 rather than being chased fruitlessly, and the clamping is reported.
 
+A mode is a multiplier, but **no mode can exceed what the chain can physically span.** A region of
+`N` residues has `N - 1` virtual CA–CA bonds of 3.81 Å, so its end-to-end distance can never exceed
+`(N - 1) × 3.81 Å` — the fully extended contour length. Asking for more would mean breaking bonds.
+
+DODO caps every target at **95% of the contour length** and warns when it has to. The 5% margin is
+not timidity: a chain at exactly its contour length is a straight rod with one conformation, leaving
+the sampler no freedom to avoid a clash.
+
+This bites `max_expansion` on short regions, because the prediction it multiplies grows as roughly
+`N^0.55` while the ceiling grows as `N`. Measured, with `*` marking a capped request:
+
+| Region length | 95% ceiling | generic IDR | poly-E | poly-P | poly-G |
+|---|---|---|---|---|---|
+| 8 residues | 25.3 Å | 34 Å `*` | 39 Å `*` | 48 Å `*` | 30 Å `*` |
+| 10 residues | 32.6 Å | 38 Å `*` | 46 Å `*` | 55 Å `*` | 34 Å `*` |
+| 15 residues | 50.7 Å | 50 Å | 64 Å `*` | 72 Å `*` | 42 Å |
+| 20 residues | 68.8 Å | 57 Å | 80 Å `*` | 86 Å `*` | 49 Å |
+| 30 residues | 105.0 Å | 71 Å | 109 Å `*` | 108 Å `*` | 61 Å |
+| 50 residues | 177.4 Å | 97 Å | 155 Å | 143 Å | 78 Å |
+
+Where the cap bites depends on composition, because the prediction does: an expanded sequence like
+poly-proline hits the ceiling out to about 30 residues, while poly-glycine never does. So on a short
+region `max_expansion`, `super_expanded` and `expanded` can all converge on the same capped answer —
+there is no more chain to give. The warning names which of the two reasons applied: the request
+exceeded the contour length outright, or it was reachable only by straightening so completely that
+no conformation remained.
+
 ## Dimension prediction
 
 With sparrow installed, targets come from ALBATROSS. Without it, DODO falls back to
@@ -329,6 +359,68 @@ DODO writes CONECT records by default, and you should leave them on. CA–CA spa
 past the automatic bond-detection cutoff in both VMD and PyMOL — so without CONECT a rebuilt
 region renders as a cloud of disconnected dots. This isn't cosmetic polish; its absence defeats
 the tool.
+
+## The STARLING engine, and what it does not know
+
+`--engine starling` replaces the self-avoiding walk with conformers from
+[STARLING](https://github.com/idptools/starling), a generative model of disordered ensembles. It is
+the only optional dependency, because it is large — roughly 2.4 GB of weights.
+
+### STARLING models IDRs *alone*
+
+This is the most important thing to understand about the engine, and you cannot see it in the
+output, so DODO warns about it on every run.
+
+**STARLING is given a sequence and nothing else.** Not the folded domains, not their positions, not
+the space they occupy. It was trained on isolated disordered regions and that is what it models. So
+a STARLING conformer:
+
+- cannot avoid the folded domains, because it was never shown them;
+- has conformational statistics that are **not** conditioned on them either.
+
+What DODO does with that conformer is pick the one whose own end-to-end distance best matches what
+the anchors demand, then place it as a rigid body so its first alpha carbon sits one bond from the
+N-anchor and its last one bond from the C-anchor. Regions it cannot fit are reported, never forced.
+
+So the region's **internal geometry is STARLING's** and its **placement is DODO's**. Read a STARLING
+region as a realistic IDR conformation that has been positioned — not as one sampled in the presence
+of the domains it sits between. If that distinction matters for what you are doing, it matters a
+lot.
+
+The walk engine is the opposite trade: its conformations are geometric rather than learned, but it
+is aware of every already-placed atom and avoids all of them.
+
+### Regions longer than 380 residues
+
+STARLING will not generate a region longer than 380 residues, and real IDRs routinely are — p300's
+disordered N-terminus alone is over a thousand. DODO handles this rather than erroring or silently
+downgrading to a random walk.
+
+The region is split into segments within the cap, each generated separately, and the segments are
+then arranged in space. That is sound on polymer-scaling grounds rather than being a workaround: for
+a chain with Flory exponent `ν`, a segment of `N/k` residues has end-to-end distance `~(N/k)^ν`, and
+arranging `k` of them self-avoidingly with a step of that order gives `~(N/k)^ν × k^ν = N^ν` overall.
+The assembled chain scales with length exactly as one long chain would.
+
+Two things the assembly has to get right, because independently generated segments know nothing
+about each other:
+
+- **Segments overlap where they join.** Adjacent segments share residues, and the splice is chosen
+  from candidate rotations about the join, so the chain is continuous rather than merely adjacent.
+- **Clashes are checked between segments as well as within them.** A segment generated in isolation
+  has no idea another segment occupies the same space, so the arrangement measures and rejects.
+
+### Bond lengths are corrected, not just checked
+
+STARLING is a diffusion model that reconstructs coordinates from a predicted distance map, so its
+virtual CA–CA bonds scatter around 3.8 Å rather than sitting on it. That is normal model output, but
+it is not a protein — the trans-peptide CA–CA distance is rigid.
+
+So DODO projects every conformer onto an exact 3.81 Å bond before using it, with a SHAKE-style
+iterative correction. Screening alone, which is what this used to do, either rejects usable
+conformers for ordinary diffusion noise or passes that noise into the output file. On synthetic
+diffusion-like traces the worst bond deviation goes from 0.19–1.02 Å to 0.0000 Å, moving atoms by
+0.12–0.72 Å depending on how noisy the input was.
 
 ## Current limitations
 

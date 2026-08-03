@@ -84,6 +84,15 @@ def _add_common_build_arguments(parser: argparse.ArgumentParser) -> None:
     # pdb-from-name. Both behaviours already existed in v2's writer but had no command line, which
     # would have forced anyone with a shell script using them to rewrite it in Python.
     parser.add_argument(
+        "--backbone",
+        action="store_true",
+        help=(
+            "also place N, C and O on the rebuilt regions, inferred from four consecutive alpha "
+            "carbons. Opt-in for now: the geometry inside a rebuilt region is exact, but the "
+            "peptide bond where a region meets a folded domain is unsatisfiable and is left long"
+        ),
+    )
+    parser.add_argument(
         "--ca-only",
         action="store_true",
         help=(
@@ -292,6 +301,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "mode": args.mode,
             "n_models": args.models,
             "engine": args.engine,
+            "backbone": args.backbone,
             "seed": args.seed,
         }
 

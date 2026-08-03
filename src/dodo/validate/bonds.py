@@ -50,9 +50,9 @@ The distinction that matters is between a defect DODO *introduced* and one it fa
   anything. Those pairs are counted and noted, never flagged.
 * **modified residues** (MSE, SEP, ...). DODO keeps them on purpose. They are absent from the
   reference table, so they are noted with their names and counts rather than flagged.
-* **partially built residues.** A residue with a backbone and no side chain is what DODO's
-  ``all_atom`` path produces, and also how deposited structures model side-chain disorder. See
-  :data:`_TIER_BACKBONE`.
+* **partially built residues.** A residue with a backbone and no side chain is what
+  ``rebuild(backbone=True)`` produces, and also how deposited structures model side-chain
+  disorder. See :data:`_TIER_BACKBONE`.
 
 Reporting, not raising
 ----------------------
@@ -516,10 +516,10 @@ class BondReport:
 # partial build. A residue is assigned the lowest tier that contains every atom it actually has,
 # and an atom is reported missing only if its own tier is at or below the residue's.
 #
-# This exists because "rebuilt regions are CA-only" is the *current* state, not the final one:
-# placing real backbone atoms in rebuilt regions is the next priority, and DODO already has an
-# ``all_atom`` flag and a separate ``sidechains`` flag. A residue with N/CA/C/O and no side
-# chain, or one with a CB and nothing beyond it, is therefore a deliberate output state.
+# This exists because "rebuilt regions are CA-only" is only the DEFAULT state, not the only one:
+# ``rebuild(backbone=True)`` places real N, C and O in rebuilt regions, and side-chain placement is
+# the next priority after that. A residue with N/CA/C/O and no side chain, or one with a CB and
+# nothing beyond it, is therefore a deliberate output state.
 # Measured: without this rule a backbone-only version of a rebuilt dnmt3a produces 2,323
 # missing-atom findings, every one of them noise. Truncated-at-CB side chains in deposited
 # structures -- the usual way side-chain disorder is modelled -- are exempted for the same reason

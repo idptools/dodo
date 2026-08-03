@@ -96,8 +96,15 @@ dodo regions AF-P04637-F1-model_v6.pdb
 | `-e`, `--engine` | `walk` | `walk` or `starling` |
 | `-s`, `--strategy` | `auto` | How to identify regions: `auto`, `density`, `contact`, `plddt` |
 | `--seed` | none | Makes output reproducible |
+| `--backbone` | off | Also place N, C and O on the rebuilt regions, inferred from the alpha carbons |
+| `--ca-only` | off | Alpha carbons only, folded domains included |
+| `-b`, `--annotate-regions` | off | Encode region type in the B-factor column, for colouring |
 | `--no-conect` | off | Omit CONECT records — **not recommended**, see [below](#why-conect-records-matter) |
-| `-q`, `--quiet` | off | Suppress the per-region report |
+| `-q`, `--quiet` | off | Suppress the per-region report and the progress bar |
+
+`dodo fetch` additionally takes `--no-cache`. Downloads are cached per-user by default because the
+files are small (measured over 259 cached models: mean 0.25 MB, largest 1.51 MB), and the path is
+printed on every fetch; `--no-cache` downloads to a temporary file and discards it.
 
 Exit status is `0` on success, `2` if a region of 10 residues or more could not be rebuilt, `1` on
 error. A shorter region that could not be rebuilt is reported and left as it arrived, and does not
@@ -512,17 +519,36 @@ actually rebuilds are reduced to one alpha carbon per residue.
 On dnmt3a, for example: 4,636 atoms across the 578 residues DODO leaves alone, preserved
 bit-for-bit, and 334 alpha carbons for the 334 residues it rebuilds.
 
-Building backbone (N, C, O) or side-chain atoms **for rebuilt regions** is not part of 2.0. The
-machinery exists behind the `all_atom=` and `sidechains=` keyword arguments of `dodo.rebuild`, but
-it is not exposed on the command line, because it currently refuses a fraction of generated traces
-and that fraction grows with chain length: roughly 12/12 accepted at 20 residues, 6/12 at 100,
-2/12 at 200.
+### Backbone reconstruction (`--backbone`)
 
-The cause is understood and measured. Reconstructability constrains the **change** in CA–CA–CA
-pseudo-angle between consecutive residues, not its magnitude: the allowed change is about 35°
-at a base angle of 95° and collapses to 4° at 150°. The generator doesn't yet enforce that joint
-constraint, so a long chain almost always contains one unreconstructable junction. The fix is a
-constraint on consecutive angles during candidate selection, and it is the next feature after 2.0.
+Rebuilt regions are alpha-carbon only by default. `--backbone` additionally places **N, C and O**
+on them, inferred from the alpha carbons alone — four consecutive alpha carbons largely determine
+where the peptide unit between the middle two sits, and DODO looks that up in a table measured from
+100 frames of all-atom IDR simulation, then settles each unit's one remaining degree of freedom
+against bond angles, clashes and φ/ψ together.
+
+Held out properly — table rebuilt from 80 frames, scored on the 20 it had never seen, 3,643
+residues:
+
+| Atom | Mean error | Median |
+|---|---|---|
+| N | 0.16 Å | 0.12 Å |
+| C | 0.22 Å | 0.14 Å |
+| O | 0.63 Å | 0.40 Å |
+
+Every bond length inside a rebuilt region is exact by construction. Side chains are still not built.
+
+It is opt-in because of the **seams**. Where a rebuilt region meets a folded domain, that domain's
+nitrogen still points toward where the region ran in AlphaFold's model, and folded-domain atoms are
+not DODO's to move. A peptide unit reaches at most 2.854 Å from an alpha carbon to the nitrogen it
+bonds to; a rebuilt alpha carbon measures 3.2–4.5 Å from it across 17 seams in three structures. The
+bond is unsatisfiable, so DODO leaves it long — about 2.2 Å against an ideal 1.33 — and reports it.
+Nothing impossible is written: measured over three structures at three seeds, `--backbone`
+introduces zero atom pairs closer than the 1.00 Å floor below which no real bond exists.
+
+Building from sequence has no seams and comes out completely clean. See the
+[user guide](https://dodo.readthedocs.io) for the full accounting, including why leaving the seam
+residue un-rebuilt does not fix it.
 
 ## Development
 

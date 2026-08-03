@@ -92,6 +92,9 @@ dependencies = [
     # Resolves a protein name to a UniProt accession, for `dodo fetch "human p53"`. Small:
     # urllib3, requests and protfasta, and no torch anywhere in the chain.
     "getSequence>=3.0",
+    # Progress reporting. Pure Python, no dependencies of its own, ~60 kB -- cheap enough to be
+    # unconditional, and a long rebuild without a progress bar reads as a hang.
+    "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]
@@ -137,6 +140,7 @@ test = [
     # rather than raising FileNotFoundError. It passes locally only because a developer machine
     # happens to have build installed.
     "build>=1.2",
+    "types-tqdm",
 ]
 
 dev = [
@@ -291,7 +295,6 @@ strict = true
 module = [
     "scipy.*",
     "sparrow.*",
-    "metapredict.*",
     "starling.*",
     "getSequence.*",
 ]

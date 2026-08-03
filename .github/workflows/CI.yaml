@@ -170,7 +170,7 @@ jobs:
       - name: Install the package, then force the declared minimums
         run: |
           python -m pip install -e ".[test]"
-          python -m pip install "numpy==2.0.*" "scipy==1.13.*" "getSequence==3.0.*"
+          python -m pip install "numpy==2.0.*" "scipy==1.13.*" "getSequence==3.0.*" "tqdm==4.66.*"
 
       - name: Show what actually resolved
         # Printed, because a floor job that silently resolved something newer would pass while
@@ -242,6 +242,8 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install -e ".[test,lookup]"
+        # No `lookup` extra any more: getSequence is a base dependency, so `[test]` covers it.
+        # pip only WARNS about an unknown extra, so this went stale silently.
+      - run: python -m pip install -e ".[test]"
       - name: Run network tests
         run: python -m pytest -m network -v

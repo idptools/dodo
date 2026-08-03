@@ -133,11 +133,50 @@ __all__ = [
     "max_reach",
     "min_reach",
     "reachability_tail",
+    "reachable_envelope",
     "sample_end_to_end_targets",
 ]
 
 #: Identifier recorded in :attr:`dodo.engines.base.IDRResult.engine`.
 ENGINE_NAME: Final[str] = "self_avoiding_walk"
+
+
+#: Query points below which a KD-tree lookup runs single-threaded.
+#:
+#: MEASURED against an 18,457-atom obstacle tree, milliseconds per query, serial vs 18 threads::
+#:
+#:     points     serial   parallel
+#:        256      0.098      0.658
+#:        710      0.369      0.551
+#:       2000      0.822      0.570
+#:      10000      4.226      1.015
+#:     200000     89.344      7.695
+#:
+#: Thread setup costs a roughly fixed ~0.3 ms, so parallelism pays only above about 1-2k points.
+#: Every query the walk engine actually makes is 710 points -- median, 90th percentile and max --
+#: so in practice this constant sends all of them down the serial path.
+_PARALLEL_QUERY_MINIMUM: Final[int] = 2000
+
+#: Clearance around a candidate cloud's centre below which the cloud cannot clash, in A.
+#:
+#: DERIVED, and exact. Every candidate for one residue sits at *precisely*
+#: :data:`~dodo.constants.CA_CA_BOND_LENGTH` from a single point -- the cone apex in
+#: :func:`~dodo.geometry.sampling.cone_candidates`, the sphere centre in the unconstrained
+#: junction case, the attachment point in :meth:`SelfAvoidingWalk._close`. So by the triangle
+#: inequality, if that centre is at least ``CA_CA_BOND_LENGTH + CA_CLASH_DISTANCE`` from every
+#: obstacle then every candidate is at least ``CA_CLASH_DISTANCE`` from every obstacle, and the
+#: whole 355-or-710-point clash query is a foregone conclusion. One 1-point query settles it.
+#:
+#: MEASURED share of obstacle query points this skips, seed 0, over a full rebuild::
+#:
+#:     structure   query points   skipped
+#:     dnmt3a         165,785       67.2%
+#:     arf19          455,820       96.5%
+#:     p300         1,885,760       94.4%
+#:
+#: A long region spends most of its length in open solvent, which is exactly where the test
+#: fires, so the saving concentrates on the regions that cost the most.
+_CANDIDATE_CLEAR_DISTANCE: Final[float] = CA_CA_BOND_LENGTH + CA_CLASH_DISTANCE
 
 
 class UnconstrainedJunctionWarning(UserWarning):
@@ -411,6 +450,54 @@ def reachability_tail(n_bonds: int, bond_length: float = CA_CA_BOND_LENGTH) -> n
     that a caller -- or a test comparing against the old literals -- can see the schedule.
     """
     return np.array([max_reach(k, bond_length) for k in range(n_bonds, 0, -1)], dtype=np.float64)
+
+
+def reachable_envelope(
+    n_residues: int,
+    n_anchor_xyz: np.ndarray | None,
+    c_anchor_xyz: np.ndarray | None,
+) -> float | None:
+    """Bound on how far a region's alpha carbons can stray from its anchors.
+
+    Parameters
+    ----------
+    n_residues
+        Residues in the region.
+    n_anchor_xyz
+        CA of the residue the region attaches to at its N-terminal end, or ``None``.
+    c_anchor_xyz
+        CA of the residue the region attaches to at its C-terminal end, or ``None``.
+
+    Returns
+    -------
+    float or None
+        With both anchors, the bound ``L`` on ``|x - N| + |x - C|`` -- the prolate spheroid
+        with the anchors as foci that contains every position the region can occupy. With one
+        anchor, the bound on ``|x - anchor|``, a sphere. ``None`` when there is no anchor at
+        all, where the region is built in its own frame and nothing constrains it.
+
+    Notes
+    -----
+    DERIVED from :func:`max_reach` alone, so it is as conservative as that bound is. Residue
+    ``i`` (0-based, growth order) is ``i + 1`` bonds from the start anchor and, in closure mode,
+    ``n_residues - i`` bonds from the far anchor. So
+    ``|x - N| <= max_reach(i + 1)`` and ``|x - C| <= max_reach(n_residues - i)``, and the sum is
+    bounded by the largest such sum over ``i``. Taking the maximum rather than evaluating at one
+    ``i`` matters because :func:`max_reach` is not quite linear: it carries a transverse
+    ``b * cos(angle / 2)`` term for odd bond counts.
+
+    Being an *ellipsoid* rather than two spheres is what makes the two-anchor case worth having:
+    the intersection of the two spheres is larger than the set actually reachable, because a
+    residue cannot be far from both anchors at once when the bonds have to be shared between the
+    two halves of the walk.
+    """
+    if n_residues < 1:
+        raise ValueError(f"n_residues must be at least 1, got {n_residues}.")
+    if n_anchor_xyz is not None and c_anchor_xyz is not None:
+        return max(max_reach(i + 1) + max_reach(n_residues - i) for i in range(n_residues))
+    if n_anchor_xyz is None and c_anchor_xyz is None:
+        return None
+    return max_reach(n_residues)
 
 
 # ---------------------------------------------------------------------------
@@ -1002,7 +1089,7 @@ class SelfAvoidingWalk:
                 f"seedable so that any structure can be reproduced exactly."
             )
         plan = _WalkPlan.build(request, self.tolerance_fraction, rng)
-        tree = self._obstacle_tree(obstacles)
+        tree = self._obstacle_tree(self._prune_unreachable(request, obstacles))
         self._check_start_is_free(plan, tree)
         loose_junctions = request.unconstrained_junctions
         if loose_junctions:
@@ -1125,7 +1212,7 @@ class SelfAvoidingWalk:
             live = np.flatnonzero(alive)
             if live.size == 0:
                 break
-            candidates, weights = self._candidates_for(plan, coords, live, index, rng)
+            candidates, weights, centres = self._candidates_for(plan, coords, live, index, rng)
             chosen, ok, rung = self._select(
                 candidates,
                 weights=weights,
@@ -1136,6 +1223,7 @@ class SelfAvoidingWalk:
                 ),
                 chain_points=self._chain_points(plan, coords, live, index),
                 obstacle_tree=obstacle_tree,
+                candidate_centres=centres,
                 rng=rng,
             )
             coords[live[ok], index] = chosen[ok]
@@ -1182,8 +1270,8 @@ class SelfAvoidingWalk:
         live: np.ndarray,
         index: int,
         rng: np.random.Generator,
-    ) -> tuple[np.ndarray, np.ndarray | None]:
-        """Return candidate positions for one residue, and their angle weights.
+    ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray]:
+        """Return candidate positions for one residue, their angle weights, and their centre.
 
         Parameters
         ----------
@@ -1201,8 +1289,19 @@ class SelfAvoidingWalk:
         Returns
         -------
         tuple
-            ``(candidates, weights)`` with candidates ``(n_live, n_candidates, 3)`` and
-            weights ``(n_candidates,)`` or ``None`` for an unweighted step.
+            ``(candidates, weights, centres)`` with candidates ``(n_live, n_candidates, 3)``,
+            weights ``(n_candidates,)`` or ``None`` for an unweighted step, and ``(n_live, 3)``
+            centres.
+
+        Notes
+        -----
+        ``centres`` is the point every candidate in a row sits *exactly* one
+        :data:`~dodo.constants.CA_CA_BOND_LENGTH` from -- the sphere centre in the
+        unconstrained-junction case below, the cone apex otherwise. It is returned rather than
+        recomputed by the caller because which point that is depends on the same three-way branch
+        as the candidates themselves, and a copy of that branch elsewhere would be free to drift
+        out of step with this one. Getting it wrong would silently disarm the clash query cull in
+        :meth:`_nearest_obstacle_distance`.
         """
         n_live = int(live.size)
         count = _candidates_per_step()
@@ -1223,7 +1322,7 @@ class SelfAvoidingWalk:
             )
             directions = random_unit_vectors(n_live * count, rng).reshape(n_live, count, 3)
             candidates: np.ndarray = centre[:, None, :] + CA_CA_BOND_LENGTH * directions
-            return candidates, None
+            return candidates, None, np.asarray(centre, dtype=np.float64)
 
         grid = backbone_angle_grid()
         per_angle = _per_angle()
@@ -1247,7 +1346,9 @@ class SelfAvoidingWalk:
             candidates[row] = cone_candidates(
                 before[row], previous[row], angles=grid, per_angle=per_angle
             )
-        return candidates, _angle_weights(grid, per_angle)
+        # The cone apex: cone_candidates puts every row of its output exactly one bond length
+        # from `previous`, which is what licenses the cull in _nearest_obstacle_distance.
+        return candidates, _angle_weights(grid, per_angle), np.asarray(previous, dtype=np.float64)
 
     def _close(
         self,
@@ -1383,6 +1484,10 @@ class SelfAvoidingWalk:
             goal=None,
             chain_points=self._chain_points(plan, coords, live, index),
             obstacle_tree=obstacle_tree,
+            # The closure circle is the intersection of the two bond-length spheres around
+            # `attach` and `end`, so every point on it is exactly one bond length from `attach`
+            # -- the same guarantee the cone gives, so the same cull applies.
+            candidate_centres=attach,
             rng=rng,
         )
         coords[live[ok], index] = chosen[ok]
@@ -1412,6 +1517,7 @@ class SelfAvoidingWalk:
         goal: _Goal | None,
         chain_points: np.ndarray,
         obstacle_tree: cKDTree | None,
+        candidate_centres: np.ndarray | None,
         rng: np.random.Generator,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Choose one candidate per conformer, or report that none is acceptable.
@@ -1434,6 +1540,10 @@ class SelfAvoidingWalk:
             clash with. May be empty along axis 1.
         obstacle_tree
             Spatial index over external obstacles, or ``None``.
+        candidate_centres
+            ``(n_live, 3)`` point each row's candidates all sit one bond length from, or
+            ``None``. Passed straight to :meth:`_nearest_obstacle_distance`, which uses it to
+            skip rows that provably cannot clash.
         rng
             Seeded generator.
 
@@ -1505,7 +1615,7 @@ class SelfAvoidingWalk:
         if obstacle_tree is None:
             chosen_mask = acceptable
         else:
-            nearest = self._nearest_obstacle_distance(candidates, obstacle_tree)
+            nearest = self._nearest_obstacle_distance(candidates, obstacle_tree, candidate_centres)
             chosen_mask = acceptable & (nearest >= CA_CLASH_DISTANCE)
         resolved = np.any(chosen_mask, axis=1)
 
@@ -1542,7 +1652,11 @@ class SelfAvoidingWalk:
         return chosen, ok, rung_used
 
     @staticmethod
-    def _nearest_obstacle_distance(candidates: np.ndarray, obstacle_tree: cKDTree) -> np.ndarray:
+    def _nearest_obstacle_distance(
+        candidates: np.ndarray,
+        obstacle_tree: cKDTree,
+        centres: np.ndarray | None = None,
+    ) -> np.ndarray:
         """Distance from every candidate to the nearest *external* obstacle atom.
 
         Parameters
@@ -1551,21 +1665,60 @@ class SelfAvoidingWalk:
             ``(n_live, n_candidates, 3)`` positions.
         obstacle_tree
             Spatial index over external obstacles, shared by the whole batch.
+        centres
+            ``(n_live, 3)`` point each row's candidates all sit exactly
+            :data:`~dodo.constants.CA_CA_BOND_LENGTH` from, or ``None`` to skip the cull. Every
+            candidate generator in this engine has such a point; see
+            :data:`_CANDIDATE_CLEAR_DISTANCE`.
 
         Returns
         -------
         np.ndarray
             ``(n_live, n_candidates)`` distances, ``inf`` for a non-finite candidate, which
-            is rejected on other grounds anyway.
+            is rejected on other grounds anyway, and ``inf`` for every candidate of a row whose
+            centre is far enough from the obstacles that none of them can clash.
+
+        Notes
+        -----
+        The ``inf`` returned for a culled row is not the true distance, and deliberately so: the
+        caller compares it against :data:`~dodo.constants.CA_CLASH_DISTANCE` and nothing else, so
+        substituting ``inf`` for "provably at least the clash distance" cannot change a single
+        decision. That is what makes the cull free rather than approximate -- output stays
+        bit-identical for a given seed.
+
+        This is the hot loop of the whole package. Culling here replaces up to 710 queries with
+        one, and on p300 it removes 94.4% of the query points; see
+        :data:`_CANDIDATE_CLEAR_DISTANCE` for the measurement.
         """
         n_live, count, _ = candidates.shape
-        flat = candidates.reshape(-1, 3)
+        rows = np.arange(n_live)
+        if centres is not None:
+            centre_array = np.asarray(centres, dtype=np.float64)
+            usable = np.all(np.isfinite(centre_array), axis=1)
+            clearance = np.zeros(n_live, dtype=np.float64)
+            if np.any(usable):
+                found, _ = obstacle_tree.query(centre_array[usable])
+                clearance[usable] = found
+            # A non-finite centre is left at clearance 0, so its row is queried the slow way
+            # rather than trusted. Its candidates are non-finite too and get inf regardless.
+            rows = np.flatnonzero(clearance < _CANDIDATE_CLEAR_DISTANCE)
+
+        nearest = np.full((n_live, count), np.inf, dtype=np.float64)
+        if rows.size == 0:
+            return nearest
+
+        flat = candidates[rows].reshape(-1, 3)
         finite = np.all(np.isfinite(flat), axis=1)
         distances = np.full(flat.shape[0], np.inf)
         if np.any(finite):
-            found, _ = obstacle_tree.query(flat[finite], workers=-1)
+            # workers=-1 only above _PARALLEL_QUERY_MINIMUM. Handing scipy a thread pool for a
+            # query this small costs far more than it saves, and this is the hottest call in the
+            # engine, so it mattered: 8,450 calls of 710 points each spawned 152,100 threads and
+            # 760,500 lock acquisitions, which was 4.4 of the 9.7 seconds a full arf19 rebuild took.
+            workers = -1 if int(np.count_nonzero(finite)) >= _PARALLEL_QUERY_MINIMUM else 1
+            found, _ = obstacle_tree.query(flat[finite], workers=workers)
             distances[finite] = found
-        nearest: np.ndarray = distances.reshape(n_live, count)
+        nearest[rows] = distances.reshape(rows.size, count)
         return nearest
 
     @staticmethod
@@ -1609,6 +1762,100 @@ class SelfAvoidingWalk:
     # ------------------------------------------------------------------
     # Small helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _prune_unreachable(request: IDRRequest, obstacles: np.ndarray | None) -> np.ndarray | None:
+        """Drop obstacles this region provably cannot reach, before the tree is built.
+
+        Parameters
+        ----------
+        request
+            The region about to be built; supplies the anchors and the residue count.
+        obstacles
+            ``(n_obstacles, 3)`` coordinates, or ``None``.
+
+        Returns
+        -------
+        np.ndarray or None
+            The surviving obstacles, or ``obstacles`` unchanged when nothing can be dropped.
+
+        Notes
+        -----
+        Conservative by construction: :func:`reachable_envelope` bounds where the region's alpha
+        carbons can go, and the envelope is then dilated by
+        :data:`~dodo.constants.CA_CLASH_DISTANCE` -- the only threshold ever applied to the
+        obstacle set -- before anything is dropped. An obstacle outside the dilated envelope is
+        further than the clash distance from every position the region can occupy, so it can
+        neither reject a candidate in :meth:`_select` nor fail a conformer in
+        :func:`_validate_conformer`. Output is therefore bit-identical, which is how this is
+        tested rather than merely asserted.
+
+        Dilating a spheroid by ``m`` is not a spheroid, so the sum-of-distances bound is raised
+        by ``2 * m`` instead: if ``x`` is within ``m`` of a point ``p`` inside the envelope then
+        ``|x - N| + |x - C| <= |p - N| + |p - C| + 2 * m``. Loose by up to ``m``, in the safe
+        direction.
+
+        MEASURED yield, seed 0, obstacles kept as a share of obstacles offered::
+
+            structure   regions   obstacles   kept
+            dnmt3a         4          18,650   76.7%
+            arf19          4          14,159   56.4%
+            p300           6          45,916   81.5%
+
+        Those totals flatter it. The saving lands entirely on short loops -- 9.2% kept for a
+        10-residue loop on p300 -- while a region of 150 residues already reaches 564 A, further
+        than any of these structures is wide, so nothing at all is dropped for it. Cost scales
+        with residues placed, not with regions, so the regions this helps are the ones that were
+        already cheap.
+
+        MEASURED end to end, mean wall clock over seeds 0-3, this alone against no pruning::
+
+            structure   without    with   change
+            dnmt3a       2.10 s   2.00 s   -4.8%
+            arf19        5.58 s   5.47 s   -2.0%
+            p300         4.27 s   4.22 s   -1.1%
+
+        Run-to-run spread on a fixed seed reached 0.33 s on these same structures, so none of
+        those differences is separable from noise: treat this as worth zero until measured on a
+        structure built mostly of short loops. It is kept because it is a handful of vectorized
+        operations on a path that runs once per region, not per residue, and because it can only
+        ever remove work.
+        """
+        if obstacles is None:
+            return None
+        array = np.asarray(obstacles, dtype=np.float64)
+        if array.ndim != 2 or array.shape[1] != 3 or array.shape[0] == 0:
+            # Malformed input is _obstacle_tree's business to diagnose, not this method's.
+            return obstacles
+        if not np.all(np.isfinite(array)):
+            # A NaN coordinate makes every comparison below False, which would drop the row and
+            # silently disarm the non-finite guard in _obstacle_tree -- the one thing standing
+            # between a NaN obstacle and a region grown straight through a domain. Prune nothing
+            # and let that guard fire.
+            return obstacles
+        limit = reachable_envelope(request.n_residues, request.n_anchor_xyz, request.c_anchor_xyz)
+        if limit is None:
+            return obstacles
+        n_anchor, c_anchor = request.n_anchor_xyz, request.c_anchor_xyz
+        keep: np.ndarray
+        if n_anchor is not None and c_anchor is not None:
+            reach = np.linalg.norm(array - n_anchor, axis=1) + np.linalg.norm(
+                array - c_anchor, axis=1
+            )
+            keep = reach <= limit + 2.0 * CA_CLASH_DISTANCE
+        else:
+            # reachable_envelope only returns a finite limit for a region with at least one
+            # anchor, so exactly one of the two is set here.
+            anchor = n_anchor if n_anchor is not None else c_anchor
+            if anchor is None:
+                return obstacles
+            keep = np.linalg.norm(array - anchor, axis=1) <= limit + CA_CLASH_DISTANCE
+        if bool(np.all(keep)):
+            # The common case for a long region. Return the original so the caller's array is
+            # not needlessly copied.
+            return obstacles
+        pruned: np.ndarray = array[keep]
+        return pruned
 
     @staticmethod
     def _obstacle_tree(obstacles: np.ndarray | None) -> cKDTree | None:

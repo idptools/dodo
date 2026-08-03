@@ -134,10 +134,23 @@ BACKBONE_ANGLE_MAX: Final[float] = 161.0
 #: first-non-clashing search naturally prefers realistic geometry.
 BACKBONE_ANGLE_IDEAL: Final[float] = BACKBONE_ANGLE_MEAN
 
-#: Candidate positions generated per angle in the cone template. CHOICE: 10 x 71
-#: angles = 710 candidates per step, which empirically finds a non-clashing option
-#: on the first pass in the overwhelming majority of cases.
-CANDIDATES_PER_ANGLE: Final[int] = 10
+#: Candidate positions generated per angle in the cone template. 5 x 71 angles = 355 candidates
+#: per step.
+#:
+#: MEASURED, and lowered from 10 because the clash test over these candidates is the single
+#: largest cost in a rebuild -- around 90% of wall time on a large structure is region building,
+#: and most of that is one KD-tree query per step over this many points.
+#:
+#: The count buys retries, not per-step correctness: 99.9% of steps have every candidate
+#: geometrically valid before the clash test, so what a bigger pool provides is a better chance
+#: that one survives the clash test and the region does not have to restart. Halving it therefore
+#: only pays if failures do not rise. Over 5 structures x 4 seeds, they did not -- 4 blocking
+#: failures either way -- while total time fell from 36.8 s to 28.3 s.
+#:
+#: Beware single-seed timings here. Retry counts are wildly stochastic (one structure measured
+#: 3.4x faster on one seed), so any change to this number needs several seeds and the regression
+#: corpus behind it, not one run.
+CANDIDATES_PER_ANGLE: Final[int] = 5
 
 # ---------------------------------------------------------------------------
 # All-atom backbone geometry

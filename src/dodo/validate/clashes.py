@@ -297,7 +297,7 @@ def ca_only_residue_mask(structure: Structure) -> np.ndarray:
 
     Notes
     -----
-    A residue with N, CA, C and O but no side chain (what ``rebuild(all_atom=True)``
+    A residue with N, CA, C and O but no side chain (what ``rebuild(backbone=True)``
     produces) is *not* CA-only: it has real backbone atoms, so element-aware contact
     limits apply to it and are more informative than a single CA exclusion sphere.
     """

@@ -29,7 +29,9 @@ Nothing is silently replaced with degenerate coordinates.
 
 from __future__ import annotations
 
+import sys
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -452,56 +454,153 @@ def _obstacles_for_span(
     return coords
 
 
-def _rebuild_one_model(
-    structure: Structure,
-    *,
-    model: int,
-    mode: str,
-    engine_name: str,
-    rng: np.random.Generator,
-    min_length: int,
-    model_targets: dict[tuple[str, int, int], np.ndarray],
-) -> list[RegionOutcome]:
-    """Rebuild every loop and IDR of one model, in place. Returns per-region outcomes."""
+def _warn_starling_isolation() -> None:
+    """Warn that STARLING never sees the folded domains. Short on purpose.
+
+    The previous version of this ran to eleven lines. It was accurate and nobody read it, which
+    makes it worse than a short one: the single fact a user has to take away is that the ensemble
+    is not conditioned on the rest of the structure. The full explanation lives in the docs.
+
+    Called from :func:`_make_engine`, which runs once per rebuild -- so a ten-model run warns once
+    rather than ten times, and no module-level "have I said this yet" flag is needed to arrange it.
+    """
+    warnings.warn(
+        "STARLING generates each region from its SEQUENCE ALONE -- it never sees the folded "
+        "domains, so a conformer cannot avoid them and its statistics do not account for them. "
+        "DODO picks the conformer that best fits the anchor separation and places it rigidly. "
+        "Read a STARLING region as a realistic IDR conformation that has been positioned, not "
+        "one sampled in the presence of the domains around it.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
+class _Progress:
+    """A residue-weighted progress bar over the regions a rebuild will attempt.
+
+    Wraps tqdm rather than exposing it, for two reasons. A rebuild is slow enough that silence
+    reads as a hang -- a 2,400-residue structure spends most of a minute inside one region -- and
+    the bar has to be genuinely optional: writing carriage returns into a piped log or a notebook
+    cell is worse than showing nothing.
+    """
+
+    __slots__ = ("_bar",)
+
+    def __init__(self, total: int) -> None:
+        from tqdm.auto import tqdm
+
+        self._bar = tqdm(
+            total=max(total, 1),
+            unit="res",
+            desc="rebuilding",
+            # Residues, not iterations: "1.2k/2.4k res" is meaningful where "3/6" is not.
+            bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} {unit} [{elapsed}]",
+            leave=False,
+        )
+
+    def advance(self, residues: int) -> None:
+        self._bar.update(residues)
+
+    def next_model(self, done: int, total: int) -> None:
+        if total > 1:
+            # set_description_str, not set_description: the latter appends its own colon, and the
+            # bar_format already has one, which reads as "rebuilding (model 2/3): :".
+            self._bar.set_description_str(f"rebuilding (model {min(done + 1, total)}/{total})")
+
+    def close(self) -> None:
+        self._bar.close()
+
+
+class _NoProgress:
+    """The do-nothing tracker, so the pipeline never branches on whether a bar exists."""
+
+    __slots__ = ()
+
+    def advance(self, residues: int) -> None:
+        return
+
+    def next_model(self, done: int, total: int) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
+
+def _progress_bar(requested: bool | None, total: int) -> _Progress | _NoProgress:
+    """Build a progress tracker, or a no-op stand-in.
+
+    ``None`` means decide from the environment: a bar on an interactive terminal, silence when
+    stderr is redirected. tqdm is a hard dependency, but an ImportError is still tolerated rather
+    than allowed to take down a rebuild -- failing a structure build over a progress bar would be
+    absurd.
+    """
+    if requested is False:
+        return _NoProgress()
+    if requested is None and not sys.stderr.isatty():
+        return _NoProgress()
+    try:
+        return _Progress(total)
+    except ImportError:
+        return _NoProgress()
+
+
+def _make_engine(engine_name: str) -> object:
+    """Build the conformation engine for a rebuild. Called ONCE, not once per model.
+
+    The lifetime matters. This used to be constructed inside :func:`_rebuild_one_model`, so a
+    multi-model run got a fresh engine per model -- and with it a fresh, empty ensemble cache.
+    STARLING conditions on sequence alone, so every model then re-ran the diffusion and MDS for
+    regions whose ensembles were already in hand: a 2-model, 3-region dnmt3a rebuild performed 6
+    generations to obtain 3 distinct ensembles. Hoisting construction here is what lets
+    :class:`~dodo.engines.starling.StarlingEngine` reuse them.
+    """
     from ..engines.walk import SelfAvoidingWalk
 
-    engine: object
     if engine_name == "walk":
-        engine = SelfAvoidingWalk()
-    elif engine_name == "starling":
+        return SelfAvoidingWalk()
+    if engine_name == "starling":
+        from ..engines.hierarchical import HierarchicalEngine
         from ..engines.starling import StarlingEngine
 
-        engine = StarlingEngine()
+        # Wrapped in HierarchicalEngine unconditionally, not only when a region turns out to be
+        # too long. STARLING caps sequences at starling.configs.MAX_SEQUENCE_LENGTH (380), and
+        # real IDRs routinely exceed it -- p300 has a 401-residue linker and a 583-residue tail.
+        # Leaving the bare engine here meant those regions hard-failed with an error telling the
+        # USER to wrap it, which is not something a user of `dodo rebuild --engine starling` can
+        # act on. The wrapper splits an over-cap region into cap-sized segments and assembles
+        # them; below the cap it delegates straight through, so wrapping costs nothing.
+        engine = HierarchicalEngine(StarlingEngine())
         if not engine.available():
             raise BuildError(
                 "The starling engine was requested but is not available. Install it with "
                 "pip install 'idptools-dodo[starling]', or pass engine='walk'."
             )
-        # Say this out loud, every time. It is the most important thing to understand about
-        # this engine and it is not guessable from the output: STARLING is a model of isolated
-        # IDRs. It is given a SEQUENCE and nothing else -- not the folded domains, not their
-        # positions, not the space they occupy. DODO then selects the conformer whose own
-        # end-to-end distance best fits the anchor separation and places it as a rigid body.
-        # So the conformer's internal statistics are STARLING's, and its relationship to the
-        # rest of the structure is DODO's, and STARLING never had the chance to account for
-        # the folded domains at all.
-        warnings.warn(
-            "The starling engine generates each disordered region from its SEQUENCE ALONE. "
-            "STARLING models isolated IDRs: it is never shown the folded domains, their "
-            "positions, or the space they occupy, so a conformer cannot avoid them and its "
-            "conformational statistics do not account for them. DODO picks the conformer that "
-            "best matches the distance the anchors demand and places it rigidly between them, "
-            "then reports any region it could not fit. That makes the region's internal "
-            "geometry STARLING's and its placement DODO's -- but nothing makes the ensemble "
-            "conditioned on the rest of the structure. Treat a STARLING region as a realistic "
-            "IDR conformation that has been positioned, not as one sampled in the presence of "
-            "the domains it sits between.",
-            UserWarning,
-            stacklevel=2,
-        )
-    else:
-        raise InvalidParameterError(f"Unknown engine {engine_name!r}. Use 'walk' or 'starling'.")
+        _warn_starling_isolation()
+        return engine
+    raise InvalidParameterError(f"Unknown engine {engine_name!r}. Use 'walk' or 'starling'.")
 
+
+def _rebuild_one_model(
+    structure: Structure,
+    *,
+    model: int,
+    mode: str,
+    engine: object,
+    rng: np.random.Generator,
+    min_length: int,
+    model_targets: dict[tuple[str, int, int], np.ndarray],
+    on_region_done: Callable[[int], None] | None = None,
+) -> list[RegionOutcome]:
+    """Rebuild every loop and IDR of one model, in place. Returns per-region outcomes.
+
+    Takes a built ``engine`` rather than its name so that one instance spans every model; see
+    :func:`_make_engine`.
+
+    ``on_region_done`` is called with each region's residue count as it finishes, built or not,
+    which is what drives the progress bar. Weighted by residues rather than counting regions
+    because region lengths differ by two orders of magnitude -- on p300 they run from 10 to 583 --
+    so a bar that advanced once per region would sit still through the only part that takes time.
+    """
     outcomes: list[RegionOutcome] = []
     # Folded domains are already positioned (step 3 ran before this), so they are obstacles
     # from the outset. `placed`, not `rebuilt`: their atoms are moved rigidly, never generated.
@@ -546,6 +645,8 @@ def _rebuild_one_model(
             label=f"loop in FD {parent.span.start + 1}-{parent.span.stop}",
         )
         outcomes.append(loop_outcome)
+        if on_region_done is not None:
+            on_region_done(len(loop))
         # Record success per loop. Without this, a loop that failed to build would still have
         # its side chains stripped and its inherited geometry attributed to DODO.
         if loop_outcome.built:
@@ -581,6 +682,8 @@ def _rebuild_one_model(
         # region out of the obstacle set is how AF-O14683-F1 ended up with a rebuilt alpha
         # carbon 1.27 A from an atom of the region that had just failed beside it.
         domain.placed = True
+        if on_region_done is not None:
+            on_region_done(len(domain.span))
 
     return outcomes
 
@@ -595,6 +698,7 @@ def rebuild(
     backbone: bool = False,
     min_length: int = MIN_IDR_LENGTH,
     seed: int | None = None,
+    progress: bool | None = None,
 ) -> RebuildReport:
     """Rebuild the disordered regions of a structure.
 
@@ -633,6 +737,14 @@ def rebuild(
         Shortest region worth rebuilding. Shorter ones keep their input coordinates.
     seed
         Seed for reproducibility. With a fixed seed the output is bit-identical.
+    progress
+        Show a progress bar on stderr. ``None`` (the default) shows one when stderr is a terminal
+        and stays silent otherwise, so piped output and log files do not fill with carriage
+        returns. ``False`` disables it outright.
+
+        Weighted by residues rather than by regions: region lengths span two orders of magnitude
+        -- on p300 they run from 10 to 583 -- so a bar advancing once per region would appear
+        stuck through the only part that takes real time.
 
     Returns
     -------
@@ -720,6 +832,18 @@ def rebuild(
     for clashing in placement.clashing:
         report.notes.append(str(clashing))
 
+    # Total work for the progress bar: every region every model will attempt, weighted by length.
+    # Counted from the assignment rather than guessed, so the bar cannot overrun or stop short.
+    total_work = n_models * sum(
+        len(span)
+        for assignment in base_assignments
+        for domain in assignment.domains
+        for span in ([domain.span] if domain.kind is DomainKind.IDR else list(domain.loops))
+    )
+    tracker = _progress_bar(progress, total_work)
+    # One engine for the whole run, so a per-sequence cache inside it survives across models.
+    engine_instance = _make_engine(engine)
+
     for model_number in range(1, n_models + 1):
         # Each model starts from the REPOSITIONED coordinates, so every model shares one domain
         # arrangement and a failed region in one cannot contaminate the next.
@@ -742,10 +866,11 @@ def rebuild(
                 working,
                 model=model_number,
                 mode=mode,
-                engine_name=engine,
+                engine=engine_instance,
                 rng=rng,
                 min_length=min_length,
                 model_targets=model_targets,
+                on_region_done=tracker.advance,
             )
         report.outcomes.extend(outcomes)
         # Rebuilt regions are CA-only, so drop the atoms that did not move with them. This has to
@@ -757,7 +882,9 @@ def rebuild(
 
             final = add_backbone_to_rebuilt(final)
         report.models.append(final)
+        tracker.next_model(model_number, n_models)
 
+    tracker.close()
     return report
 
 

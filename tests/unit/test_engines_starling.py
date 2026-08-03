@@ -18,7 +18,7 @@ proxy.
 from __future__ import annotations
 
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import pairwise
 from types import SimpleNamespace
 from typing import Any
@@ -39,7 +39,15 @@ from dodo.exceptions import (
     MissingDependencyError,
     UnsatisfiableTargetError,
 )
-from dodo.geometry.metrics import ca_bond_lengths, ca_pseudo_angles, validate_ca_trace
+from dodo.geometry import regularize as regularize_module
+from dodo.geometry.metrics import (
+    ca_bond_lengths,
+    ca_pseudo_angles,
+    end_to_end,
+    radius_of_gyration,
+    validate_ca_trace,
+)
+from dodo.geometry.regularize import regularize_ca_trace
 from dodo.geometry.transforms import apply, rotation_from_axis_angle
 
 # ---------------------------------------------------------------------------
@@ -861,6 +869,346 @@ def test_screening_rejects_bad_geometry_and_says_why() -> None:
     assert any("pseudo-angles spanned" in note for note in notes)
 
 
+# ---------------------------------------------------------------------------
+# Geometric repair of what the model actually returns
+# ---------------------------------------------------------------------------
+#
+# cone_chain above builds chains that are already valid, which is the right fake for testing the
+# adapter's plumbing and the wrong one for testing repair: it has nothing to repair. Real STARLING
+# reconstructs coordinates by fitting a predicted distance map, which constrains neither the
+# virtual bond nor the vertex. MEASURED on STARLING 2.x: a 201-residue ensemble came back with
+# bonds of median 3.21 A (16% short, range 0.63-25.6) and, after every bond was projected onto
+# 3.81 A exactly, pseudo-angles still spanning 10.5-179.3 deg with 2.34% of vertices outside the
+# observed 75-179 range and a median of 5 per conformer. screen_conformers rejects a conformer for
+# a single unreconstructable vertex, so it accepted 0 of 20 and the engine raised for every long
+# IDR. mds_like_conformers reproduces both defects so that behaviour is reproducible offline.
+
+
+#: Out-of-window pseudo-angles planted in every fixture conformer, in degrees.
+#:
+#: Both ends of the range on purpose. A fixture with only sharp vertices would not have caught
+#: the real defect in the first implementation, which was at the *blunt* end: near 180 deg the
+#: correction was ill-conditioned and crawled. 179.9 is a quarter of a degree from collinear.
+FIXTURE_BAD_ANGLES: tuple[float, ...] = (38.0, 179.6, 64.0, 179.9)
+
+#: Minimum approach enforced while growing a fixture conformer, in Angstroms.
+#:
+#: DERIVED, and deliberately well above :data:`~dodo.constants.CA_CLASH_DISTANCE` (3.2). Bond
+#: repair *adds* contour length to a chain whose bonds are short -- these fixtures start at 0.92x
+#: -- while holding the radius of gyration, so the extra length goes into tighter local packing
+#: and the closest contact shrinks. Growing to 3.2 would leave conformers clashing after repair,
+#: and the clash criterion would then mask the angle criterion these fixtures exist to test:
+#: MEASURED, a first attempt without this margin had every conformer rejected on internal_clash
+#: with contacts of 0.25-0.82 A, so the angle assertions were passing on nothing. At 4.6 the
+#: closest contact after full repair MEASURED 3.55-4.17 A, clear of the floor.
+FIXTURE_CLASH_FLOOR = 4.6
+
+
+def mds_like_conformers(
+    n_conformers: int,
+    n_residues: int,
+    seed: int = 0,
+    *,
+    bond_scale: float = 0.92,
+    bad_angles: tuple[float, ...] = FIXTURE_BAD_ANGLES,
+    clash_floor: float = FIXTURE_CLASH_FLOOR,
+) -> np.ndarray:
+    """Conformers with STARLING's two defects at once: short bonds and out-of-window vertices.
+
+    Bonds are drawn around ``bond_scale`` of the target rather than on it, and a few vertices are
+    *placed* at angles outside the observed window instead of being left to chance. Planting them
+    rather than hoping a random walk produces them is what makes the angle tests deterministic;
+    ``cone_chain`` above cannot be used because it only ever emits valid geometry.
+
+    The walk is self-avoiding to ``clash_floor``. That is not decoration -- see
+    :data:`FIXTURE_CLASH_FLOOR`.
+    """
+    rng = np.random.default_rng(seed)
+    n_vertices = n_residues - 2
+    planted = {
+        1 + round((index + 1) * n_vertices / (len(bad_angles) + 1)): angle
+        for index, angle in enumerate(bad_angles)
+    }
+    stack = np.empty((n_conformers, n_residues, 3), dtype=np.float64)
+    for conformer in range(n_conformers):
+        for _ in range(60):
+            coords = np.zeros((n_residues, 3), dtype=np.float64)
+            coords[1] = np.array([bond_scale * C.CA_CA_BOND_LENGTH, 0.0, 0.0])
+            grown = True
+            for i in range(2, n_residues):
+                axis = coords[i - 1] - coords[i - 2]
+                axis /= np.linalg.norm(axis)
+                theta = np.deg2rad(
+                    planted.get(
+                        i - 1,
+                        float(rng.uniform(C.BACKBONE_ANGLE_MIN, C.BACKBONE_ANGLE_MAX)),
+                    )
+                )
+                bond = abs(float(rng.normal(bond_scale * C.CA_CA_BOND_LENGTH, 0.18)))
+                placed = False
+                for _ in range(400):
+                    perpendicular = np.cross(axis, rng.normal(size=3))
+                    norm = float(np.linalg.norm(perpendicular))
+                    if norm < 1e-9:  # pragma: no cover - measure-zero draw
+                        continue
+                    perpendicular /= norm
+                    direction = axis * np.cos(np.pi - theta) + perpendicular * np.sin(np.pi - theta)
+                    candidate = coords[i - 1] + bond * direction
+                    # coords[: i - 2], because |i - j| <= 2 is exempt from clash checking and a
+                    # planted 38 deg vertex puts i and i-2 only 2.3 A apart by construction.
+                    if (
+                        i > 2
+                        and float(np.linalg.norm(coords[: i - 2] - candidate, axis=1).min())
+                        < clash_floor
+                    ):
+                        continue
+                    coords[i] = candidate
+                    placed = True
+                    break
+                if not placed:
+                    grown = False
+                    break
+            if grown:
+                stack[conformer] = coords
+                break
+        else:  # pragma: no cover - 60 restarts effectively never all fail
+            raise AssertionError(f"mds_like_conformers could not grow {n_residues} residues")
+    return stack
+
+
+def out_of_window_vertices(chain: np.ndarray) -> int:
+    """How many vertices sit outside the window the engine's screen enforces."""
+    angles = ca_pseudo_angles(chain)
+    low, high = S.SCREEN_ANGLE_WINDOW
+    return int(np.count_nonzero((angles < low) | (angles > high)))
+
+
+def test_the_mds_fixture_reproduces_both_defects() -> None:
+    """Premise. Without this, every test below could pass on already-valid input.
+
+    Also pins that the fixture is self-avoiding by a margin, because a fixture that clashed would
+    be rejected on internal_clash and the angle assertions would be measuring nothing.
+    """
+    conformers = mds_like_conformers(8, 120, seed=1)
+    bonds = np.linalg.norm(np.diff(conformers, axis=1), axis=2)
+    assert float(np.median(bonds)) < C.CA_CA_BOND_LENGTH - 0.2
+    assert sum(out_of_window_vertices(chain) for chain in conformers) > 0
+    for chain in conformers:
+        assert S._min_internal_ca_distance(chain) >= FIXTURE_CLASH_FLOOR - 1e-9
+    # Both ends of the window are represented, which is what caught the ill-conditioned case.
+    angles = np.concatenate([ca_pseudo_angles(chain) for chain in conformers])
+    low, high = S.SCREEN_ANGLE_WINDOW
+    assert float(angles.min()) < low
+    assert float(angles.max()) > high
+
+
+def test_bond_repair_alone_leaves_the_screen_rejecting_everything() -> None:
+    """The measurement that made angle repair necessary, reproduced as a test.
+
+    This is the behaviour before the change: bonds come out exact, the angles are untouched, and
+    the screen rejects on pseudo_angle. If a future refactor makes bond-only repair suddenly
+    sufficient, this test failing is the signal that the fixture stopped reproducing the defect.
+    """
+    conformers = mds_like_conformers(12, 150, seed=2)
+    repaired, _ = S.regularize_conformers(conformers, angle_window=None)
+    assert np.allclose(
+        np.linalg.norm(np.diff(repaired, axis=1), axis=2), C.CA_CA_BOND_LENGTH, atol=1e-6
+    )
+    assert sum(out_of_window_vertices(chain) for chain in repaired) > 0
+    kept, notes = S.screen_conformers(repaired)
+    assert kept.size < conformers.shape[0]
+    assert any("pseudo_angle" in note for note in notes)
+
+
+def test_angle_repair_makes_the_screen_accept_every_conformer() -> None:
+    """The headline claim, at the level the engine cares about.
+
+    Measured on real STARLING output the same comparison went 17/20 -> 20/20 at 38 residues,
+    30/40 -> 40/40 at 42, and 0/28 -> "angles no longer the reason anything is rejected" at 191.
+    """
+    conformers = mds_like_conformers(12, 150, seed=2)
+    bonds_only, _ = S.regularize_conformers(conformers, angle_window=None)
+    both, notes = S.regularize_conformers(conformers)
+
+    assert sum(out_of_window_vertices(chain) for chain in both) == 0
+    before = S.screen_conformers(bonds_only)[0].size
+    after = S.screen_conformers(both)[0].size
+    assert after > before
+    assert after == conformers.shape[0], notes
+    assert any("pseudo-angles into" in note for note in notes)
+
+
+def test_repaired_bonds_are_still_exactly_the_bond_length() -> None:
+    """The constraint the angle repair is most likely to have quietly traded away.
+
+    Angles are bent by moving the vertex's neighbours, which are the atoms the bond constraint
+    holds. A repair that satisfied the window at 3.79 A bonds would pass the angle assertions and
+    fail the writer, the viewer and dodo.validate.bonds.
+    """
+    repaired, _ = S.regularize_conformers(mds_like_conformers(10, 180, seed=3))
+    bonds = np.linalg.norm(np.diff(repaired, axis=1), axis=2)
+    assert float(np.abs(bonds - C.CA_CA_BOND_LENGTH).max()) < 1e-6
+    assert f"{float(bonds.min()):.4f}" == f"{C.CA_CA_BOND_LENGTH:.4f}"
+
+
+def test_repair_preserves_the_ensemble_dimensions() -> None:
+    """A repair that satisfied the window by inflating the chains would be useless.
+
+    The whole reason to call a generative model is its conformational statistics, so the ensemble
+    mean end-to-end distance and radius of gyration are what must survive. MEASURED on real
+    output: +0.10% to +0.25% in Re and +0.25% to +1.14% in Rg, i.e. indistinguishable from what
+    bond repair alone already costs.
+    """
+    conformers = mds_like_conformers(16, 150, seed=4)
+    both, notes = S.regularize_conformers(conformers)
+
+    def mean_span(stack: np.ndarray) -> float:
+        return float(np.mean([end_to_end(chain) for chain in stack]))
+
+    def mean_rg(stack: np.ndarray) -> float:
+        return float(np.mean([radius_of_gyration(chain) for chain in stack]))
+
+    assert abs(mean_span(both) / mean_span(conformers) - 1.0) < 0.05
+    assert abs(mean_rg(both) / mean_rg(conformers) - 1.0) < 0.05
+    assert any("Ensemble dimensions moved by" in note for note in notes)
+
+
+def test_repair_displacement_is_local() -> None:
+    """Each atom moves a fraction of a bond length, not a whole one.
+
+    MEASURED on real STARLING output across six ensembles: 0.55-0.90 A median, 1.05-1.75 A p95.
+    """
+    conformers = mds_like_conformers(12, 150, seed=5)
+    both, notes = S.regularize_conformers(conformers)
+    displacement = np.linalg.norm(both - conformers, axis=2)
+    assert float(np.median(displacement)) < C.CA_CA_BOND_LENGTH
+    assert any("atom displacement" in note for note in notes)
+
+
+def test_repair_creates_no_new_internal_clashes() -> None:
+    """Opening a doubled-back vertex must not push the chain through itself somewhere else.
+
+    This is the criterion that becomes binding once angles are fixed, so it is worth pinning that
+    the repair is not what causes it. MEASURED on real STARLING output across 6 ensembles and 175
+    conformers: zero conformers went from clash-free to clashing, and the median closest contact
+    *improved* (long200, 2.985 -> 3.572 A) because straightening a doubled-back vertex moves the
+    chain off itself. The clashes that remain are already present in the raw model output.
+    """
+    conformers = mds_like_conformers(20, 180, seed=6)
+    bonds_only, _ = S.regularize_conformers(conformers, angle_window=None)
+    both, _ = S.regularize_conformers(conformers)
+    for index in range(conformers.shape[0]):
+        before = S._min_internal_ca_distance(bonds_only[index])
+        after = S._min_internal_ca_distance(both[index])
+        if before >= C.CA_CLASH_DISTANCE:
+            assert after >= C.CA_CLASH_DISTANCE, (
+                f"conformer {index} was clash-free at {before:.3f} A after bond repair and "
+                f"clashes at {after:.3f} A after angle repair"
+            )
+
+
+def test_an_unconverged_conformer_is_reported_not_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One conformer the projection cannot finish must not throw away the other ninety-nine.
+
+    A real latent bug, now load-bearing. This call passed ``raise_on_failure`` at its default of
+    True while checking ``result.converged`` afterwards, so the ``unconverged`` reporting branch
+    was unreachable: any conformer that failed to converge aborted the entire ensemble through an
+    exception instead. While only bonds were constrained that was close to unreachable in
+    practice. With angles constrained it is not -- bonds and angles are genuinely not always
+    jointly satisfiable -- so the branch has to work.
+
+    Driven by making the projection report non-convergence directly, rather than by hunting for an
+    input that happens not to converge: the contract under test is "reports rather than raises",
+    and it should not be hostage to how good the projection is on any particular fixture.
+    """
+    conformers = mds_like_conformers(4, 60, seed=7)
+    real = regularize_module.regularize_ca_trace
+    seen: list[bool] = []
+
+    def never_converges(coords: np.ndarray, **kwargs: Any) -> Any:
+        seen.append(bool(kwargs.get("raise_on_failure", True)))
+        result = real(coords, **{**kwargs, "raise_on_failure": False})
+        return replace(result, converged=False)
+
+    monkeypatch.setattr(regularize_module, "regularize_ca_trace", never_converges)
+    repaired, notes = S.regularize_conformers(conformers)
+
+    # The fix itself: raise_on_failure is passed as False, so one bad conformer cannot raise.
+    assert seen and not any(seen)
+    assert repaired.shape == conformers.shape
+    assert any("could not be projected onto both constraints" in note for note in notes)
+    assert any(f"{conformers.shape[0]} of {conformers.shape[0]}" in note for note in notes)
+
+
+def test_a_conformer_the_projection_refuses_outright_still_raises() -> None:
+    """The distinction that must survive: "did not converge" is not "is not a chain".
+
+    Coincident consecutive atoms mean the generator failed, and projecting them away would hide
+    that. So this is still an exception, not a note -- ``raise_on_failure=False`` loosens the
+    convergence gate and nothing else.
+    """
+    broken = mds_like_conformers(4, 60, seed=7)
+    broken[2, 30] = broken[2, 29]
+    with pytest.raises(GeometryError, match="coincident"):
+        regularize_ca_trace(broken[2], raise_on_failure=False)
+    with pytest.raises(GeometryError, match="coincident"):
+        S.regularize_conformers(broken)
+
+
+def test_angle_repair_can_be_turned_off_for_diagnosis() -> None:
+    """The two halves have to be separable, because that is how the split was diagnosed."""
+    conformers = mds_like_conformers(6, 90, seed=8)
+    off, off_notes = S.regularize_conformers(conformers, angle_window=None)
+    on, on_notes = S.regularize_conformers(conformers)
+    assert not any("pseudo-angles into" in note for note in off_notes)
+    assert any("pseudo-angles into" in note for note in on_notes)
+    assert out_of_window_vertices(off[0]) >= out_of_window_vertices(on[0])
+
+
+def test_the_repair_window_is_the_window_the_screen_enforces() -> None:
+    """Repair and acceptance must not be able to drift apart.
+
+    If the default repaired into a narrower or wider window than SCREEN_ANGLE_WINDOW, conformers
+    would be either needlessly reshaped or repaired to something the screen still rejects.
+    """
+    import inspect
+
+    default = inspect.signature(S.regularize_conformers).parameters["angle_window"].default
+    assert default == S.SCREEN_ANGLE_WINDOW
+
+
+def test_engine_builds_from_model_like_geometry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """End to end over a fake whose output has the real defects, not the tidy ones.
+
+    With real STARLING this is the difference between an EngineError naming zero survivors and a
+    finished structure: MEASURED at 191 and 209 residues, angle repair off raised for every
+    request, angle repair on kept 13/100 and 7/100 conformers and built all 5 conformations
+    asked for.
+    """
+    n_residues = 60
+
+    def generate(sequence: str, conformations: int = 200, **kwargs: Any) -> Any:
+        return {sequence: FakeEnsemble(coordinates=mds_like_conformers(40, n_residues, seed=9))}
+
+    monkeypatch.setattr(S, "_import_starling", lambda: SimpleNamespace(generate=generate))
+    monkeypatch.setattr(S, "starling_installed", lambda: True)
+
+    engine = S.StarlingEngine(ensemble_size=40, end_to_end_tolerance=1e9)
+    request = request_for(n_residues, target=60.0)
+    result, report = engine.generate_detailed(request, None, np.random.default_rng(0))
+
+    assert report.kept > 0, report.notes
+    assert bool(result.success.any())
+    for index in range(result.ca_coords.shape[0]):
+        if not result.success[index]:
+            continue
+        chain = result.ca_coords[index]
+        assert np.allclose(ca_bond_lengths(chain), C.CA_CA_BOND_LENGTH, atol=1e-6)
+        assert out_of_window_vertices(chain) == 0
+
+
 def test_report_summary_mentions_the_cap_and_the_residual(installed_starling) -> None:
     installed_starling()
     _, report = StarlingEngineFactory().generate_detailed(
@@ -1666,10 +2014,27 @@ def test_screening_can_be_disabled_and_says_so(installed_starling) -> None:
 def test_an_ensemble_of_stretched_conformers_is_rejected_wholesale(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Median bond stays 3.8 so the unit check passes, but every conformer has one 6 A bond.
+    # Median bond stays 3.8 so the unit check passes, but every conformer has one broken bond.
+    #
+    # Displaced along the broken bond's OWN direction, not along a fixed x axis. A fixed vector
+    # only lengthens the bond when the bond happens to point the same way, so with a random
+    # per-conformer geometry it stretched some conformers past the ceiling and others not at all:
+    # measured, 3 of these 4 exceeded it and the fourth survived on a technicality, and the test
+    # passed only because the angle screen happened to catch that one. Once angles are *repaired*
+    # rather than screened, the technicality became a visible failure -- so the fixture now does
+    # what the comment always claimed. This is the same construction, and the same reasoning, as
+    # test_screening_rejects_bad_geometry_and_says_why.
     rng = np.random.default_rng(0)
     stack = np.stack([cone_chain(30, rng) for _ in range(4)])
-    stack[:, 20:] += np.array([6.0, 0.0, 0.0])
+    overshoot = S.RECONSTRUCTION_BOND_WINDOW[1]
+    for chain in stack:
+        direction = chain[20] - chain[19]
+        direction /= np.linalg.norm(direction)
+        chain[20:] += direction * overshoot
+    stretched_bonds = np.linalg.norm(np.diff(stack, axis=1), axis=2).max(axis=1)
+    # Premise: every conformer now has a bond past the pre-repair ceiling, so the gross gate
+    # rejects all four and nothing reaches repair.
+    assert np.all(stretched_bonds > S.RECONSTRUCTION_BOND_WINDOW[1])
     module = SimpleNamespace(generate=lambda sequence, conformations=1, **kw: FakeEnsemble(stack))
     monkeypatch.setattr(S, "_import_starling", lambda: module)
     monkeypatch.setattr(S, "starling_installed", lambda: True)
@@ -2031,14 +2396,42 @@ def test_screen_rejects_a_conformer_with_even_one_impossible_angle() -> None:
     assert any("pseudo_angle" in note for note in notes)
 
 
-def test_engine_refuses_an_ensemble_whose_conformers_all_have_sharp_angles(
+def test_engine_repairs_sharp_angles_instead_of_refusing_the_ensemble(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    install_fixed_ensemble(monkeypatch, np.stack([sharp_angle_chain()] * 4))
-    with pytest.raises(EngineError, match="none of them survived"):
-        StarlingEngineFactory().generate(
-            request_for(120, target=100.0), None, np.random.default_rng(0)
-        )
+    """The engine's answer to a sharp vertex changed from "refuse" to "repair", deliberately.
+
+    This test used to assert ``EngineError("none of them survived")``, which was the right
+    behaviour while nothing could fix an angle: two 50 deg vertices are unreconstructable, so
+    throwing the conformer away was better than returning it. But it is also what STARLING
+    produces at length -- MEASURED, a median of 5 out-of-window vertices per 201-residue
+    conformer -- so refusing meant refusing every long IDR, and the engine raised for all of
+    them.
+
+    What must NOT change, and is what this now pins, is the invariant underneath: no conformer
+    with an out-of-window vertex ever reaches the caller. Repairing satisfies that invariant;
+    refusing merely satisfied it vacuously. :func:`screen_conformers` is still the hard gate and
+    is still tested directly, immediately above.
+    """
+    chain = sharp_angle_chain()
+    # Premise: unrepaired, this ensemble is exactly what the screen rejects.
+    assert S.screen_conformers(np.stack([chain] * 4))[0].size == 0
+
+    install_fixed_ensemble(monkeypatch, np.stack([chain] * 4))
+    # A huge dimension tolerance, so the geometry is what decides the outcome and not selection.
+    result, report = StarlingEngineFactory(end_to_end_tolerance=1e9).generate_detailed(
+        request_for(120, target=100.0), None, np.random.default_rng(0)
+    )
+    assert report.kept > 0, report.notes
+    assert bool(result.success.any())
+    low, high = S.SCREEN_ANGLE_WINDOW
+    for index in range(result.ca_coords.shape[0]):
+        if not result.success[index]:
+            continue
+        angles = ca_pseudo_angles(result.ca_coords[index])
+        assert float(angles.min()) >= low
+        assert float(angles.max()) <= high
+        assert np.allclose(ca_bond_lengths(result.ca_coords[index]), C.CA_CA_BOND_LENGTH, atol=1e-6)
 
 
 def test_the_touching_helix_helper_is_valid_except_for_its_contacts() -> None:

@@ -383,15 +383,18 @@ def refine_backbone(
         ===================  =====  =====  =====  =========
         weights              N      C      O      angle sd
         ===================  =====  =====  =====  =========
-        unrefined            0.242  0.387  1.115  11.20
-        angle=1.0 rama=1     0.334  0.488  1.507   1.44
-        angle=0.124 rama=1   0.273  0.391  1.178   1.71
-        **0.124 / 20**       0.223  0.305  0.875   3.39
-        angle=0.05 rama=50   0.229  0.316  0.915   5.14
+        unrefined            0.190  0.291  0.838  11.54
+        angle=1.0 rama=1     0.250  0.349  1.075   1.32
+        angle=0.124 rama=1   0.205  0.272  0.821   1.84
+        **0.124 / 20**       0.170  0.217  0.634   3.37
+        angle=0.05 rama=50   0.174  0.225  0.658   5.52
         ===================  =====  =====  =====  =========
 
-        At ``angle=1.0`` the angle term dominates and drives the N-CA-C spread to 1.44 degrees --
-        *tighter than the real 2.84* -- by moving every atom further from where it belongs. An
+        Errors in Angstroms against all-atom simulation, over 1,640 residues; the real N-CA-C
+        spread in that data is 2.93 degrees.
+
+        At ``angle=1.0`` the angle term dominates and drives the N-CA-C spread to 1.32 degrees --
+        *tighter than the real 2.93* -- by moving every atom further from where it belongs. An
         over-tightened geometric term is not a better structure.
     max_sweeps, tolerance
         Coordinate-descent limits. A sweep in which no azimuth moves more than ``tolerance``

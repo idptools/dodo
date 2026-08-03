@@ -147,7 +147,114 @@ in a viewer shows only the disordered regions moving.
 - **`--ca-only`** and **`-b`/`--annotate-regions`**, which were 1.x's `-f/--no_FD_atoms` and
   `-b/--beta_for_FD_IDR`.
 
+### Fixed
+
+- **The STARLING engine did not work at all**, and the error blamed the wrong thing. Every region
+  failed with "could not find coordinates on the object STARLING returned (Ensemble) ... this is an
+  API mismatch". The real cause was a missing argument: `starling.generate()` defaults to
+  `return_structures=False`, which returns an ensemble carrying only **distance maps**. Four
+  separate problems, each of which would have been worse had it silently "worked":
+
+  - `return_structures=True` is now passed.
+  - Coordinates are read from `ensemble.trajectory.traj.xyz`. `trajectory` is a soursop `SSProtein`
+    and has no `.xyz` of its own, which is what the old probe looked for.
+  - **They are in nanometres.** Had extraction succeeded without conversion, DODO would have
+    written structures ten times too small.
+  - STARLING keys its return dict `sequence_1`, not by the sequence string.
+
+- **Regions longer than STARLING's 380-residue cap no longer fail.** `--engine starling` now wraps
+  `HierarchicalEngine` automatically. Previously a 401-residue linker errored with advice to wrap
+  the engine yourself, which is not something a user of `dodo rebuild` can act on.
+
+- **STARLING's output is now repaired before it is judged.** Its coordinates come from MDS on a
+  predicted distance map and are not a physically valid backbone: measured, virtual CA-CA bonds
+  span 1.81-4.86 A with a median of 3.36, **47.6% of them more than 0.5 A off ideal**, and
+  pseudo-angles reach 5.2 degrees — a vertex where the chain doubles back within one step. Applying
+  the physical screen to raw output rejected **100 of 100** conformers.
+
+  Bond and pseudo-angle repair now run before the physical screen, and the reordering is safe
+  because repair barely moves the ensemble: end-to-end distance changes by +0.1-0.25% and radius of
+  gyration by +0.25-1.14%. Gross breakage is still caught on raw coordinates first, so a chain the
+  model genuinely lost cannot be quietly repaired into looking fine. Measured acceptance went from
+  0/20 to **20/20** at 38 residues, and a 200-residue region went from raising outright to building
+  every requested conformer.
+
+  Remaining honest limitation: at ~200 residues only about 5 of 20 conformers survive, and the
+  cause is **internal clashes already present in STARLING's raw output** — 18 of 28 raw conformers
+  clash before DODO touches them. Repair does not introduce them; no conformer went from clash-free
+  to clashing.
+
+- **The STARLING isolation warning is emitted once per run, not once per model**, and is 392
+  characters instead of about 800. A ten-model run printed it ten times, which is how a warning
+  worth reading becomes one nobody reads.
+
 ### Changed
+
+- **STARLING ensembles are generated once per sequence and reused across models.** STARLING
+  conditions on sequence alone, so the ensemble it returns for a region is identical every time;
+  what differs per model is which conformer is selected and where it is placed. A 2-model dnmt3a
+  rebuild ran 6 diffusion-plus-MDS generations for 3 regions before this.
+
+- **ALBATROSS predictions are cached on disk**, keyed by sequence hash and sparrow version. The
+  first prediction in a process imports sparrow, parrot and torch, which measured **1.57 s against
+  0.17 s of actual rebuilding** for a 912-residue structure — so on a repeat run the import, not
+  the geometry, was what you waited for. A cache hit returns before sparrow is imported at all:
+  1.47 s to 0.18 s, with torch never loaded. Entries are about 116 bytes; set `DODO_NO_CACHE=1` to
+  opt out.
+
+- **Obstacle clash-testing is pruned.** Every candidate position for one residue sits exactly one
+  bond length from a single centre, so when that centre clears every obstacle by more than
+  `CA_CA_BOND_LENGTH + CA_CLASH_DISTANCE` a single one-point query replaces 355. Measured over 4
+  seeds per structure: `_nearest_obstacle_distance` on p300 fell from 1.683 s to 0.088 s (19x),
+  and whole rebuilds from 5.68 s to 3.46 s on arf19 and 19.6 s to 10.4 s for p300 at 10 models.
+  Output is **byte-identical**, verified across 55 outputs spanning PDB, mmCIF, a 55-chain
+  assembly, `--backbone`, `--ca-only` and multi-model runs.
+
+  Two prunings that did **not** pay, measured rather than assumed: spatial reachability pruning is
+  inert on the long regions where the time actually goes (a 150-residue region already reaches
+  564 A, wider than any test structure), and burial pruning qualified only 1.2-1.4% of atoms while
+  costing 240-530 ms — several times the entire remaining obstacle budget.
+
+
+- **Rebuilds are 1.6–4× faster**, with no change to what is built. Measured end to end:
+
+  | | before | after |
+  |---|---|---|
+  | arf19 | 9.7 s | 2.4 s |
+  | p300 | 9.8 s | 4.8 s |
+  | arf19, 10 models | 63.8 s | 21.7 s |
+  | p300, 10 models | 34.2 s | 21.1 s |
+
+  Around 90% of a rebuild is region building, and almost all of that is one KD-tree clash query
+  per residue. Two changes: candidate positions per step dropped from 710 to 355, and those
+  queries now run single-threaded. Handing scipy an 18-thread pool for a 710-point query cost more
+  than it saved — measured, thread setup is a roughly fixed 0.3 ms and parallelism only pays above
+  about 2,000 points.
+
+  The candidate count buys retries rather than per-step correctness: 99.9% of steps have every
+  candidate geometrically valid before the clash test. Halving it was validated on the full
+  117-structure corpus (identical results) and over 5 structures × 4 seeds (same failure count).
+  Beware single-seed timings when revisiting this — retry counts are wildly stochastic, and one
+  structure measured 3.4× on one seed and 1.3× averaged.
+
+  Two things that looked like wins and were not, both measured: replacing the per-step KD-tree with
+  brute-force numpy is **10× slower**, and widening the conformer batch does not help because
+  per-conformer cost is flat in batch width (0.35–0.46 s per conformer from 1 row to 32).
+
+- **A progress bar**, on stderr, weighted by residues. Shown when stderr is a terminal, suppressed
+  when piped or under `-q`. `progress=True`/`False` overrides from the API. This adds `tqdm` as a
+  dependency — pure Python, no dependencies of its own, ~60 kB.
+
+- **Quieter notes.** The `strategy auto-selected as density` note is gone: density on all-atom input
+  is the expected path that nearly every run takes, and printing it every time trained people to
+  skip the notes. It still fires for the CA-only fallback to `contact`, where the choice changes
+  where boundaries land. Short folded blocks below the length minimum are now one summary line
+  instead of one line per block.
+
+- **`dodo fetch --no-cache`** downloads to a temporary file instead of the per-user cache. Caching
+  stays on by default: measured over 259 cached AlphaFold models, the mean file is 0.25 MB and the
+  largest 1.51 MB.
+
 
 - **Downloads no longer break.** 1.x built AlphaFold URLs with a hardcoded `model_v4`, which now
   returns HTTP 404 for every accession. The model version is resolved from the AFDB API instead.

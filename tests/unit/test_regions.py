@@ -357,7 +357,11 @@ class TestAssignRegions:
         assignment = assign_regions(structure, strategy=Strategy.AUTO)[0]
         assert assignment.strategy is Strategy.DENSITY
         assert assignment.threshold == CONTACT_SCORE_THRESHOLD
-        assert any("auto-selected" in note for note in assignment.notes)
+        # Deliberately NOT noted. Density on all-atom input is the expected, validated path that
+        # almost every run takes, and announcing it every time trained people to skip the notes --
+        # so the note now fires only when auto does something surprising, which is the CA-only
+        # fallback to `contact`. Pinned here so it does not creep back.
+        assert not any("auto-selected" in note for note in assignment.notes)
         # Resolved to it *and* it works: the density metric draws the two domains and the
         # linker, with the scored profile either side of its own threshold.
         assert [d.kind for d in assignment.domains] == [
@@ -393,7 +397,12 @@ class TestAssignRegions:
         assignment = assign_regions(structure, strategy=Strategy.AUTO)[0]
         assert assignment.strategy is Strategy.CONTACT
         assert assignment.threshold == CA_CONTACT_SCORE_THRESHOLD
+        # This one IS noted, and it is the only auto case that is. Falling back to `contact`
+        # means the validated density threshold could not be applied, which changes where the
+        # boundaries land, so a reader needs to know. Contrast
+        # :meth:`test_auto_picks_density_for_all_atom_input`, where the note would be noise.
         assert any("auto-selected" in note for note in assignment.notes)
+        assert any("no side chains" in note for note in assignment.notes)
         assert assignment.n_folded == 2
         assert [d.kind for d in assignment.domains] == [
             DomainKind.FOLDED,
@@ -490,7 +499,11 @@ class TestAssignRegions:
         structure = make_two_domain_structure(fd1=40, idr=60, fd2=40)
         assignment = assign_regions(structure, strategy=Strategy.CONTACT, min_folded_length=200)[0]
         assert assignment.fully_disordered
-        assert any("below the" in note for note in assignment.notes)
+        # One summary line for all rejected blocks, not one line each: a structure with a dozen
+        # short folded-looking patches used to print a dozen near-identical notes.
+        matching = [n for n in assignment.notes if "minimum for a folded domain" in n]
+        assert len(matching) == 1, assignment.notes
+        assert "treated as disordered" in matching[0]
 
     def test_describe_is_one_based(self) -> None:
         """Display is 1-based; internals are 0-based positional. Converted in one place."""

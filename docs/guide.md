@@ -41,7 +41,17 @@ region does.
 | `--ca-only` | off | Alpha carbons only, folded domains included |
 | `-b`, `--annotate-regions` | off | Encode region type in the B-factor column, for colouring |
 | `--no-conect` | off | Omit CONECT records — **not recommended**, see below |
-| `-q`, `--quiet` | off | Suppress the per-region report |
+| `-q`, `--quiet` | off | Suppress the per-region report and the progress bar |
+
+`dodo fetch` also takes `--no-cache`, which downloads to a temporary file instead of keeping it in
+the per-user cache. Caching is on by default because the files are small — measured over 259 cached
+AlphaFold models, a mean of 0.25 MB and a largest of 1.51 MB — but the cache is unbounded, so this
+opts out. The cache location is printed on every fetch.
+
+A progress bar is shown on stderr when stderr is a terminal, weighted by residues rather than by
+region, because region lengths span two orders of magnitude and a per-region bar sits still through
+the slowest part. It is suppressed automatically when output is piped, and by `-q`. From the Python
+API, pass `progress=True` or `progress=False` to override.
 
 ### Build modes
 

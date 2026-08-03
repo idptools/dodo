@@ -34,6 +34,8 @@ Modules
    dodo.cli
    dodo.constants
    dodo.construct.backbone
+   dodo.construct.backbone_refine
+   dodo.construct.ca_backbone
    dodo.construct.dimensions
    dodo.construct.pipeline
    dodo.construct.place

@@ -115,6 +115,15 @@ in a viewer shows only the disordered regions moving.
   a defect that arrived in your input is not reported as DODO's.
 - **`dodo regions`** prints what DODO thinks your structure looks like, with the score profile and
   threshold behind every boundary, without rebuilding anything.
+- **`--backbone` / `backbone=True` places N, C and O on rebuilt regions**, from the alpha carbons
+  alone. New in 2.0 and **opt-in**, because of the seams (see Known limitations). Four consecutive
+  alpha carbons determine a pseudo-dihedral, which largely determines where the intervening peptide
+  unit sits; DODO bins that angle at 20° against a table measured from 100 frames of all-atom IDR
+  simulation, then rotates each unit about its CA–CA axis to settle bond angles, clashes and φ/ψ
+  together. Rebuilding the table on 80 frames and scoring the 20 it had never seen, over 3,643
+  residues: **N 0.16 Å, C 0.22 Å, O 0.63 Å** mean error, with all four bond lengths exact by
+  construction. Folded domains are unaffected and keep every atom either way. Side chains are not
+  built.
 - **Reports instead of print statements.** `dodo.rebuild()` returns a `RebuildReport` with
   `.ok`, `.models`, `.failures`, `.assignments` and `.outcomes`. In 1.x these functions returned
   `None` and printed, so a script could not tell whether a region had actually been rebuilt.
@@ -166,10 +175,14 @@ in a viewer shows only the disordered regions moving.
 - `linear_placement`. Folded domains are placed by facing the next domain and perturbing, then
   rejecting arrangements that clash.
 - `just_fds=True`. Not reimplemented.
-- `--all-atom` and `--sidechains`. Building backbone or side-chain atoms **for rebuilt regions**
-  is not in 2.0. Note this is *not* 1.x's "all atom" behaviour, which meant keeping the atoms of
-  the regions DODO does **not** rebuild — 2.0 does that unconditionally, so folded domains keep
-  full atomic detail and only rebuilt regions are alpha-carbon only.
+- `--all-atom` and `--sidechains`. **Side-chain** building for rebuilt regions is not in 2.0.
+  Backbone building is, under the new `--backbone` flag — see Added.
+
+  Note that neither flag did what its name suggests. 1.x's "all atom" meant keeping the atoms of
+  the regions DODO does **not** rebuild, and 2.0 does that unconditionally, so folded domains keep
+  full atomic detail regardless. And in the 2.0 development tree `rebuild(all_atom=True)` was a
+  silent no-op — byte-identical output — while `build_from_sequence(all_atom=True)` raised. Both
+  are gone rather than fixed, because a flag that lies is worse than no flag.
 
 ### Known limitations
 
@@ -187,14 +200,36 @@ Stated with measurements, over a 117-structure corpus stratified by region topol
   satisfy, and one contains a chain break with consecutive alpha carbons 5.26 Å apart. The third is
   a genuine failure on a 7-residue terminal tail. Every one keeps its input coordinates and is
   reported with a reason.
-- **Rebuilt regions are alpha-carbon only.** Deliberate. Regions DODO does *not* rebuild keep every
-  atom.
-- **A region that fails to build can be built through by one built before it.** Observed once in
-  117 structures. Regions are built in order of constraint, and a failed region keeps its input
-  coordinates; later regions avoid them, but earlier ones have already committed.
-- **Assembly rebuilding is not implemented.** Multi-chain input is read and written correctly and
-  regions are identified per chain, but rebuilding unmodelled regions of an EM assembly against the
-  deposited sequence is not wired up.
+- **Rebuilt regions are alpha-carbon only by default.** Deliberate. Regions DODO does *not* rebuild
+  keep every atom. `--backbone` adds N, C and O to the rebuilt regions; side chains are still not
+  built.
+- **`--backbone` introduces a small number of marginal steric contacts.** The alpha carbons cannot
+  self-intersect, but the atoms hung off them can, and one azimuth per peptide unit is not always
+  enough freedom to avoid it. Refinement scores each unit against the folded domains, the rest of
+  its own region, and the regions placed before it. Measured against CA-only output over three
+  seeds: dnmt3a 0 → 1–3 contacts, arf19 0 → 1–15, p300 2 → 13–31. The spread is the honest answer,
+  turning on whether a conformer folds a hairpin back on itself. Worst overlap across all of them is
+  0.48 Å; none is near the 1.00 Å floor below which no real bond exists.
+- **`--backbone` leaves a strained peptide bond at every seam, and this cannot be fixed by
+  construction.** A peptide unit reaches at most 2.854 Å from an alpha carbon to the nitrogen it
+  bonds to. Where a rebuilt region meets a folded domain, that domain's nitrogen still points toward
+  where the region ran in AlphaFold's model, because DODO moved the domain rigidly and redrew the
+  region beneath it. Measured across 17 seams in three structures, the rebuilt alpha carbon sits
+  **3.2–4.5 Å** from that nitrogen — so the bond is not merely hard to get right, it is
+  unsatisfiable.
+
+  DODO aims the carbon at the nitrogen and leaves the bond long (about 2.2 Å against an ideal 1.33)
+  rather than writing two atoms into the same space, and reports every seam. On dnmt3a that is 4–6
+  bonds out of 911. **Zero impossible contacts are introduced**, measured over three structures at
+  three seeds each. Building from sequence has no seams and is completely clean.
+
+  Leaving the seam residue un-rebuilt was tried and rejected. Its alpha carbon being input geometry
+  does make the bond reachable — 2.45–2.52 Å at all 17 seams — but closing onto it requires
+  re-placing its nitrogen, and that residue's side chain was built around where its nitrogen used to
+  be. The new one is driven into the residue's own CB (1.405 Å against a correct 2.45) and, for
+  proline, snaps the ring bond to CD (3.444 Å against 1.47). The real fix is to constrain the walk so
+  its closing alpha carbon lands within peptide reach, which needs constraints reaching further back
+  than the closing step, and is future work.
 - **Reported failures are honest, not silent.** A region DODO cannot build keeps its input
   coordinates and appears in `report.failures` with a reason. It is never replaced with degenerate
   output — 1.x could return coordinate arrays of exact `(0, 0, 0)` rows, or NaN.

@@ -1006,6 +1006,68 @@ def _anchor_residual(
 # ---------------------------------------------------------------------------
 
 
+def regularize_conformers(
+    conformers: np.ndarray, *, bond_length: float = CA_CA_BOND_LENGTH
+) -> tuple[np.ndarray, tuple[str, ...]]:
+    """Project every conformer's virtual CA-CA bonds onto ``bond_length`` exactly.
+
+    STARLING is a diffusion model that reconstructs coordinates from a predicted distance
+    map, so its bonds scatter around 3.8 A rather than sitting on it. That scatter is normal
+    model output, not a defect -- but it is not a protein either: the trans-peptide CA-CA
+    distance is rigid, and DODO writes structures whose bonds a viewer will draw and whose
+    geometry the validator will check against 3.81 +/- 0.10 A.
+
+    So the scatter is *corrected*, not merely screened. Screening alone -- which is all this
+    module used to do -- either rejects usable conformers for ordinary diffusion noise or
+    passes their noise straight through into the output file.
+
+    Uses :func:`dodo.geometry.regularize.regularize_ca_trace`, a SHAKE-style iterative
+    projection that moves both partners of each bond toward its target. That function was
+    written for exactly this and had no production caller until now.
+
+    Endpoints are deliberately *not* pinned: the conformer has not been placed against its
+    anchors yet, so there is nothing to preserve, and letting the whole chain relax gives a
+    better-conditioned projection than holding two ends fixed.
+
+    Returns
+    -------
+    tuple[numpy.ndarray, tuple[str, ...]]
+        The corrected conformers, same shape as the input, and notes describing what moved.
+    """
+    from ..geometry.regularize import regularize_ca_trace
+
+    if conformers.ndim != 3 or conformers.shape[2] != 3:
+        raise EngineError(
+            f"Expected conformers shaped (n_conformers, n_residues, 3), got {conformers.shape}."
+        )
+    if conformers.shape[1] < 2:
+        return conformers, ()
+
+    before = np.linalg.norm(np.diff(conformers, axis=1), axis=2)
+    corrected = np.empty_like(conformers)
+    unconverged = 0
+    for index, conformer in enumerate(conformers):
+        result = regularize_ca_trace(conformer, bond_length=bond_length)
+        corrected[index] = result.ca_coords
+        if not result.converged:
+            unconverged += 1
+    after = np.linalg.norm(np.diff(corrected, axis=1), axis=2)
+
+    notes = [
+        f"Regularized {conformers.shape[0]} conformer(s) onto a {bond_length:.2f} A CA-CA "
+        f"bond: worst bond deviation {np.abs(before - bond_length).max():.3f} A before, "
+        f"{np.abs(after - bond_length).max():.3f} A after; largest atom displacement "
+        f"{np.linalg.norm(corrected - conformers, axis=2).max():.3f} A."
+    ]
+    if unconverged:
+        notes.append(
+            f"{unconverged} conformer(s) did not reach the projection tolerance within the "
+            f"sweep limit; their bonds are closer to target than STARLING produced them but "
+            f"are not exact, and the screen below still applies."
+        )
+    return corrected, tuple(notes)
+
+
 def screen_conformers(
     conformers: np.ndarray,
     *,
@@ -1196,6 +1258,7 @@ class StarlingEngine:
         device: str | None = None,
         oversample: int = MIN_OVERSAMPLE,
         orientation_attempts: int = ORIENTATION_ATTEMPTS,
+        regularize: bool = True,
         screen: bool = True,
         end_to_end_tolerance: float | None = None,
     ) -> None:
@@ -1207,6 +1270,7 @@ class StarlingEngine:
         self.device = device
         self.oversample = int(oversample)
         self.orientation_attempts = int(orientation_attempts)
+        self.regularize = bool(regularize)
         self.screen = bool(screen)
         # Validate now rather than at the first generate() call: a NaN tolerance would
         # disable the dimension check silently, which is the defect this field fixes.
@@ -1319,6 +1383,21 @@ class StarlingEngine:
         else:
             kept_indices = np.arange(conformers.shape[0], dtype=np.int64)
             notes.append("Screening disabled by caller; conformer geometry is unchecked.")
+        # Regularize AFTER screening, not before, and the order is the whole point. Screening
+        # exists to reject output that is BROKEN -- a nanometre/Angstrom unit mixup, a garbled
+        # array, a 6 A discontinuity where the model lost the chain. Regularizing first repairs
+        # those silently: a 6 A jump becomes a tidy 3.81 A bond and a broken ensemble sails
+        # through. So gross errors are rejected on the raw output first, and only the survivors
+        # have their residual diffusion noise projected away. The screen's shortfall tolerance
+        # is deliberately loose (0.5 A) so ordinary noise is never what gets a conformer
+        # rejected -- that is what makes this ordering safe rather than a compromise.
+        if kept_indices.size and self.regularize:
+            kept = conformers[kept_indices]
+            kept, regularize_notes = regularize_conformers(kept)
+            conformers = conformers.copy()
+            conformers[kept_indices] = kept
+            notes.extend(regularize_notes)
+
         if kept_indices.size == 0:
             raise EngineError(
                 f"STARLING returned {conformers.shape[0]} conformer(s) for a "

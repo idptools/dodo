@@ -347,9 +347,9 @@ def backbone_from_ca(ca_coords: np.ndarray) -> CABackboneResult:
         #
         # This is consistency, not extra information: the placed N is a deterministic function of
         # the alpha carbons, so conditioning on it cannot sharpen anything. Measured, C's error
-        # rises very slightly, 0.319 -> 0.350 A. What it buys is a chemically valid backbone --
+        # rises very slightly, 0.265 -> 0.282 A. What it buys is a chemically valid backbone --
         # placing C and N independently from opposite alpha carbons left the peptide bond to
-        # absorb the mismatch, and it came out at 1.230 +/- 0.068 A against an ideal 1.329.
+        # absorb the mismatch, and it came out at 1.240 +/- 0.060 A against an ideal 1.329.
         constrained = _on_two_spheres(
             ca[i], CA_C_BOND_LENGTH, n_xyz[i + 1], C_N_PEPTIDE_BOND_LENGTH, placed_c
         )
@@ -453,9 +453,9 @@ def add_backbone_to_rebuilt(structure: Structure, *, refine: bool = True) -> Str
         alone rather than given a backbone on top of untouched input coordinates.
     refine
         Run :func:`~dodo.construct.backbone_refine.refine_backbone` afterwards. On by default:
-        measured over 2,559 residues it improves every criterion at once -- N 0.242 to 0.223 A,
-        C 0.387 to 0.305, O 1.115 to 0.875, the N-CA-C spread 11.20 to 3.39 degrees against a real
-        2.84, and steric contacts to zero.
+        measured over 3,643 held-out residues it improves every criterion at once -- N 0.188 to
+        0.164 A, C 0.283 to 0.210, O 0.816 to 0.614, and the N-CA-C spread 11.70 to 3.47 degrees
+        against a real 2.94.
 
     Returns
     -------

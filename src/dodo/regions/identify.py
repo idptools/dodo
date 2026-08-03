@@ -553,12 +553,14 @@ def assign_regions(
             # score there rather than silently mis-thresholding.
             has_side_chains = bool(np.any(~np.isin(structure.atom_name, ("N", "CA", "C", "O"))))
             resolved = Strategy.DENSITY if has_side_chains else Strategy.CONTACT
-            reason = (
-                "all-atom input, using the validated density metric"
-                if resolved is Strategy.DENSITY
-                else "input has no side chains, so the density threshold does not apply"
-            )
-            notes.append(f"strategy auto-selected as {resolved.value} ({reason})")
+            # Only worth saying when auto did something you would not have guessed. Density on
+            # all-atom input is the expected, validated path and is what almost every run takes,
+            # so announcing it every time is noise that trains people to skip the notes.
+            if resolved is not Strategy.DENSITY:
+                notes.append(
+                    f"strategy auto-selected as {resolved.value} -- the input has no side chains, "
+                    "so the density threshold does not apply"
+                )
 
         if resolved is Strategy.PLDDT:
             cutoff = PLDDT_DISORDER_THRESHOLD if threshold is None else threshold
@@ -575,11 +577,16 @@ def assign_regions(
         merged = merge_blocks(seeds, max_gap=max_internal_gap)
         kept = [(a, b) for a, b in merged if b - a >= min_folded_length]
         rejected = [(a, b) for a, b in merged if b - a < min_folded_length]
-        for a, b in rejected:
+        if rejected:
+            # One summary line, not one per block. A structure with a dozen short folded-looking
+            # patches used to print a dozen near-identical notes, which buries anything that
+            # actually needs reading.
+            lengths = ", ".join(str(b - a) for a, b in rejected)
+            one = len(rejected) == 1
             notes.append(
-                f"candidate folded block at residues {chain.span.start + a + 1}-"
-                f"{chain.span.start + b} ({b - a} residues) was below the "
-                f"{min_folded_length}-residue minimum and treated as disordered"
+                f"{len(rejected)} short {'stretch' if one else 'stretches'} ({lengths} residues) "
+                f"scored as folded but came in under the {min_folded_length}-residue minimum for a "
+                f"folded domain, so {'it is' if one else 'they are'} treated as disordered"
             )
 
         # Lift chain-local offsets to structure-wide residue indices.

@@ -69,10 +69,12 @@ def _add_common_build_arguments(parser: argparse.ArgumentParser) -> None:
             "pip install 'idptools-dodo[starling]')"
         ),
     )
-    # No --all-atom / --sidechains here. Placing backbone and side-chain atoms on REBUILT
-    # regions is priority 2/3 work and is not part of 2.0; the flags are withheld from the CLI
-    # until that geometry is trustworthy. The ``all_atom`` and ``sidechains`` keyword arguments
-    # remain on dodo.rebuild for development.
+    # Backbone placement for REBUILT regions is --backbone, below. Side-chain placement is not in
+    # 2.0 at all, and there is no flag for it.
+    #
+    # v1's ``all_atom`` and ``sidechains`` keyword arguments are gone rather than hidden. In the 2.0
+    # development tree ``rebuild(all_atom=True)`` was a silent no-op -- byte-identical output --
+    # while ``build_from_sequence(all_atom=True)`` raised. A flag that lies is worse than no flag.
     #
     # Note this is NOT the same feature as v1's "all atom" option, which meant *keeping* every
     # atom of the regions DODO does not rebuild. v2 does that unconditionally: folded domains
@@ -164,6 +166,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     fetch_parser.add_argument(
         "-s", "--strategy", default="auto", choices=_STRATEGY_CHOICES, help="(default: auto)"
+    )
+    fetch_parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help=(
+            "download to a temporary file and discard it, instead of keeping it in the "
+            "per-user cache. Downloaded models are small -- measured over 259 cached AlphaFold "
+            "files, a mean of 0.25 MB and a largest of 1.51 MB -- so caching is on by default, "
+            "but the cache is unbounded and this opts out of it"
+        ),
     )
     _add_common_build_arguments(fetch_parser)
 
@@ -304,11 +316,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "backbone": args.backbone,
             "seed": args.seed,
         }
+        # None lets the pipeline decide from the terminal; -q means silence, bar included.
+        progress: bool | None = False if args.quiet else None
 
         if args.command == "sequence":
             report = build_from_sequence(args.sequence, **common)
         elif args.command == "rebuild":
-            report = rebuild(args.structure, strategy=args.strategy, **common)
+            report = rebuild(args.structure, strategy=args.strategy, progress=progress, **common)
         elif args.command == "fetch":
             from .io import fetch_alphafold, resolve_uniprot_accession
 
@@ -320,9 +334,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             accession = resolve_uniprot_accession(args.target)
             if accession != args.target:
                 print(f"resolved {args.target!r} to {accession}", file=sys.stderr)
-            path = fetch_alphafold(accession)
-            print(f"using {path}", file=sys.stderr)
-            report = rebuild(path, strategy=args.strategy, **common)
+            if args.no_cache:
+                # A TemporaryDirectory rather than the cache root, so the file is gone when the
+                # command exits. The rebuild has to happen INSIDE the context manager; doing it
+                # after would be reading a path that no longer exists.
+                import tempfile
+                from pathlib import Path
+
+                with tempfile.TemporaryDirectory(prefix="dodo-fetch-") as scratch:
+                    path = fetch_alphafold(accession, cache_dir=Path(scratch))
+                    print(f"using {path} (not cached)", file=sys.stderr)
+                    report = rebuild(path, strategy=args.strategy, progress=progress, **common)
+            else:
+                path = fetch_alphafold(accession)
+                print(f"using {path}", file=sys.stderr)
+                report = rebuild(path, strategy=args.strategy, progress=progress, **common)
         else:  # pragma: no cover - argparse restricts the choices
             parser.error(f"unknown command {args.command!r}")
 

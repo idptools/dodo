@@ -39,7 +39,8 @@ api/index
 
 ## Install sparrow
 
-The base install needs only numpy and scipy. Everything works without sparrow, but the *dimensions*
+The base install is numpy, scipy, getSequence and tqdm -- no torch. Everything works without
+sparrow, but the *dimensions*
 DODO builds to are then estimated from an analytical polymer scaling law that is blind to sequence
 composition. With sparrow, they come from ALBATROSS, which predicts them from the sequence itself.
 

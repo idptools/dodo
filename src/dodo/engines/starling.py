@@ -57,7 +57,7 @@ import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Any
+from typing import Any, Final
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -1007,27 +1007,48 @@ def _anchor_residual(
 
 
 def regularize_conformers(
-    conformers: np.ndarray, *, bond_length: float = CA_CA_BOND_LENGTH
+    conformers: np.ndarray,
+    *,
+    bond_length: float = CA_CA_BOND_LENGTH,
+    angle_window: tuple[float, float] | None = SCREEN_ANGLE_WINDOW,
 ) -> tuple[np.ndarray, tuple[str, ...]]:
-    """Project every conformer's virtual CA-CA bonds onto ``bond_length`` exactly.
+    """Repair every conformer's virtual bonds *and* pseudo-angles into physical geometry.
 
     STARLING is a diffusion model that reconstructs coordinates from a predicted distance
-    map, so its bonds scatter around 3.8 A rather than sitting on it. That scatter is normal
-    model output, not a defect -- but it is not a protein either: the trans-peptide CA-CA
-    distance is rigid, and DODO writes structures whose bonds a viewer will draw and whose
-    geometry the validator will check against 3.81 +/- 0.10 A.
+    map, so neither its bonds nor its angles are a backbone's. That is normal model output,
+    not a defect -- but it is not a protein either: the trans-peptide CA-CA distance is rigid,
+    DODO writes structures whose bonds a viewer will draw, and the validator checks them
+    against 3.81 +/- 0.10 A.
 
-    So the scatter is *corrected*, not merely screened. Screening alone -- which is all this
-    module used to do -- either rejects usable conformers for ordinary diffusion noise or
-    passes their noise straight through into the output file.
+    So the geometry is *corrected*, not merely screened. Screening alone -- which is all this
+    module used to do -- either rejects usable conformers for ordinary reconstruction error or
+    passes that error straight through into the output file.
 
-    Uses :func:`dodo.geometry.regularize.regularize_ca_trace`, a SHAKE-style iterative
-    projection that moves both partners of each bond toward its target. That function was
-    written for exactly this and had no production caller until now.
+    Bonds were the easy half and repairing only them was not enough. MEASURED over 20
+    conformers of a 201-residue sequence, after every bond was projected onto 3.81 A exactly the
+    pseudo-angles still spanned 10.5-179.3 deg, 2.34% of vertices were outside
+    :data:`SCREEN_ANGLE_WINDOW` and the median conformer had 5 of them, so
+    :func:`screen_conformers` -- which rejects a conformer for a single unreconstructable vertex,
+    and rightly -- accepted 0 of 20. Both constraints are therefore projected together; see
+    :mod:`dodo.geometry.regularize` for why doing so is more than running two loops in sequence.
 
     Endpoints are deliberately *not* pinned: the conformer has not been placed against its
     anchors yet, so there is nothing to preserve, and letting the whole chain relax gives a
     better-conditioned projection than holding two ends fixed.
+
+    A conformer the projection cannot repair is returned in whatever state it reached, with a
+    note, and is *not* forced. Nothing extra is needed to drop it: its angles are still outside
+    the window, so :func:`screen_conformers` rejects it downstream on exactly the criterion it
+    failed. That is the honest path and the reason this function does not raise.
+
+    Parameters
+    ----------
+    angle_window
+        Pseudo-angle window to repair into, in degrees. Defaults to
+        :data:`SCREEN_ANGLE_WINDOW`, i.e. the same window the screen enforces, so that repair
+        and acceptance cannot drift apart. ``None`` repairs bonds only, which is what the
+        engine did before angle repair existed and is kept for diagnosing the two halves
+        separately.
 
     Returns
     -------
@@ -1046,26 +1067,87 @@ def regularize_conformers(
     before = np.linalg.norm(np.diff(conformers, axis=1), axis=2)
     corrected = np.empty_like(conformers)
     unconverged = 0
+    worst_angle_before = 0.0
+    worst_angle_after = 0.0
+    re_change: list[float] = []
+    rg_change: list[float] = []
     for index, conformer in enumerate(conformers):
-        result = regularize_ca_trace(conformer, bond_length=bond_length)
+        # raise_on_failure=False, and this is the point of requesting angles at all. A conformer
+        # whose bonds and angles are not jointly satisfiable is a real thing an ensemble can
+        # contain, and the ensemble has ninety-nine others: raising would throw all of them away
+        # over one, which is what this call used to do -- it checked `converged` while leaving
+        # the default in place, so the branch below was unreachable.
+        result = regularize_ca_trace(
+            conformer,
+            bond_length=bond_length,
+            angle_window=angle_window,
+            raise_on_failure=False,
+        )
         corrected[index] = result.ca_coords
         if not result.converged:
             unconverged += 1
+        worst_angle_before = max(worst_angle_before, result.max_angle_violation_before)
+        worst_angle_after = max(worst_angle_after, result.max_angle_violation_after)
+        re_change.append(result.end_to_end_change_fraction)
+        rg_change.append(result.rg_change_fraction)
     after = np.linalg.norm(np.diff(corrected, axis=1), axis=2)
+    displacement = np.linalg.norm(corrected - conformers, axis=2)
 
     notes = [
         f"Regularized {conformers.shape[0]} conformer(s) onto a {bond_length:.2f} A CA-CA "
         f"bond: worst bond deviation {np.abs(before - bond_length).max():.3f} A before, "
-        f"{np.abs(after - bond_length).max():.3f} A after; largest atom displacement "
-        f"{np.linalg.norm(corrected - conformers, axis=2).max():.3f} A."
+        f"{np.abs(after - bond_length).max():.3f} A after; atom displacement "
+        f"{np.median(displacement):.3f} A median, {np.percentile(displacement, 95):.3f} A p95, "
+        f"{displacement.max():.3f} A max."
     ]
+    if angle_window is not None:
+        notes.append(
+            f"Repaired CA-CA-CA pseudo-angles into {angle_window[0]:.0f}-{angle_window[1]:.0f} "
+            f"deg: worst excursion outside it {worst_angle_before:.2f} deg before, "
+            f"{worst_angle_after:.2f} deg after."
+        )
+    # The measurement that says the repair is a projection and not a reshaping. Mean over the
+    # ensemble, because a per-conformer worst case is dominated by whichever chain STARLING
+    # broke most and says nothing about whether selection still sees the same distribution.
+    notes.append(
+        f"Ensemble dimensions moved by {float(np.mean(re_change)) * 100:+.2f}% in end-to-end "
+        f"distance and {float(np.mean(rg_change)) * 100:+.2f}% in radius of gyration on average."
+    )
     if unconverged:
         notes.append(
-            f"{unconverged} conformer(s) did not reach the projection tolerance within the "
-            f"sweep limit; their bonds are closer to target than STARLING produced them but "
-            f"are not exact, and the screen below still applies."
+            f"{unconverged} of {conformers.shape[0]} conformer(s) could not be projected onto "
+            f"both constraints at once within the sweep limit. They are left as they are rather "
+            f"than forced, and the screen below rejects them on the criterion they still fail."
         )
     return corrected, tuple(notes)
+
+
+#: Bond-length window a RAW STARLING conformer must fall inside before repair, in Angstroms.
+#:
+#: MEASURED over 40 conformers of a 38-residue sequence from STARLING 2.x: virtual CA-CA bonds
+#: spanned 1.81-4.86 A with a median of 3.36, and 47.6% of all bonds were more than 0.5 A from
+#: 3.81. That is not damage, it is simply what reconstructing coordinates from a predicted
+#: distance map produces -- the MDS step fits the whole map and never constrains the bond.
+#:
+#: So a *physical* bond ceiling cannot be applied to raw output: at the trans-peptide limit of
+#: 3.91 A it rejected 100 of 100 conformers and made the engine unusable. This window is
+#: deliberately generous, and exists only to catch a chain the model genuinely lost -- the 6 A
+#: discontinuity case -- before :func:`regularize_conformers` can quietly repair it. The
+#: physical criteria are then applied AFTER repair, where they mean something.
+RECONSTRUCTION_BOND_WINDOW: Final[tuple[float, float]] = (1.0, 6.0)
+
+#: Window the MEDIAN virtual bond of a raw ensemble must fall in, in Angstroms.
+#:
+#: Tighter than :data:`RECONSTRUCTION_BOND_WINDOW`, and deliberately so: a median over thousands
+#: of bonds is far more stable than any single bond, so it can be held to a narrower range than
+#: the per-bond screen without rejecting real output. MEASURED medians from STARLING 2.x are
+#: 3.36 A (38 residues) and 3.17 A (401 residues), comfortably inside this.
+#:
+#: The split matters. With one shared window at a 1.0 A floor, a synthetic "chain" whose bonds
+#: were all exactly 1.0 A passed the unit check on the boundary and only failed later inside
+#: bond repair, which reports a convergence failure rather than the real problem -- that the
+#: coordinates are not a protein backbone in either unit.
+RECONSTRUCTION_MEDIAN_WINDOW: Final[tuple[float, float]] = (2.0, 6.0)
 
 
 def screen_conformers(
@@ -1277,6 +1359,10 @@ class StarlingEngine:
         self.end_to_end_tolerance = (
             None if end_to_end_tolerance is None else _validated_tolerance(end_to_end_tolerance)
         )
+        # Generated ensembles, keyed by (sequence, count). Per INSTANCE rather than global, so a
+        # caller holding two engines with different settings cannot be served the other's output,
+        # and the memory is released with the engine. See generate_detailed for why reuse is sound.
+        self._ensembles: dict[tuple[str, int], tuple[np.ndarray, tuple[str, ...]]] = {}
 
     def __repr__(self) -> str:
         return (
@@ -1373,30 +1459,89 @@ class StarlingEngine:
             )
 
         wanted = max(self.ensemble_size, request.n_conformations * self.oversample)
-        raw, notes = self._call_starling(entry_point, request.sequence, wanted, rng)
-        conformers, unit_notes = _to_angstroms(raw)
-        notes.extend(unit_notes)
+        # Generated ONCE per sequence, then reused for every later request for that sequence.
+        #
+        # This is not merely an optimisation, it is what the engine's own semantics imply.
+        # STARLING is given a sequence and nothing else -- not the anchors, not the obstacles, not
+        # the model index -- so the ensemble it returns for a region is identical every time it is
+        # asked. What differs between DODO's models is which conformer gets SELECTED and where it
+        # is PLACED, and both of those happen downstream of this call on the cached array.
+        #
+        # Without this, a 5-model rebuild of a 7-region structure ran 35 diffusion-plus-MDS
+        # generations to obtain 7 distinct ensembles, which is the bulk of the wall time: each
+        # generation is 100 conformers reconstructed by MDS.
+        # Drawn HERE, before the cache is consulted, and not inside _call_starling. The rng must
+        # advance by the same amount whether or not the ensemble was already generated: with the
+        # draw on the miss path only, a second request for the same sequence left the generator in
+        # a different state and selection and placement diverged. An existing reproducibility test
+        # caught it -- two calls with one seed returned conformers 41.9 A apart.
+        starling_seed = int(rng.integers(0, 2**31 - 1))
+        cache_key = (request.sequence, wanted)
+        cached = self._ensembles.get(cache_key)
+        if cached is not None:
+            conformers, notes = cached[0].copy(), list(cached[1])
+            notes.append(
+                f"Reused the ensemble already generated for this {request.n_residues}-residue "
+                f"sequence. STARLING conditions on sequence alone, so re-running it would return "
+                f"the same ensemble; selection and placement still happen per model."
+            )
+        else:
+            raw, notes = self._call_starling(entry_point, request.sequence, wanted, starling_seed)
+            conformers, unit_notes = _to_angstroms(raw)
+            notes.extend(unit_notes)
+            self._ensembles[cache_key] = (conformers.copy(), tuple(notes))
 
+        # THREE stages, and the order is the whole point.
+        #
+        # The original order here was screen-then-regularize, on the reasoning that regularizing
+        # first would silently repair a genuine 6 A discontinuity and let a broken ensemble
+        # through. That reasoning was sound but rested on an assumption about STARLING's output
+        # that measurement contradicted: raw output is not "mostly physical with occasional
+        # breaks", it is uniformly non-physical. Over 40 conformers, bonds spanned 1.81-4.86 A
+        # with a median of 3.36, and the physical trans-peptide ceiling of 3.91 A rejected 100 of
+        # 100 conformers -- the engine could not build anything at all.
+        #
+        # What resolves it is separating the two jobs the screen was doing. Catching a lost chain
+        # is done first, on raw coordinates, against a window wide enough to accept ordinary
+        # reconstruction error and narrow enough to reject a real discontinuity. Repair follows.
+        # The physical criteria -- pseudo-angles and internal clashes, which regularization does
+        # NOT fix and which no rigid-body placement can rescue -- are applied last, to the chain
+        # that will actually be used.
+        #
+        # Repairing first is safe for dimensions, which was the other worry: projecting every bond
+        # onto 3.81 A moves atoms 0.58 A at the median and changes the conformer's end-to-end
+        # distance by +0.5% and its radius of gyration by +0.9%. Selection therefore ranks
+        # essentially the same ensemble either way.
+        low, high = RECONSTRUCTION_BOND_WINDOW
         if self.screen:
-            kept_indices, screen_notes = screen_conformers(conformers)
-            notes.extend(screen_notes)
+            bonds = np.linalg.norm(np.diff(conformers, axis=1), axis=2)
+            intact = (bonds >= low).all(axis=1) & (bonds <= high).all(axis=1)
+            lost = int(np.count_nonzero(~intact))
+            if lost:
+                notes.append(
+                    f"Rejected {lost} of {conformers.shape[0]} conformer(s) before repair: a "
+                    f"virtual bond fell outside {low}-{high} A, which is a lost chain rather "
+                    f"than reconstruction error."
+                )
+            kept_indices = np.flatnonzero(intact).astype(np.int64)
         else:
             kept_indices = np.arange(conformers.shape[0], dtype=np.int64)
             notes.append("Screening disabled by caller; conformer geometry is unchecked.")
-        # Regularize AFTER screening, not before, and the order is the whole point. Screening
-        # exists to reject output that is BROKEN -- a nanometre/Angstrom unit mixup, a garbled
-        # array, a 6 A discontinuity where the model lost the chain. Regularizing first repairs
-        # those silently: a 6 A jump becomes a tidy 3.81 A bond and a broken ensemble sails
-        # through. So gross errors are rejected on the raw output first, and only the survivors
-        # have their residual diffusion noise projected away. The screen's shortfall tolerance
-        # is deliberately loose (0.5 A) so ordinary noise is never what gets a conformer
-        # rejected -- that is what makes this ordering safe rather than a compromise.
+
         if kept_indices.size and self.regularize:
             kept = conformers[kept_indices]
             kept, regularize_notes = regularize_conformers(kept)
             conformers = conformers.copy()
             conformers[kept_indices] = kept
             notes.extend(regularize_notes)
+
+        if kept_indices.size and self.screen:
+            # Now the physical criteria, on repaired coordinates. Bond length is satisfied by
+            # construction here, so what this is really testing is pseudo-angles and internal
+            # clashes.
+            survived, screen_notes = screen_conformers(conformers[kept_indices])
+            notes.extend(screen_notes)
+            kept_indices = kept_indices[survived]
 
         if kept_indices.size == 0:
             raise EngineError(
@@ -1524,7 +1669,7 @@ class StarlingEngine:
         entry_point: Callable[..., Any],
         sequence: str,
         n_conformers: int,
-        rng: np.random.Generator,
+        seed: int,
     ) -> tuple[np.ndarray, list[str]]:
         """Call STARLING's entry point, passing only keywords its signature accepts.
 
@@ -1540,12 +1685,19 @@ class StarlingEngine:
         be told this engine cannot promise it.
         """
         notes: list[str] = []
-        seed = int(rng.integers(0, 2**31 - 1))
         wanted: dict[str, Any] = {
             "conformations": n_conformers,
+            # THE keyword this adapter cannot do without. STARLING's generate() defaults to
+            # return_structures=False, which returns an Ensemble carrying only DISTANCE MAPS --
+            # no 3D coordinates at all. Without this every request failed at coordinate
+            # extraction with "could not find coordinates on the object STARLING returned
+            # (Ensemble)", which reads like a version mismatch and is really a missing argument.
+            "return_structures": True,
             "return_data": True,
             "verbose": False,
             "show_progress_bar": False,
+            # STARLING draws a second, per-step bar. DODO has its own progress reporting.
+            "show_per_step_progress_bar": False,
             "seed": seed,
         }
         if self.device is not None:
@@ -1628,6 +1780,9 @@ def _coordinates_from_result(result: Any, sequence: str, n_residues: int) -> np.
     """
     payload = result
     if isinstance(payload, dict):
+        # MEASURED: STARLING keys this dict "sequence_1", "sequence_2", ... -- positionally,
+        # NOT by the sequence string. A single-sequence request therefore only ever worked
+        # through the len == 1 branch below.
         if sequence in payload:
             payload = payload[sequence]
         elif len(payload) == 1:
@@ -1691,40 +1846,65 @@ def _extract_array(payload: Any) -> Any:
                 continue
         if value is not None and np.ndim(value) >= 2:
             return value
+    # MEASURED against STARLING 2.x: `Ensemble.trajectory` is a soursop SSProtein, which has
+    # no `.xyz` of its own -- the array lives one level further down on the mdtraj object it
+    # wraps, at `.trajectory.traj.xyz`, shaped (n_conformers, n_residues, 3) and in NANOMETRES.
+    # The bare `.trajectory.xyz` probe below it is kept for older layouts that did expose it.
     trajectory = getattr(payload, "trajectory", None)
-    xyz = getattr(trajectory, "xyz", None)
-    if xyz is not None and np.ndim(xyz) >= 2:
-        return xyz
+    for path in ("traj.xyz", "xyz"):
+        probed: Any = trajectory
+        for part in path.split("."):
+            probed = getattr(probed, part, None)
+            if probed is None:
+                break
+        if probed is not None and np.ndim(probed) >= 2:
+            return probed
     return None
 
 
 def _to_angstroms(coords: np.ndarray) -> tuple[np.ndarray, list[str]]:
     """Return coordinates in Angstroms, converting from nanometres if that is what they are.
 
-    Why this exists: STARLING's own coordinates are in Angstroms, but the mdtraj
-    trajectory it can hand out is in nanometres, and both routes end up in
-    :func:`_extract_array`. A silent factor of ten would produce a structure with 0.38 A
-    bonds -- which every viewer draws, wrongly, as a solid blob -- so the unit is
-    *measured* from the median virtual bond length rather than assumed.
+    Why this exists: the mdtraj trajectory STARLING hands out is in NANOMETRES, while some routes
+    give Angstroms. A silent factor of ten would produce a structure with 0.38 A bonds, which every
+    viewer draws -- wrongly -- as a solid blob, so the unit is measured rather than assumed.
+
+    The unit and the *quality* of the geometry are deliberately separate questions here, and
+    conflating them is how two successive versions of this function got it wrong. The first
+    required the median bond to sit within 0.5 A of 3.81 or within 0.05 of 0.381; the second used
+    the same 0.5 A on the scaled-up value. Both are too strict, because STARLING's reconstruction
+    error is large and grows with length: a 38-residue sequence measured a median of 3.36 A and a
+    401-residue one 3.17 A, so the second version rejected a perfectly ordinary 401-mer as having
+    units that were "neither Angstroms nor nanometres".
+
+    Units differ by a factor of ten, so that decision is unambiguous by ORDER OF MAGNITUDE and
+    needs no tolerance at all. Whether the geometry is usable is then a separate test, made
+    against :data:`RECONSTRUCTION_BOND_WINDOW` -- wide enough for real reconstruction error, and
+    still narrow enough that a genuinely garbled array fails it.
     """
     notes: list[str] = []
     if coords.shape[1] < 2:
         return coords, notes
     median_bond = float(np.median(np.linalg.norm(np.diff(coords, axis=1), axis=2)))
-    if abs(median_bond - CA_CA_BOND_LENGTH) <= BOND_SCREEN_TOLERANCE:
-        return coords, notes
-    if abs(median_bond - CA_CA_BOND_LENGTH / 10.0) <= BOND_SCREEN_TOLERANCE / 10.0:
+
+    # Nanometres or Angstroms, whichever leaves the median nearer a real CA-CA bond. The two
+    # candidates are a factor of ten apart, so this is never a close call.
+    if abs(median_bond * 10.0 - CA_CA_BOND_LENGTH) < abs(median_bond - CA_CA_BOND_LENGTH):
+        coords = coords * 10.0
+        median_bond *= 10.0
         notes.append(
-            f"Median virtual bond was {median_bond:.4f}, which is Angstroms/10: the "
-            f"coordinates were in nanometres and have been multiplied by 10."
+            f"Coordinates were in nanometres (median virtual bond {median_bond / 10.0:.4f}) and "
+            f"have been multiplied by 10."
         )
-        return coords * 10.0, notes
-    raise EngineError(
-        f"STARLING coordinates have a median CA-CA distance of {median_bond:.3f}, which "
-        f"is neither {CA_CA_BOND_LENGTH} A (Angstroms) nor "
-        f"{CA_CA_BOND_LENGTH / 10.0:.3f} (nanometres). DODO will not guess the unit of "
-        f"coordinates it is about to write into a structure file."
-    )
+
+    low, high = RECONSTRUCTION_MEDIAN_WINDOW
+    if not low <= median_bond <= high:
+        raise EngineError(
+            f"STARLING coordinates have a median CA-CA distance of {median_bond:.3f} A, outside "
+            f"the {low}-{high} A window any reconstruction of a real chain falls in, so neither "
+            f"unit interpretation makes this a protein backbone. DODO will not write it to a file."
+        )
+    return coords, notes
 
 
 # ---------------------------------------------------------------------------

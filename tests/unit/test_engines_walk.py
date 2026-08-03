@@ -24,6 +24,7 @@ import warnings
 
 import numpy as np
 import pytest
+from scipy.spatial import cKDTree
 
 from dodo.constants import (
     BACKBONE_ANGLE_MAX,
@@ -45,6 +46,7 @@ from dodo.engines.walk import (
     max_reach,
     min_reach,
     reachability_tail,
+    reachable_envelope,
 )
 from dodo.exceptions import (
     EngineError,
@@ -511,6 +513,203 @@ class TestReachability:
         assert derived[0] / old[0] > 1.4
         # Both agree on the one step where geometry leaves no freedom.
         assert derived[-1] == pytest.approx(old[-1])
+
+
+# ---------------------------------------------------------------------------
+# Skipping clash work that cannot change the answer
+# ---------------------------------------------------------------------------
+
+
+class TestReachableEnvelope:
+    def test_no_anchor_leaves_the_region_unconstrained(self) -> None:
+        assert reachable_envelope(20, None, None) is None
+
+    def test_one_anchor_gives_the_walk_its_full_reach(self) -> None:
+        assert reachable_envelope(20, ORIGIN, None) == pytest.approx(max_reach(20))
+        assert reachable_envelope(20, None, ORIGIN) == pytest.approx(max_reach(20))
+
+    def test_two_anchors_bound_the_sum_of_the_two_distances(self) -> None:
+        # n + 1 bonds are shared between the two halves of the walk, so the sum of the two
+        # anchor distances cannot exceed what n + 1 bonds span, plus the transverse slack
+        # max_reach carries for odd bond counts.
+        limit = reachable_envelope(20, ORIGIN, np.array([30.0, 0.0, 0.0]))
+        assert limit is not None
+        assert limit >= max_reach(21)
+        assert limit < max_reach(21) + 2.0 * CA_CA_BOND_LENGTH
+
+    def test_envelope_actually_contains_every_residue_it_builds(self) -> None:
+        # The point of the bound. If a built region ever left the envelope, an obstacle
+        # pruned by it could have been hit.
+        n_anchor = ORIGIN
+        c_anchor = np.array([28.0, 0.0, 0.0])
+        limit = reachable_envelope(24, n_anchor, c_anchor)
+        assert limit is not None
+        for seed in range(6):
+            _, result = build(24, seed=seed, n_anchor=n_anchor, c_anchor=c_anchor)
+            trace = result.ca_coords[0]
+            reach = np.linalg.norm(trace - n_anchor, axis=1) + np.linalg.norm(
+                trace - c_anchor, axis=1
+            )
+            assert np.max(reach) <= limit + 1e-9
+
+    def test_tail_envelope_contains_every_residue_it_builds(self) -> None:
+        limit = reachable_envelope(40, ORIGIN, None)
+        assert limit is not None
+        for seed in range(6):
+            _, result = build(40, seed=seed, n_anchor=ORIGIN)
+            assert np.max(np.linalg.norm(result.ca_coords[0], axis=1)) <= limit + 1e-9
+
+    def test_rejects_an_empty_region(self) -> None:
+        with pytest.raises(ValueError, match="at least 1"):
+            reachable_envelope(0, ORIGIN, None)
+
+
+class TestObstaclePruning:
+    @staticmethod
+    def _request(n_residues: int, **anchors: np.ndarray | None) -> IDRRequest:
+        return IDRRequest(
+            sequence="G" * n_residues,
+            n_residues=n_residues,
+            target_end_to_end=flory_end_to_end(n_residues),
+            **anchors,
+        )
+
+    def test_none_stays_none(self) -> None:
+        request = self._request(10, n_anchor_xyz=ORIGIN)
+        assert SelfAvoidingWalk._prune_unreachable(request, None) is None
+
+    def test_an_obstacle_beyond_reach_is_dropped(self) -> None:
+        request = self._request(4, n_anchor_xyz=ORIGIN)
+        far = np.array([[1000.0, 0.0, 0.0]])
+        pruned = SelfAvoidingWalk._prune_unreachable(request, far)
+        assert pruned is not None
+        assert pruned.shape[0] == 0
+
+    def test_an_obstacle_just_inside_the_dilated_envelope_is_kept(self) -> None:
+        request = self._request(4, n_anchor_xyz=ORIGIN)
+        limit = reachable_envelope(4, ORIGIN, None)
+        assert limit is not None
+        edge = np.array([[limit + CA_CLASH_DISTANCE - 1e-6, 0.0, 0.0]])
+        pruned = SelfAvoidingWalk._prune_unreachable(request, edge)
+        assert pruned is not None
+        assert pruned.shape[0] == 1
+
+    def test_nothing_is_dropped_for_a_region_with_no_anchors(self) -> None:
+        request = self._request(10)
+        far = np.array([[500.0, 0.0, 0.0]])
+        assert SelfAvoidingWalk._prune_unreachable(request, far) is far
+
+    def test_a_long_region_keeps_everything_within_a_structure(self) -> None:
+        # 150 residues reach far further than any AlphaFold model is wide, which is why this
+        # pruning earns close to nothing end to end: it never fires on the regions that cost.
+        request = self._request(150, n_anchor_xyz=ORIGIN)
+        rng = np.random.default_rng(0)
+        obstacles = rng.uniform(-100.0, 100.0, size=(500, 3))
+        assert SelfAvoidingWalk._prune_unreachable(request, obstacles) is obstacles
+
+    def test_a_non_finite_obstacle_still_reaches_the_guard_that_rejects_it(self) -> None:
+        # NaN makes every comparison False, so a careless implementation drops the row and
+        # silently disarms _obstacle_tree's non-finite check.
+        request = self._request(12, n_anchor_xyz=ORIGIN)
+        obstacles = np.array([[0.0, 0.0, 8.0], [np.nan, 0.0, 0.0]])
+        with pytest.raises(GeometryError, match="non-finite"):
+            SelfAvoidingWalk().generate(request, obstacles, np.random.default_rng(0))
+
+    def test_pruning_does_not_change_what_gets_built(self) -> None:
+        # An obstacle field spanning far beyond reach must give the identical trace to the
+        # same field with the unreachable part removed by hand.
+        rng = np.random.default_rng(3)
+        obstacles = rng.uniform(-400.0, 400.0, size=(4000, 3))
+        near = obstacles[np.linalg.norm(obstacles, axis=1) < 120.0]
+        assert near.shape[0] < obstacles.shape[0]
+        for seed in range(4):
+            _, wide = build(20, seed=seed, n_anchor=ORIGIN, obstacles=obstacles)
+            _, tight = build(20, seed=seed, n_anchor=ORIGIN, obstacles=near)
+            assert np.array_equal(wide.ca_coords, tight.ca_coords)
+
+
+class TestCandidateCullIsExact:
+    """The cull replaces a 710-point clash query with a 1-point one when it cannot matter.
+
+    It is only sound because every candidate for a residue sits *exactly* one bond length from a
+    single centre. These tests pin that invariant and the identity of the output, since a wrong
+    centre would silently let clashing candidates through rather than fail loudly.
+    """
+
+    def test_every_candidate_sits_one_bond_from_the_reported_centre(self) -> None:
+        walk = SelfAvoidingWalk()
+        plan = _WalkPlan.build(
+            IDRRequest(
+                sequence="G" * 12,
+                n_residues=12,
+                target_end_to_end=flory_end_to_end(12),
+                n_anchor_xyz=ORIGIN,
+                c_anchor_xyz=np.array([20.0, 0.0, 0.0]),
+            ),
+            0.2,
+            np.random.default_rng(0),
+        )
+        rng = np.random.default_rng(1)
+        coords = np.full((1, 12, 3), np.nan)
+        live = np.array([0])
+        for index in range(plan.n_grown):
+            candidates, _, centres = walk._candidates_for(plan, coords, live, index, rng)
+            distances = np.linalg.norm(candidates[0] - centres[0], axis=1)
+            assert np.allclose(distances, CA_CA_BOND_LENGTH, atol=1e-9)
+            coords[0, index] = candidates[0, 0]
+
+    def test_a_clear_row_and_a_queried_row_agree_on_the_clash_predicate(self) -> None:
+        rng = np.random.default_rng(0)
+        obstacles = rng.uniform(-30.0, 30.0, size=(800, 3))
+        tree = cKDTree(obstacles)
+        centres = rng.uniform(-30.0, 30.0, size=(40, 3))
+        directions = rng.normal(size=(40, 200, 3))
+        directions /= np.linalg.norm(directions, axis=2, keepdims=True)
+        candidates = centres[:, None, :] + CA_CA_BOND_LENGTH * directions
+
+        culled = SelfAvoidingWalk._nearest_obstacle_distance(candidates, tree, centres)
+        exact = SelfAvoidingWalk._nearest_obstacle_distance(candidates, tree, None)
+        # Distances may differ (a culled row reports inf), the decision may not.
+        assert np.array_equal(culled >= CA_CLASH_DISTANCE, exact >= CA_CLASH_DISTANCE)
+
+    def test_a_culled_row_is_only_ever_one_that_could_not_clash(self) -> None:
+        rng = np.random.default_rng(5)
+        obstacles = rng.uniform(-30.0, 30.0, size=(600, 3))
+        tree = cKDTree(obstacles)
+        centres = rng.uniform(-30.0, 30.0, size=(60, 3))
+        directions = rng.normal(size=(60, 150, 3))
+        directions /= np.linalg.norm(directions, axis=2, keepdims=True)
+        candidates = centres[:, None, :] + CA_CA_BOND_LENGTH * directions
+
+        culled = SelfAvoidingWalk._nearest_obstacle_distance(candidates, tree, centres)
+        exact = SelfAvoidingWalk._nearest_obstacle_distance(candidates, tree, None)
+        skipped = np.all(np.isinf(culled), axis=1) & ~np.all(np.isinf(exact), axis=1)
+        assert skipped.any(), "the fixture should exercise the cull at least once"
+        assert np.all(exact[skipped] >= CA_CLASH_DISTANCE)
+
+    def test_a_non_finite_centre_falls_back_to_querying_the_row(self) -> None:
+        rng = np.random.default_rng(7)
+        obstacles = rng.uniform(-10.0, 10.0, size=(200, 3))
+        tree = cKDTree(obstacles)
+        candidates = rng.uniform(-10.0, 10.0, size=(2, 30, 3))
+        centres = np.array([[np.nan, np.nan, np.nan], [0.0, 0.0, 0.0]])
+        culled = SelfAvoidingWalk._nearest_obstacle_distance(candidates, tree, centres)
+        exact = SelfAvoidingWalk._nearest_obstacle_distance(candidates, tree, None)
+        assert np.allclose(culled[0], exact[0])
+
+    @pytest.mark.parametrize("n_residues", [12, 40])
+    def test_output_is_unchanged_by_how_far_the_obstacles_sit(self, n_residues: int) -> None:
+        # Obstacles hugging the region exercise the queried path; the same obstacles pushed
+        # away exercise the culled path. Neither may differ from building with none at all.
+        for seed in range(3):
+            _, bare = build(n_residues, seed=seed, n_anchor=ORIGIN)
+            _, far = build(
+                n_residues,
+                seed=seed,
+                n_anchor=ORIGIN,
+                obstacles=np.array([[0.0, 0.0, 900.0]]),
+            )
+            assert np.array_equal(bare.ca_coords, far.ca_coords)
 
 
 # ---------------------------------------------------------------------------

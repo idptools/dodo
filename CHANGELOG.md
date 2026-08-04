@@ -168,6 +168,19 @@ in a viewer shows only the disordered regions moving.
   Convergence is now judged on the objective, which finishes a 583-residue region in 15 sweeps and a
   60-residue one in 7.
 
+  A third change came from evaluating scipy alternatives at the shapes the code actually uses: the
+  clash term now uses `scipy.spatial.distance.cdist` with `sqeuclidean` rather than a broadcast
+  `numpy.linalg.norm`, which never materialises the `(n_points, n_others, 3)` intermediate. Measured
+  1.6x faster at 2 neighbours and 4.3x at 50, bit-identical output, and 11.0 s to 9.9 s on p300.
+
+  Two scipy options measured and **rejected**, both for the same reason the `np.cross` fix worked:
+  the arrays here are tiny, so per-call overhead decides. Building a `cKDTree` per clash test costs
+  16-25 us against 4 (it earns its keep choosing neighbour sets once per sweep, which is where it is
+  used), and `scipy.spatial.transform.Rotation` on a 24-candidate batch is 11.8 us against 9.0 for
+  the hand-rolled equivalent. A third, expressing refinement as a `scipy.optimize` problem, does not
+  apply at all: the Ramachandran term is a binned table lookup, so the objective is piecewise
+  constant and a gradient-based solver would see no gradient from it.
+
   One thing that looked like the obvious culprit and was **not**: the clash term rebuilt a `(3N, 3)`
   array with `np.vstack` on every call, roughly 137,000 times per structure. Fixing it — the live
   arrays are now views into one buffer — saved 0.2 s of 21.5. Worth keeping, but the profile, not the

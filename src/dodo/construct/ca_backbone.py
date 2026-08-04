@@ -66,6 +66,7 @@ observations. It is IDR data on purpose: this module exists to rebuild disordere
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final
 
@@ -438,6 +439,88 @@ def _existing_atom(structure: Structure, residue: int, name: str) -> np.ndarray 
     return None
 
 
+#: Separation a seam placement must keep from the neighbouring residue's atoms, in Angstroms.
+#:
+#: MEASURED as the smallest value that stops the recurring seam defect. Real non-bonded backbone
+#: contacts across a peptide junction run from about 2.7 A (a carbonyl O to the next residue's CB)
+#: upward, so a 2.6 A floor rejects a collision without rejecting legitimate geometry. It is
+#: checked rather than assumed -- see :func:`_place_on_cone` for the three successive
+#: by-construction fixes this replaced.
+SEAM_CLASH_DISTANCE: Final[float] = 2.6
+
+
+def _place_on_cone(
+    apex: np.ndarray,
+    reference: np.ndarray,
+    angle_degrees: float,
+    length: float,
+    *,
+    prefer: np.ndarray | None = None,
+    depart: np.ndarray | None = None,
+    avoid: np.ndarray | None = None,
+    clash: float = SEAM_CLASH_DISTANCE,
+    samples: int = 48,
+) -> np.ndarray:
+    """Place an atom at ``length`` from ``apex`` and ``angle_degrees`` off ``apex``->``reference``.
+
+    That leaves exactly one free parameter -- the azimuth about the reference axis -- and this picks
+    it. Collisions are ruled out first, then ``prefer`` is approached and ``depart`` is escaped.
+
+    This exists because the strained-seam fallback kept producing the same class of defect in a
+    new place each time it was fixed by construction alone. Aiming the carbon straight at the
+    neighbour's nitrogen made the three collinear and sent the carbonyl to an arbitrary axis
+    (measured: O 0.6 A from its own alpha carbon on p300). Holding the N-CA-C angle instead fixed
+    that, and let the oxygen land 0.975 A from the neighbour's nitrogen. Placing the oxygen trans
+    to that nitrogen fixed *that*, and left it 0.96 A from the neighbour's CB. Every fix was
+    locally right and blind to one more neighbour; the way to stop is to check instead of
+    construct, which is what this does.
+
+    The angle to ``reference`` is never traded away: it is the residue's own internal geometry, and
+    damaging that is worse than a long bond to the next residue.
+    """
+    axis = _unit(reference - apex)
+    fallback = np.array([0.0, 0.0, 1.0])
+    if abs(float(np.dot(fallback, axis))) > 0.9:
+        fallback = np.array([0.0, 1.0, 0.0])
+    first = _unit(fallback - float(np.dot(fallback, axis)) * axis)
+    second = np.cross(axis, first)
+
+    angle = np.radians(angle_degrees)
+    azimuths = np.linspace(0.0, 2.0 * np.pi, samples, endpoint=False)
+    radial = np.cos(azimuths)[:, None] * first + np.sin(azimuths)[:, None] * second
+    candidates = apex + length * (np.cos(angle) * axis + np.sin(angle) * radial)
+
+    score = np.zeros(samples)
+    if avoid is not None and avoid.shape[0]:
+        gaps = np.linalg.norm(candidates[:, None, :] - avoid[None, :, :], axis=2)
+        # A hard penalty, not a weighted term: a candidate that collides is not a candidate.
+        score += 1e6 * np.square(np.clip(clash - gaps, 0.0, None)).sum(axis=1)
+    if prefer is not None:
+        score += np.linalg.norm(candidates - prefer, axis=1)
+    if depart is not None:
+        score -= np.linalg.norm(candidates - depart, axis=1)
+    chosen: np.ndarray = candidates[int(np.argmin(score))]
+    return chosen
+
+
+def _seam_obstacles(structure: Structure, residues: Iterable[int]) -> np.ndarray:
+    """Atoms of ``residues`` that a seam placement must not collide with.
+
+    Deliberately narrow: the atoms that actually get hit are the neighbouring residue's own, and its
+    side chain in particular -- an anchor's CB is the thing a carbonyl oxygen runs into.
+    """
+    collected: list[np.ndarray] = []
+    for residue in residues:
+        if not 0 <= residue < structure.n_residues:
+            continue
+        atoms = structure.atom_slice_for_residues(residue, residue + 1)
+        for index in range(atoms.start, atoms.stop):
+            collected.append(structure.xyz[index])
+    if not collected:
+        return np.empty((0, 3))
+    return np.asarray(collected, dtype=np.float64)
+
+
 def add_backbone_to_rebuilt(structure: Structure, *, refine: bool = True) -> Structure:
     """Return a copy with N, C and O placed on the regions DODO rebuilt.
 
@@ -532,19 +615,25 @@ def add_backbone_to_rebuilt(structure: Structure, *, refine: bool = True) -> Str
                     # from N(393) where a peptide unit needs about 2.43, so no C satisfies both
                     # bonds. Aim C straight at the neighbour instead: the seam bond stays too long
                     # and is reported, but nothing impossible is written.
-                    seam = anchor_ca + CA_C_BOND_LENGTH * _unit(neighbour_n - anchor_ca)
+                    seam = _place_on_cone(
+                        anchor_ca,
+                        placed[stop - 1]["N"],
+                        N_CA_C_ANGLE,
+                        CA_C_BOND_LENGTH,
+                        prefer=neighbour_n,
+                        avoid=_seam_obstacles(structure, (stop, stop + 1)),
+                    )
                     seams_strained.append(stop - 1)
                 placed[stop - 1]["C"] = seam
-                if stop - 1 in seams_strained:
-                    # Aiming C straight at the neighbour makes CA, C and N collinear, so the
-                    # carbonyl plane through them is undefined and the usual construction falls
-                    # back to an arbitrary axis -- which put O 0.6 A from its own alpha carbon on
-                    # p300. Take the plane from the previous alpha carbon instead, exactly as at a
-                    # chain terminus, where the same degeneracy arises for the same reason.
-                    previous = structure.ca_xyz[stop - 2] if stop - 2 >= start else neighbour_n
-                    placed[stop - 1]["O"] = _terminal_oxygen(anchor_ca, seam, previous)
-                else:
-                    placed[stop - 1]["O"] = _place_carbonyl_oxygen(anchor_ca, seam, neighbour_n)
+                # The usual carbonyl construction, strained seam or not. It needs the CA-C-N plane
+                # to be defined, and it now always is: the old fallback aimed C straight at the
+                # neighbour's N, which made the three collinear and sent the construction to an
+                # arbitrary axis (measured: O 0.6 A from its own alpha carbon on p300), but
+                # _closest_on_angle_cone places C off that axis. Using it here matters because it
+                # puts O *trans* to the neighbour's nitrogen by construction; the terminus-style
+                # fallback that replaced it did not know the neighbour existed, and on dnmt3a it
+                # left SER393's O 0.975 A from ASP394's N.
+                placed[stop - 1]["O"] = _place_carbonyl_oxygen(anchor_ca, seam, neighbour_n)
         if start > 0:
             neighbour_c = _existing_atom(structure, start - 1, "C")
             if neighbour_c is not None:
@@ -557,7 +646,16 @@ def add_backbone_to_rebuilt(structure: Structure, *, refine: bool = True) -> Str
                     placed[start]["N"],
                 )
                 if seam is None:
-                    seam = first_ca + N_CA_BOND_LENGTH * _unit(neighbour_c - first_ca)
+                    # Mirror of the C-side fallback: hold this residue's own N-CA-C angle and spend
+                    # the remaining freedom reaching toward the neighbour's carbon.
+                    seam = _place_on_cone(
+                        first_ca,
+                        placed[start]["C"],
+                        N_CA_C_ANGLE,
+                        N_CA_BOND_LENGTH,
+                        prefer=neighbour_c,
+                        avoid=_seam_obstacles(structure, (start - 1, start - 2)),
+                    )
                     seams_strained.append(start)
                 placed[start]["N"] = seam
 
@@ -586,10 +684,36 @@ def add_backbone_to_rebuilt(structure: Structure, *, refine: bool = True) -> Str
         b_value = float(structure.b_factor[residue])
         occupancy = float(structure.occupancy[residue])
 
-        # Emitted in conventional N-CA-C-O order, then everything else in the order it arrived.
-        # A placed atom is only ever offered for a residue that lacks it, so an existing atom of
-        # the same name wins -- which is what keeps this strictly additive over input geometry.
         records: list[tuple[str, str, np.ndarray]] = []
+        if not extra:
+            # Nothing is being added to this residue, so it is passed through byte-for-byte -- same
+            # atoms, same coordinates, SAME ORDER. The order matters: reordering into the
+            # conventional N-CA-C-O below would rewrite 864 of dnmt3a's 912 residues, including
+            # every folded-domain residue, and "folded domains are returned exactly as they
+            # arrived" has to mean exactly.
+            for index in range(atoms.start, atoms.stop):
+                records.append(
+                    (
+                        str(structure.atom_name[index]),
+                        str(structure.element[index]),
+                        structure.xyz[index],
+                    )
+                )
+            for name, element, point in records:
+                xyz.append(np.asarray(point, dtype=np.float64))
+                names.append(name)
+                elements.append(element)
+                residue_names.append(str(structure.residue_name[residue]))
+                residue_numbers.append(int(structure.residue_number[residue]))
+                chain_ids.append(chain.chain_id)
+                insertion_codes.append(str(structure.insertion_code[residue]))
+                b_factors.append(b_value)
+                occupancies.append(occupancy)
+            continue
+
+        # A residue that gains atoms is emitted in conventional N-CA-C-O order, then everything else
+        # in the order it arrived. A placed atom is only ever offered for a residue that lacks it,
+        # so an existing atom of the same name wins -- which is what keeps this additive.
         emitted: set[str] = set()
         for name in ("N", "CA", "C", "O"):
             if name in extra:

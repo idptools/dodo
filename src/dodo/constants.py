@@ -276,7 +276,6 @@ MIN_IDR_LENGTH: Final[int] = 4
 #:
 #: This governs :attr:`dodo.construct.RebuildReport.ok` and therefore the CLI's exit status.
 SHORT_REGION_TOLERANCE: Final[int] = 10
-
 #: pLDDT below which an AF2 residue is treated as disordered. CHOICE, following the
 #: widely used AF2 confidence bands (<50 very low, 50-70 low, 70-90 confident).
 #: pLDDT is already in the B-factor column and the pre-rewrite code never looked at

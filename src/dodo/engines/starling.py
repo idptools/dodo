@@ -82,6 +82,7 @@ from ..exceptions import (
     MissingDependencyError,
 )
 from ..geometry.metrics import ca_bond_lengths, ca_pseudo_angles
+from ..geometry.regularize import regularize_ca_trace
 from ..geometry.sampling import random_unit_vectors
 from ..geometry.transforms import apply, rotation_between_vectors, rotation_from_axis_angle
 from .base import IDRRequest, IDRResult
@@ -1150,6 +1151,126 @@ RECONSTRUCTION_BOND_WINDOW: Final[tuple[float, float]] = (1.0, 6.0)
 RECONSTRUCTION_MEDIAN_WINDOW: Final[tuple[float, float]] = (2.0, 6.0)
 
 
+#: Worst non-bonded CA-CA contact a raw conformer may have and still be worth repairing, in
+#: Angstroms, expressed as a shortfall below :data:`~dodo.constants.CA_CLASH_DISTANCE`.
+#:
+#: MEASURED, and this is the cheap-elimination threshold that makes the pipeline affordable.
+#: Repair is the expensive step -- 3.8 s for 100 conformers of 380 residues -- and it cannot fix an
+#: internal clash: projecting bonds and angles rearranges a chain locally, it does not unthread it.
+#: So a conformer that already collides badly should be dropped BEFORE paying to repair it.
+#:
+#: The threshold has to be loose enough that it never discards a conformer repair would have saved.
+#: Over 60 conformers at 38 and 200 residues, every conformer that ultimately passed the physical
+#: screen had a raw worst contact of at least 3.536 A, while the rejected ones sat at a median of
+#: 2.218 A. Repair itself moves the worst contact by only -0.128 A at the median. A cutoff 0.3 A
+#: below the 3.20 A clash distance -- so 2.90 A -- therefore has 0.6 A of margin against the
+#: closest accepted conformer, and still eliminates the bulk of the hopeless ones for free.
+PREFILTER_CLASH_SHORTFALL: Final[float] = 0.3
+
+#: Largest distance any single alpha carbon may be moved by repair, in Angstroms.
+#:
+#: MEASURED. Repair is meant to keep a conformer as close to STARLING's output as it can while
+#: making the geometry physical, and it normally does: displacement is 0.84 A at the median and
+#: 2.10 A at the 99th percentile. But a severe angle violation near a free terminus has nothing to
+#: anchor it, and one conformer in twelve had an atom travel 21.8 A to open a 9.9 degree vertex at
+#: residue 3 -- a local rearrangement, not a repair. With ~100 conformers generated per round,
+#: rejecting such a conformer costs nothing and keeps the promise that a kept conformer is
+#: recognisably the one STARLING produced.
+MAX_REPAIR_DISPLACEMENT: Final[float] = 4.0
+
+#: Extra rounds of generation allowed when the first round does not yield enough usable conformers.
+#:
+#: CHOICE, bounded by cost: each round is a full diffusion-plus-MDS pass. Long regions are where
+#: yield is poor -- at 200 residues only about 6 of 30 conformers survive, because STARLING's raw
+#: output already contains internal clashes -- so one retry roughly doubles the pool for one extra
+#: generation, and a hard cap keeps a pathological sequence from generating forever.
+MAX_GENERATION_ROUNDS: Final[int] = 3
+
+
+def _repair_one(chain: np.ndarray) -> tuple[np.ndarray, bool]:
+    """Project one conformer onto physical bonds and angles. Returns it and whether to keep it.
+
+    Rejects rather than returns a repair that moved any alpha carbon further than
+    :data:`MAX_REPAIR_DISPLACEMENT`. Repair is supposed to keep a conformer recognisably the one
+    STARLING produced while making its geometry valid, and it normally does -- displacement is
+    0.84 A at the median and 2.10 A at the 99th percentile. But a severe angle violation beside a
+    free terminus has nothing to anchor it: one conformer in twelve had an atom travel 21.8 A to
+    open a 9.9 degree vertex at residue 3. That is a local rearrangement, not a repair, and with
+    ~100 conformers generated per round it is cheaper to discard than to accept.
+    """
+    if chain.shape[0] < 3:
+        # Nothing to project: a two-residue chain has one bond and no vertex, a one-residue chain
+        # has neither. regularize_ca_trace rightly refuses to be handed either, so short regions
+        # are placed exactly as STARLING produced them.
+        return chain, True
+    result = regularize_ca_trace(chain, angle_window=SCREEN_ANGLE_WINDOW, raise_on_failure=False)
+    if not result.converged:
+        return chain, False
+    moved = float(np.max(np.linalg.norm(result.ca_coords - chain, axis=1)))
+    if moved > MAX_REPAIR_DISPLACEMENT:
+        return chain, False
+    return result.ca_coords, True
+
+
+def prefilter_conformers(conformers: np.ndarray) -> tuple[np.ndarray, tuple[str, ...]]:
+    """Drop conformers not worth repairing, using only checks that cost nothing.
+
+    This is the efficiency step. Repair is the expensive part of the pipeline -- 3.8 s for 100
+    conformers of 380 residues -- and two defects survive it: a chain the model lost entirely, and
+    a chain that collides with itself. Projecting bonds and angles rearranges a chain locally; it
+    does not unthread one. So both are far cheaper to detect before paying to repair.
+
+    The clash threshold has to be loose enough never to discard a conformer repair would have
+    saved. MEASURED over 60 conformers at 38 and 200 residues: every conformer that ultimately
+    passed :func:`screen_conformers` had a raw worst contact of at least 3.536 A, the rejected ones
+    sat at a median of 2.218 A, and repair moves the worst contact by only -0.128 A at the median.
+    See :data:`PREFILTER_CLASH_SHORTFALL`.
+
+    Returns
+    -------
+    tuple[np.ndarray, tuple[str, ...]]
+        Indices worth repairing, ordered **best first** -- fewest pseudo-angle violations, then the
+        roomiest internal contact -- and notes recording what was dropped and why. The ordering is
+        load-bearing: the caller repairs only as many as it needs, so the conformers likeliest to
+        succeed have to be tried first or the saving evaporates.
+    """
+    array = _as_conformers(conformers)
+    n = array.shape[0]
+    low, high = RECONSTRUCTION_BOND_WINDOW
+    bonds = np.linalg.norm(np.diff(array, axis=1), axis=2)
+    intact = (bonds >= low).all(axis=1) & (bonds <= high).all(axis=1)
+
+    floor = CA_CLASH_DISTANCE - PREFILTER_CLASH_SHORTFALL
+    contacts = np.array([_min_internal_ca_distance(chain) for chain in array])
+    roomy = contacts >= floor
+
+    notes: list[str] = []
+    lost = int(np.count_nonzero(~intact))
+    if lost:
+        notes.append(
+            f"Dropped {lost} of {n} conformer(s) before repair: a virtual bond outside "
+            f"{low}-{high} A is a lost chain, not reconstruction error."
+        )
+    hopeless = int(np.count_nonzero(intact & ~roomy))
+    if hopeless:
+        notes.append(
+            f"Dropped {hopeless} of {n} conformer(s) before repair: their closest non-bonded "
+            f"contact is under {floor:.2f} A, and repair cannot unthread a self-collision."
+        )
+
+    keep = np.flatnonzero(intact & roomy)
+    if keep.size and array.shape[1] >= 3:
+        window_low, window_high = SCREEN_ANGLE_WINDOW
+
+        def out_of_window(index: int) -> int:
+            angles = ca_pseudo_angles(array[index])
+            return int(np.count_nonzero((angles < window_low) | (angles > window_high)))
+
+        violations = np.array([out_of_window(int(index)) for index in keep])
+        keep = keep[np.lexsort((-contacts[keep], violations))]
+    return keep, tuple(notes)
+
+
 def screen_conformers(
     conformers: np.ndarray,
     *,
@@ -1362,7 +1483,7 @@ class StarlingEngine:
         # Generated ensembles, keyed by (sequence, count). Per INSTANCE rather than global, so a
         # caller holding two engines with different settings cannot be served the other's output,
         # and the memory is released with the engine. See generate_detailed for why reuse is sound.
-        self._ensembles: dict[tuple[str, int], tuple[np.ndarray, tuple[str, ...]]] = {}
+        self._ensembles: dict[tuple[str, int, int], tuple[np.ndarray, tuple[str, ...]]] = {}
 
     def __repr__(self) -> str:
         return (
@@ -1459,97 +1580,16 @@ class StarlingEngine:
             )
 
         wanted = max(self.ensemble_size, request.n_conformations * self.oversample)
-        # Generated ONCE per sequence, then reused for every later request for that sequence.
-        #
-        # This is not merely an optimisation, it is what the engine's own semantics imply.
-        # STARLING is given a sequence and nothing else -- not the anchors, not the obstacles, not
-        # the model index -- so the ensemble it returns for a region is identical every time it is
-        # asked. What differs between DODO's models is which conformer gets SELECTED and where it
-        # is PLACED, and both of those happen downstream of this call on the cached array.
-        #
-        # Without this, a 5-model rebuild of a 7-region structure ran 35 diffusion-plus-MDS
-        # generations to obtain 7 distinct ensembles, which is the bulk of the wall time: each
-        # generation is 100 conformers reconstructed by MDS.
-        # Drawn HERE, before the cache is consulted, and not inside _call_starling. The rng must
-        # advance by the same amount whether or not the ensemble was already generated: with the
-        # draw on the miss path only, a second request for the same sequence left the generator in
-        # a different state and selection and placement diverged. An existing reproducibility test
-        # caught it -- two calls with one seed returned conformers 41.9 A apart.
-        starling_seed = int(rng.integers(0, 2**31 - 1))
-        cache_key = (request.sequence, wanted)
-        cached = self._ensembles.get(cache_key)
-        if cached is not None:
-            conformers, notes = cached[0].copy(), list(cached[1])
-            notes.append(
-                f"Reused the ensemble already generated for this {request.n_residues}-residue "
-                f"sequence. STARLING conditions on sequence alone, so re-running it would return "
-                f"the same ensemble; selection and placement still happen per model."
-            )
-        else:
-            raw, notes = self._call_starling(entry_point, request.sequence, wanted, starling_seed)
-            conformers, unit_notes = _to_angstroms(raw)
-            notes.extend(unit_notes)
-            self._ensembles[cache_key] = (conformers.copy(), tuple(notes))
-
-        # THREE stages, and the order is the whole point.
-        #
-        # The original order here was screen-then-regularize, on the reasoning that regularizing
-        # first would silently repair a genuine 6 A discontinuity and let a broken ensemble
-        # through. That reasoning was sound but rested on an assumption about STARLING's output
-        # that measurement contradicted: raw output is not "mostly physical with occasional
-        # breaks", it is uniformly non-physical. Over 40 conformers, bonds spanned 1.81-4.86 A
-        # with a median of 3.36, and the physical trans-peptide ceiling of 3.91 A rejected 100 of
-        # 100 conformers -- the engine could not build anything at all.
-        #
-        # What resolves it is separating the two jobs the screen was doing. Catching a lost chain
-        # is done first, on raw coordinates, against a window wide enough to accept ordinary
-        # reconstruction error and narrow enough to reject a real discontinuity. Repair follows.
-        # The physical criteria -- pseudo-angles and internal clashes, which regularization does
-        # NOT fix and which no rigid-body placement can rescue -- are applied last, to the chain
-        # that will actually be used.
-        #
-        # Repairing first is safe for dimensions, which was the other worry: projecting every bond
-        # onto 3.81 A moves atoms 0.58 A at the median and changes the conformer's end-to-end
-        # distance by +0.5% and its radius of gyration by +0.9%. Selection therefore ranks
-        # essentially the same ensemble either way.
-        low, high = RECONSTRUCTION_BOND_WINDOW
-        if self.screen:
-            bonds = np.linalg.norm(np.diff(conformers, axis=1), axis=2)
-            intact = (bonds >= low).all(axis=1) & (bonds <= high).all(axis=1)
-            lost = int(np.count_nonzero(~intact))
-            if lost:
-                notes.append(
-                    f"Rejected {lost} of {conformers.shape[0]} conformer(s) before repair: a "
-                    f"virtual bond fell outside {low}-{high} A, which is a lost chain rather "
-                    f"than reconstruction error."
-                )
-            kept_indices = np.flatnonzero(intact).astype(np.int64)
-        else:
-            kept_indices = np.arange(conformers.shape[0], dtype=np.int64)
-            notes.append("Screening disabled by caller; conformer geometry is unchecked.")
-
-        if kept_indices.size and self.regularize:
-            kept = conformers[kept_indices]
-            kept, regularize_notes = regularize_conformers(kept)
-            conformers = conformers.copy()
-            conformers[kept_indices] = kept
-            notes.extend(regularize_notes)
-
-        if kept_indices.size and self.screen:
-            # Now the physical criteria, on repaired coordinates. Bond length is satisfied by
-            # construction here, so what this is really testing is pseudo-angles and internal
-            # clashes.
-            survived, screen_notes = screen_conformers(conformers[kept_indices])
-            notes.extend(screen_notes)
-            kept_indices = kept_indices[survived]
-
-        if kept_indices.size == 0:
+        usable, notes, generated = self._usable_conformers(request, entry_point, wanted, rng)
+        if usable.shape[0] == 0:
+            # Deduplicated, in order: every round reports the same drop reason, so concatenating
+            # them verbatim produced a wall of text that repeated itself three times.
+            reasons = list(dict.fromkeys(n for n in notes if n.startswith("Dropped")))
             raise EngineError(
-                f"STARLING returned {conformers.shape[0]} conformer(s) for a "
-                f"{request.n_residues}-residue sequence and none of them survived "
-                f"geometric screening. Details: {'; '.join(notes)}"
+                f"STARLING returned {generated} conformer(s) for this {request.n_residues}-residue "
+                f"sequence over {MAX_GENERATION_ROUNDS} round(s) and none of them survived "
+                f"geometric screening. {' '.join(reasons)}"
             )
-        usable = conformers[kept_indices]
 
         # Leave the aim point at least a tolerance of room inside the anchor-feasible
         # window, so that a conformer selected as "close enough" is still placeable. Clipped
@@ -1590,7 +1630,7 @@ class StarlingEngine:
                 c_anchor_xyz=request.c_anchor_xyz,
                 rng=rng,
                 obstacles=obstacles,
-                conformer_index=int(kept_indices[choice]),
+                conformer_index=int(choice),
                 desired_end_to_end=desired,
                 orientation_attempts=self.orientation_attempts,
             )
@@ -1632,9 +1672,9 @@ class StarlingEngine:
             raise ExhaustedAttemptsError(
                 f"None of the {request.n_conformations} requested conformation(s) of this "
                 f"{request.n_residues}-residue region could be built from the "
-                f"{kept_indices.size} usable conformer(s) STARLING returned. "
+                f"{usable.shape[0]} usable conformer(s) STARLING returned. "
                 f"{' '.join(notes)}",
-                attempts=int(conformers.shape[0]),
+                attempts=generated,
             )
 
         # from_batch, not the constructor: IDRResult requires the rows of failed conformers
@@ -1646,7 +1686,7 @@ class StarlingEngine:
             ca_coords=coords,
             success=success,
             engine=self.name,
-            attempts=int(conformers.shape[0]),
+            attempts=generated,
             # min, not max: with two rungs in play the threshold the chain as a whole was
             # actually built at is the loosest one. max understates the relaxation, which
             # is the opposite of what relaxed_to is for.
@@ -1655,14 +1695,138 @@ class StarlingEngine:
         report = StarlingReport(
             sequence_length=request.n_residues,
             cap=cap,
-            ensemble_size=int(conformers.shape[0]),
-            kept=int(kept_indices.size),
+            ensemble_size=generated,
+            kept=int(usable.shape[0]),
             placements=tuple(placements),
             notes=tuple(notes),
         )
         return result, report
 
     # -- the actual call ---------------------------------------------------
+
+    def _usable_conformers(
+        self,
+        request: IDRRequest,
+        entry_point: Callable[..., Any],
+        wanted: int,
+        rng: np.random.Generator,
+    ) -> tuple[np.ndarray, list[str], int]:
+        """Obtain enough physically valid conformers, repairing only as many as needed.
+
+        The order of operations is the point, and it is chosen so the expensive step runs least:
+
+        1. **Generate** a round of ``wanted`` conformers, cached per sequence and round.
+        2. **Eliminate** what is not worth repairing -- a lost chain, or one that already collides
+           with itself -- using only checks that cost nothing. See :func:`prefilter_conformers`.
+        3. **Repair** every survivor, best first. Note *every*: an earlier version of this stopped
+           as soon as it had the requested number, which looked like the obvious saving and was
+           wrong. Selection downstream needs **spread** in end-to-end distance, not merely a
+           quantity of conformers -- an interior IDR has to span whatever its flanking domains
+           impose. Truncating the pool at 2 left both survivors the wrong size and the region
+           failed on dimension with a 12.7 A miss, having repaired only 2 of 16 candidates. The
+           saving comes from step 2 instead, which is free and does not touch the pool's spread.
+        4. **Reject** a repair that moved an atom further than :data:`MAX_REPAIR_DISPLACEMENT`, or
+           that could not satisfy both constraints, or that still fails the physical screen.
+        5. **Generate another round** if that did not yield enough, up to
+           :data:`MAX_GENERATION_ROUNDS`.
+
+        Yield is the reason this is a loop rather than a single pass: at 200 residues only about 6
+        conformers in 30 survive, because STARLING's raw output already contains internal clashes
+        that repair cannot mend. A single round can therefore come up short through no fault of
+        DODO's, and the honest response is to ask for more rather than fail.
+        """
+        needed = max(request.n_conformations * self.oversample, request.n_conformations)
+        accepted: list[np.ndarray] = []
+        notes: list[str] = []
+        generated = 0
+
+        for round_index in range(MAX_GENERATION_ROUNDS):
+            raw, round_notes = self._ensemble_for(request, entry_point, wanted, round_index, rng)
+            notes.extend(round_notes)
+            generated += int(raw.shape[0])
+
+            if self.screen:
+                order, prefilter_notes = prefilter_conformers(raw)
+                notes.extend(prefilter_notes)
+            else:
+                order = np.arange(raw.shape[0], dtype=np.int64)
+                notes.append("Screening disabled by caller; conformer geometry is unchecked.")
+
+            repaired_count = 0
+            budget_rejects = 0
+            screen_rejects = 0
+            for index in order:
+                chain = raw[int(index)]
+                if not self.regularize:
+                    accepted.append(chain)
+                    continue
+                repaired_count += 1
+                fixed, ok = _repair_one(chain)
+                if not ok:
+                    budget_rejects += 1
+                    continue
+                if self.screen:
+                    survived, _ = screen_conformers(fixed[None, :, :])
+                    if survived.size == 0:
+                        screen_rejects += 1
+                        continue
+                accepted.append(fixed)
+
+            notes.append(
+                f"Round {round_index + 1}: repaired {repaired_count} of {order.size} candidate(s) "
+                f"to keep {len(accepted)} (wanted at least {needed}); {budget_rejects} exceeded "
+                f"the repair budget, "
+                f"{screen_rejects} still failed the physical screen."
+            )
+            if len(accepted) >= needed:
+                break
+
+        if not accepted:
+            return np.empty((0, request.n_residues, 3)), notes, generated
+        return np.stack(accepted), notes, generated
+
+    def _ensemble_for(
+        self,
+        request: IDRRequest,
+        entry_point: Callable[..., Any],
+        wanted: int,
+        round_index: int,
+        rng: np.random.Generator,
+    ) -> tuple[np.ndarray, list[str]]:
+        """Raw conformers for one round, generated once per (sequence, size, round).
+
+        Cached because STARLING conditions on sequence alone: the ensemble it returns for a region
+        is the same every time it is asked, so what differs between DODO's models is which
+        conformer is SELECTED and where it is PLACED, both of which happen downstream of here.
+        Without this, a 2-model rebuild of a 3-region structure ran 6 diffusion-plus-MDS
+        generations to obtain 3 distinct ensembles.
+
+        ``round_index`` is part of the key so that asking for a second round yields *new*
+        conformers rather than the first round's again.
+        """
+        # Drawn HERE, before the cache is consulted, so the generator advances by the same amount
+        # whether or not this ensemble already existed. With the draw on the miss path only, a
+        # second request for the same sequence left the rng in a different state and selection and
+        # placement diverged -- an existing reproducibility test caught it, two calls with one seed
+        # returning conformers 41.9 A apart.
+        starling_seed = int(rng.integers(0, 2**31 - 1))
+        key = (request.sequence, wanted, round_index)
+        cached = self._ensembles.get(key)
+        if cached is not None:
+            return cached[0].copy(), [
+                f"Reused the round-{round_index + 1} ensemble already generated for this "
+                f"{request.n_residues}-residue sequence."
+            ]
+        raw, notes = self._call_starling(entry_point, request.sequence, wanted, starling_seed)
+        conformers, unit_notes = _to_angstroms(raw)
+        notes.extend(unit_notes)
+        if round_index:
+            notes.append(
+                f"Generated an additional round of {wanted} conformer(s): earlier rounds did not "
+                f"yield enough usable ones."
+            )
+        self._ensembles[key] = (conformers.copy(), tuple(notes))
+        return conformers, notes
 
     def _call_starling(
         self,

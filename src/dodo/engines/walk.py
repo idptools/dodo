@@ -153,8 +153,10 @@ ENGINE_NAME: Final[str] = "self_avoiding_walk"
 #:     200000     89.344      7.695
 #:
 #: Thread setup costs a roughly fixed ~0.3 ms, so parallelism pays only above about 1-2k points.
-#: Every query the walk engine actually makes is 710 points -- median, 90th percentile and max --
-#: so in practice this constant sends all of them down the serial path.
+#: Every query the walk engine actually makes is 355 points -- median, 90th percentile and max, at
+#: the current :data:`~dodo.constants.CANDIDATES_PER_ANGLE` -- so in practice this constant sends
+#: all of them down the serial path. The 710-point row above was measured when that constant was
+#: twice its present value, and is kept because it brackets the crossover from the other side.
 _PARALLEL_QUERY_MINIMUM: Final[int] = 2000
 
 #: Clearance around a candidate cloud's centre below which the cloud cannot clash, in A.
@@ -201,7 +203,7 @@ class UnconstrainedJunctionWarning(UserWarning):
 #:
 #: It is applied as a pure fraction, with no absolute floor. It used to be floored at
 #: ``CA_CA_BOND_LENGTH`` -- "no schedule can hit a target more precisely than one step" --
-#: which sounds reasonable and is false: the final residue is chosen from 710 candidates
+#: which sounds reasonable and is false: the final residue is chosen from hundreds of candidates
 #: whose distances to residue 0 sweep a continuum, so the achievable resolution is a
 #: fraction of an Angstrom. What the floor actually did was make the low-side gate
 #: unreachable, so a 10-residue region asked for 0.5 A returned 4 A at success=True (+658%)
@@ -1190,7 +1192,7 @@ class SelfAvoidingWalk:
         Notes
         -----
         Conformers advance one residue at a time together, which is what lets the obstacle
-        clash test for the whole batch -- up to ``size * 710`` candidate positions -- be a
+        clash test for the whole batch -- up to ``size * _candidates_per_step()`` positions -- be a
         single KD-tree query. A conformer that dead-ends drops out of the batch
         immediately and its row stays NaN.
         """
@@ -1342,7 +1344,7 @@ class SelfAvoidingWalk:
         candidates = np.empty((n_live, count, 3), dtype=np.float64)
         for row in range(n_live):
             # One call per conformer: cone_candidates takes a single apex. Its template is
-            # cached, so the per-call cost is a rotation of a precomputed (710, 3) block.
+            # cached, so the per-call cost is a rotation of a precomputed (355, 3) block.
             candidates[row] = cone_candidates(
                 before[row], previous[row], angles=grid, per_angle=per_angle
             )
@@ -1686,7 +1688,7 @@ class SelfAvoidingWalk:
         decision. That is what makes the cull free rather than approximate -- output stays
         bit-identical for a given seed.
 
-        This is the hot loop of the whole package. Culling here replaces up to 710 queries with
+        This is the hot loop of the whole package. Culling here replaces up to 355 queries with
         one, and on p300 it removes 94.4% of the query points; see
         :data:`_CANDIDATE_CLEAR_DISTANCE` for the measurement.
         """

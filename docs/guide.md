@@ -43,10 +43,21 @@ region does.
 | `--no-conect` | off | Omit CONECT records — **not recommended**, see below |
 | `-q`, `--quiet` | off | Suppress the per-region report and the progress bar |
 
-`dodo fetch` also takes `--no-cache`, which downloads to a temporary file instead of keeping it in
-the per-user cache. Caching is on by default because the files are small — measured over 259 cached
-AlphaFold models, a mean of 0.25 MB and a largest of 1.51 MB — but the cache is unbounded, so this
-opts out. The cache location is printed on every fetch.
+### Caching
+
+DODO caches two things per user, both on by default, and `--no-cache` (or `DODO_NO_CACHE=1`) opts
+out of both:
+
+- **ALBATROSS predictions**, keyed by sequence hash and sparrow version. About 116 bytes each. This
+  one is worth more than it looks: the first prediction in a process imports sparrow, parrot and
+  torch, which measures **1.57 s against 0.17 s of actual rebuilding** for a 912-residue structure.
+  A cache hit returns before sparrow is imported at all, so a repeat run never loads torch.
+- **Downloaded structures.** Mean 0.25 MB and largest 1.51 MB, measured over 259 cached AlphaFold
+  models. The path is printed on every fetch.
+
+Neither cache can change a result: predictions are deterministic per sequence, and the key includes
+the sparrow version so an upgrade that changes the network invalidates them rather than serving
+stale values.
 
 A progress bar is shown on stderr when stderr is a terminal, weighted by residues rather than by
 region, because region lengths span two orders of magnitude and a per-region bar sits still through
@@ -144,10 +155,19 @@ bonds to; measured across 17 seams in three structures, a rebuilt alpha carbon s
 away. The bond is therefore not merely hard to get right, it is geometrically unsatisfiable.
 
 DODO aims the carbon at the nitrogen and leaves the bond long — around 2.2 Å against an ideal
-1.33 — rather than writing two atoms into the same space, and reports every seam where it does. On
-dnmt3a that is 4–6 bonds depending on the conformer, out of 911. Nothing impossible is written
-anywhere: measured over three structures at three seeds each, `--backbone` introduces **zero**
-atom pairs closer than the 1.00 Å floor below which no real bond exists.
+1.33 — rather than writing two atoms into the same space, and reports every seam where it does.
+Measured over three structures at five seeds each, that is 4 such bonds on dnmt3a (of 911 residues),
+6 on arf19 and 10 on p300, identically at every seed.
+
+Where the carbon and its oxygen go is **checked, not merely constructed**, and that distinction was
+earned the hard way. Three successive versions placed them by geometry alone and each was blind to
+one more neighbour: aiming the carbon at the anchor's nitrogen made the two collinear and threw the
+carbonyl onto an arbitrary axis (O 0.6 Å from its own alpha carbon); holding the residue's own
+N–CA–C angle instead left the oxygen 0.975 Å from that nitrogen; putting the oxygen trans to the
+nitrogen left it 0.96 Å from the anchor's CB. The placement now sweeps the one free azimuth and
+rejects any position that collides. Over the same 15 runs, `--backbone` introduces **zero** atom
+pairs closer than the 1.00 Å floor below which no real bond exists, and **zero** damage to any
+residue's own internal geometry.
 
 :::{note}
 The obvious fix is to leave the seam residue un-rebuilt so its alpha carbon is input geometry, and

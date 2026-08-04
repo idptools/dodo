@@ -102,9 +102,9 @@ dodo regions AF-P04637-F1-model_v6.pdb
 | `--no-conect` | off | Omit CONECT records — **not recommended**, see [below](#why-conect-records-matter) |
 | `-q`, `--quiet` | off | Suppress the per-region report and the progress bar |
 
-`dodo fetch` additionally takes `--no-cache`. Downloads are cached per-user by default because the
-files are small (measured over 259 cached models: mean 0.25 MB, largest 1.51 MB), and the path is
-printed on every fetch; `--no-cache` downloads to a temporary file and discards it.
+DODO caches ALBATROSS predictions (~116 bytes each; a hit skips importing torch, worth 1.5 s) and
+downloaded structures (mean 0.25 MB, largest 1.51 MB over 259 measured files). Both are on by
+default; `--no-cache` or `DODO_NO_CACHE=1` opts out of both.
 
 Exit status is `0` on success, `2` if a region of 10 residues or more could not be rebuilt, `1` on
 error. A shorter region that could not be rebuilt is reported and left as it arrived, and does not

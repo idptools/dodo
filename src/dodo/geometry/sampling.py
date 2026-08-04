@@ -47,7 +47,7 @@ _TEMPLATE_AXIS = np.array([0.0, 0.0, 1.0])
 
 #: Golden-ratio conjugate, used to offset each angle ring's azimuth.
 #:
-#: Without an offset every ring uses the same ``per_angle`` azimuths, so all 710 default
+#: Without an offset every ring uses the same ``per_angle`` azimuths, so all 355 default
 #: candidates lie in just 10 meridional half-planes: a single obstacle sitting in one of
 #: those planes rules out 71 candidates at once, and the search has far less freedom than
 #: its candidate count suggests. Advancing the azimuth by the golden angle per ring
@@ -237,10 +237,11 @@ def _cone_template(angles: tuple[float, ...], per_angle: int, bond_length: float
 
     Cached because the geometry depends only on these three arguments and not at all on
     the coordinates it will be rotated onto -- the pre-rewrite code noted that opportunity
-    and never took it, rebuilding all 710 candidate offsets from scratch for every residue
-    of every attempt, at a measured 2.82 ms per call.
+    and never took it, rebuilding every candidate offset from scratch for every residue of every
+    attempt, at a measured 2.82 ms per call.
 
-    Measured here, with the default 71 angles x 10 candidates: a full
+    Measured here, when the default was 71 angles x 10 candidates (it is now x 5, so a call is
+    cheaper than these figures): a full
     :func:`cone_candidates` call costs 44 us warm and 58 us with the cache cleared, so the
     cache is worth 1.3x, not the 86x the pre-rewrite note anticipated. The reason is that
     most of the old 2.82 ms was not the trigonometry but the Python loop around it -- 71

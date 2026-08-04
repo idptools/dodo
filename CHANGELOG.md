@@ -149,6 +149,23 @@ in a viewer shows only the disordered regions moving.
 
 ### Fixed
 
+- **`--backbone` no longer damages geometry at region seams.** The seam bond itself stays strained —
+  that is unavoidable and documented — but three successive attempts to place the seam carbon and its
+  oxygen *by construction* each introduced a different collision, because each was blind to one more
+  neighbour. Aiming the carbon at the anchor's nitrogen made the two collinear and threw the carbonyl
+  onto an arbitrary axis (O 0.6 Å from its own alpha carbon). Holding the residue's own N–CA–C angle
+  fixed that and left the oxygen 0.975 Å from that nitrogen. Placing the oxygen trans to the nitrogen
+  fixed that and left it 0.96 Å from the anchor's CB.
+
+  The placement now sweeps its one free azimuth and rejects any position that collides. Measured over
+  three structures at five seeds each: **zero** atom pairs closer than the 1.00 Å floor, and **zero**
+  damage to any residue's own internal geometry.
+
+  Also fixed: `--backbone` no longer rewrites the atom order of residues it does not touch. It had
+  been normalising every residue to N–CA–C–O order, which rewrote 864 of dnmt3a's 912 residues
+  including every folded-domain one. Untouched residues now come through byte-identical, which is
+  what "folded domains are returned exactly as they arrived" has to mean.
+
 - **The STARLING engine did not work at all**, and the error blamed the wrong thing. Every region
   failed with "could not find coordinates on the object STARLING returned (Ensemble) ... this is an
   API mismatch". The real cause was a missing argument: `starling.generate()` defaults to
@@ -189,6 +206,28 @@ in a viewer shows only the disordered regions moving.
   worth reading becomes one nobody reads.
 
 ### Changed
+
+- **STARLING conformers are now filtered before they are repaired, and generated in rounds.** Repair
+  is the expensive step — 3.8 s for 100 conformers of 380 residues — and two defects survive it: a
+  chain the model lost, and one that already collides with itself. Both are now detected by checks
+  that cost nothing, so hopeless conformers are dropped before any repair is paid for. The clash
+  threshold is calibrated never to discard a conformer repair would have saved: measured over 60
+  conformers, every one that ultimately passed the physical screen had a raw worst contact of at
+  least 3.536 Å, against a 2.90 Å cutoff.
+
+  Survivors are repaired best-first, and a repair that moves any alpha carbon more than 4.0 Å is
+  rejected rather than accepted — repair is meant to keep a conformer recognisably STARLING's
+  (displacement is 0.84 Å median, 2.10 Å at the 99th percentile), but a severe angle violation beside
+  a free terminus has nothing to anchor it and one conformer in twelve had an atom travel 21.8 Å.
+  If a round does not yield enough usable conformers, another is generated, up to three.
+
+  One thing that looked like the obvious saving and was **wrong**: stopping repair as soon as enough
+  conformers were in hand. Selection downstream needs *spread* in end-to-end distance, not a count —
+  truncating the pool at 2 left both survivors the wrong size and a region failed on dimension by
+  12.7 Å having repaired only 2 of 16 candidates. All survivors are repaired; the saving comes from
+  the free elimination step instead.
+
+
 
 - **STARLING ensembles are generated once per sequence and reused across models.** STARLING
   conditions on sequence alone, so the ensemble it returns for a region is identical every time;

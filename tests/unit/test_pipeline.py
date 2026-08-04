@@ -823,3 +823,108 @@ class TestBackboneFlag:
             if (p.residue_labels, p.atom_names) not in inherited
         ]
         assert introduced == [], f"backbone placement introduced {introduced}"
+
+
+class TestBackboneDoesNotDamageInputGeometry:
+    """The guard that catches the seam "fix" that keeps looking correct and is not.
+
+    A rebuilt alpha carbon sits 3.2-4.5 A from the folded domain's fixed nitrogen, where a peptide
+    unit reaches only 2.854 A, so the seam bond is geometrically unsatisfiable and DODO leaves it
+    long. The obvious repair is to stop rebuilding one residue short, so the seam falls on input
+    geometry -- and measured, that does make the distance 2.45-2.52 A at all 17 seams.
+
+    It was implemented on that basis and it is wrong, because closing an exact bond onto that
+    residue means re-placing its nitrogen, and the residue's side chain was built around where that
+    nitrogen used to be. Measured on dnmt3a: PRO282's ring bond CD-N stretched to 2.263 A against an
+    accepted 1.378-1.705, and GLU473's new N landed 1.683 A from its own CB. Trading four strained
+    backbone bonds for a snapped proline ring is not a trade worth making.
+
+    What makes this worth a test rather than a comment is how it hid: both defects are reported with
+    ``input`` provenance, because a residue that was deliberately not rebuilt is not DODO's work by
+    the provenance rules. Any check filtered to ``provenance == "rebuilt"`` -- the natural thing to
+    write when asking "did DODO break anything" -- sees a clean run.
+    """
+
+    def test_no_new_violation_inside_a_single_residue(self) -> None:
+        """The check that catches the seam experiment without flagging the accepted compromise.
+
+        Deliberately scoped to violations WITHIN one residue. The strained seam bonds are between
+        two residues and are the known, reported trade; flagging those would only mean deleting this
+        test the first time somebody read it. What must never appear is a residue whose own internal
+        geometry got damaged -- exactly how the seam experiment failed, on PRO282's ring bond CD-N
+        and GLU473's N-to-CB separation.
+
+        Provenance is deliberately not filtered. Both of those defects were reported as ``input``,
+        because a residue DODO did not rebuild is not DODO's work by the provenance rules, so the
+        natural check -- filtered to ``rebuilt`` -- saw a clean run.
+        """
+        source = FIXTURES / "dnmt3a.pdb"
+        baseline = {v.message for v in validate_bonds(read_structure(source)).violations}
+        for seed in (0, 1, 2):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                model = rebuild(source, seed=seed, backbone=True).models[0]
+            introduced = [
+                v
+                for v in validate_bonds(model).violations
+                if v.message not in baseline and len(set(v.residue_indices)) == 1
+            ]
+            assert introduced == [], (
+                f"seed {seed} damaged a residue's own geometry: "
+                f"{[v.message[:90] for v in introduced]}"
+            )
+
+    def test_seam_bonds_are_the_only_thing_introduced(self) -> None:
+        """And they are between-residue, bounded, and reported rather than silent."""
+        source = FIXTURES / "dnmt3a.pdb"
+        baseline = {v.message for v in validate_bonds(read_structure(source)).violations}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model = rebuild(source, seed=0, backbone=True).models[0]
+        introduced = [v for v in validate_bonds(model).violations if v.message not in baseline]
+        assert introduced, "expected the known seam compromise to show up"
+        assert all(len(set(v.residue_indices)) == 2 for v in introduced)
+        assert len(introduced) < 10, f"{len(introduced)} is more seams than dnmt3a has"
+
+    def test_side_chain_geometry_of_untouched_residues_survives(self) -> None:
+        """No atom of a residue DODO did not rebuild may move at all.
+
+        Stated as exact equality rather than a tolerance, because there is no legitimate reason for
+        one of these coordinates to change: a residue outside every generated span is either part of
+        a rigidly-moved folded domain or was left alone entirely, and in both cases the backbone
+        pass has no business writing to it.
+        """
+        source = FIXTURES / "dnmt3a.pdb"
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            plain = rebuild(source, seed=0).models[0]
+            fancy = rebuild(source, seed=0, backbone=True).models[0]
+        generated = {
+            residue
+            for domain in fancy.domains
+            for span in domain.generated_spans()
+            for residue in range(span.start, span.stop)
+        }
+        untouched = [r for r in range(fancy.n_residues) if r not in generated]
+        assert untouched, "nothing was left untouched, so this proves nothing"
+        for residue in untouched:
+            a = plain.atom_slice_for_residues(residue, residue + 1)
+            b = fancy.atom_slice_for_residues(residue, residue + 1)
+            assert {str(n) for n in plain.atom_name[a]} == {str(n) for n in fancy.atom_name[b]}, (
+                f"residue {residue} gained or lost an atom"
+            )
+            assert np.array_equal(plain.xyz[a], fancy.xyz[b]), f"residue {residue} moved"
+
+    def test_alpha_carbons_are_identical_with_and_without_backbone(self) -> None:
+        """``--backbone`` is purely additive: it decorates the trace, it does not change it.
+
+        This held before the seam experiment, stopped holding during it (shortening every region
+        moved the anchor the walk closed onto) and holds again. Worth pinning: a flag whose name
+        promises extra atoms should not quietly return a different structure.
+        """
+        source = FIXTURES / "dnmt3a.pdb"
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            plain = rebuild(source, seed=0).models[0]
+            fancy = rebuild(source, seed=0, backbone=True).models[0]
+        assert np.array_equal(plain.ca_xyz, fancy.ca_xyz)

@@ -14,6 +14,7 @@ them actually runs.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from typing import TYPE_CHECKING
 
@@ -38,6 +39,16 @@ _ENGINE_CHOICES = ("walk", "starling")
 def _add_common_build_arguments(parser: argparse.ArgumentParser) -> None:
     """Add the flags shared by every building subcommand, defined once."""
     parser.add_argument("-o", "--out", required=True, help="output PDB path")
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help=(
+            "do not read or write DODO's per-user cache. Two things are cached: ALBATROSS "
+            "predictions (about 116 bytes each, and a hit avoids importing torch, worth 1.5 s) "
+            "and downloaded structures (mean 0.25 MB, largest 1.51 MB over 259 measured files). "
+            "Both are on by default; this opts out of both, as does DODO_NO_CACHE=1"
+        ),
+    )
     parser.add_argument(
         "-m",
         "--mode",
@@ -166,16 +177,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     fetch_parser.add_argument(
         "-s", "--strategy", default="auto", choices=_STRATEGY_CHOICES, help="(default: auto)"
-    )
-    fetch_parser.add_argument(
-        "--no-cache",
-        action="store_true",
-        help=(
-            "download to a temporary file and discard it, instead of keeping it in the "
-            "per-user cache. Downloaded models are small -- measured over 259 cached AlphaFold "
-            "files, a mean of 0.25 MB and a largest of 1.51 MB -- so caching is on by default, "
-            "but the cache is unbounded and this opts out of it"
-        ),
     )
     _add_common_build_arguments(fetch_parser)
 
@@ -318,6 +319,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         # None lets the pipeline decide from the terminal; -q means silence, bar included.
         progress: bool | None = False if args.quiet else None
+        if getattr(args, "no_cache", False):
+            # Set in the environment rather than threaded as a parameter: the prediction cache is
+            # consulted deep inside dimension prediction, on paths that do not otherwise know a CLI
+            # ran, and one switch covering all of them cannot drift out of sync with the flag.
+            os.environ["DODO_NO_CACHE"] = "1"
 
         if args.command == "sequence":
             report = build_from_sequence(args.sequence, **common)

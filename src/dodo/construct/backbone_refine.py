@@ -175,9 +175,36 @@ class RefinementResult:
     notes: tuple[str, ...]
 
 
+def _cross(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Cross product of last-axis-3 arrays, written out by component.
+
+    Not :func:`numpy.cross`, and the reason is measured rather than stylistic. ``np.cross`` supports
+    arbitrary axes, and pays for it on every call with ``normalize_axis_tuple`` and ``moveaxis``
+    -- pure Python bookkeeping that dwarfs six multiplies when the arrays are small. Profiling one
+    583-residue region showed 219,816 calls to ``np.cross`` costing 6.0 s cumulative, with 1.3
+    million calls to ``normalize_axis_tuple`` underneath it doing nothing but validate axes that
+    were never anything other than -1.
+    """
+    ax, ay, az = a[..., 0], a[..., 1], a[..., 2]
+    bx, by, bz = b[..., 0], b[..., 1], b[..., 2]
+    return np.stack((ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx), axis=-1)
+
+
+def _norm(v: np.ndarray) -> np.ndarray:
+    """Euclidean length along the last axis, keeping the dimension.
+
+    ``np.linalg.norm`` carries the same per-call overhead as ``np.cross`` for the same reason.
+    """
+    lengths: np.ndarray = np.sqrt(np.einsum("...i,...i->...i", v, v).sum(-1, keepdims=True))
+    return lengths
+
+
 def _unit(v: np.ndarray) -> np.ndarray:
-    norm = np.linalg.norm(v, axis=-1, keepdims=True)
-    normalized: np.ndarray = np.divide(v, norm, out=np.zeros_like(v), where=norm > 1e-12)
+    # np.maximum rather than a `where=` mask with a zeros_like buffer: the buffer was allocated on
+    # every one of 193,623 calls per region, and a zero-length vector normalises to zero either way
+    # because the numerator is already zero.
+    norm = _norm(v)
+    normalized: np.ndarray = v / np.maximum(norm, 1e-12)
     return normalized
 
 
@@ -188,7 +215,7 @@ def _azimuth_frame(ca_a: np.ndarray, ca_b: np.ndarray) -> tuple[np.ndarray, np.n
     if abs(float(np.dot(seed, axis))) > 0.9:
         seed = np.array([0.0, 1.0, 0.0])
     first = _unit(seed - float(np.dot(seed, axis)) * axis)
-    return axis, first, np.cross(axis, first)
+    return axis, first, _cross(axis, first)
 
 
 #: Position of each backbone atom along the main chain, in bonds from that residue's nitrogen.
@@ -253,7 +280,7 @@ def _place_oxygen(ca: np.ndarray, c: np.ndarray, n_next: np.ndarray) -> np.ndarr
     """O is fully determined by CA(i), C(i) and N(i+1) -- exact to 0.013 A from the true three."""
     to_ca = _unit(ca - c)
     to_n = _unit(n_next - c)
-    normal = np.cross(to_ca, to_n)
+    normal = _cross(to_ca, to_n)
     if float(np.linalg.norm(normal)) < 1e-9:
         normal = np.array([0.0, 0.0, 1.0])
     normal = _unit(normal)
@@ -261,7 +288,7 @@ def _place_oxygen(ca: np.ndarray, c: np.ndarray, n_next: np.ndarray) -> np.ndarr
     cos, sin = np.cos(-angle), np.sin(-angle)
     direction = (
         to_ca * cos
-        + np.cross(normal, to_ca) * sin
+        + _cross(normal, to_ca) * sin
         + normal * float(np.dot(normal, to_ca)) * (1 - cos)
     )
     placed: np.ndarray = c + C_O_BOND_LENGTH * direction
@@ -277,7 +304,7 @@ def _dihedral(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray, p3: np.ndarray) ->
     b1 = _unit(p2 - p1)
     v = (p0 - p1) - float(np.dot(p0 - p1, b1)) * b1
     w = (p3 - p2) - float(np.dot(p3 - p2, b1)) * b1
-    return float(np.degrees(np.arctan2(float(np.dot(np.cross(b1, v), w)), float(np.dot(v, w)))))
+    return float(np.degrees(np.arctan2(float(np.dot(_cross(b1, v), w)), float(np.dot(v, w)))))
 
 
 def _rama_penalty(phi: np.ndarray, psi: np.ndarray) -> np.ndarray:
@@ -309,7 +336,7 @@ def _dihedrals_batch(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray, p3: np.ndar
     d3 = p3 - p2
     v = d0 - (d0 * b1).sum(-1, keepdims=True) * b1
     w = d3 - (d3 * b1).sum(-1, keepdims=True) * b1
-    degrees: np.ndarray = np.degrees(np.arctan2((np.cross(b1, v) * w).sum(-1), (v * w).sum(-1)))
+    degrees: np.ndarray = np.degrees(np.arctan2((_cross(b1, v) * w).sum(-1), (v * w).sum(-1)))
     return degrees
 
 
@@ -331,14 +358,14 @@ def _place_oxygen_batch(ca: np.ndarray, c: np.ndarray, n_next: np.ndarray) -> np
     """Vectorized :func:`_place_oxygen`."""
     to_ca = _unit(ca - c)
     to_n = _unit(n_next - c)
-    normal = np.cross(to_ca, to_n)
+    normal = _cross(to_ca, to_n)
     norm = np.linalg.norm(normal, axis=-1, keepdims=True)
     safe = np.divide(normal, np.maximum(norm, 1e-12))
     normal = np.where(norm > 1e-9, safe, np.array([0.0, 0.0, 1.0]))
     angle = np.radians(CA_C_O_ANGLE)
     cos, sin = np.cos(-angle), np.sin(-angle)
     dotted = (normal * to_ca).sum(-1, keepdims=True)
-    direction = to_ca * cos + np.cross(normal, to_ca) * sin + normal * dotted * (1.0 - cos)
+    direction = to_ca * cos + _cross(normal, to_ca) * sin + normal * dotted * (1.0 - cos)
     placed: np.ndarray = c + C_O_BOND_LENGTH * direction
     return placed
 
@@ -454,9 +481,21 @@ def refine_backbone(
     # three atoms, C(i), N(i+1) and O(i) -- so a candidate is scored by recomputing only the terms
     # that touch them. Scoring the whole chain per candidate is O(sweeps x units x candidates x N)
     # and was measured at over ten minutes for ten chains; this is O(sweeps x units x candidates).
-    n_live = np.array(n_start, copy=True)
-    c_live = np.array(c_start, copy=True)
-    o_live = np.array(c_start, copy=True)
+    # ONE buffer, with n/c/o as views into it rather than three separate arrays.
+    #
+    # This is the difference between a refinement that finishes and one that looks hung. The clash
+    # term needs every movable atom as a single (3N, 3) block to index into, and it used to build
+    # that block with np.vstack INSIDE the scoring function -- which runs three times per unit per
+    # sweep. On p300 that is roughly 137,000 rebuilds of a 1,500-atom array for one structure, and
+    # it was 21.5 of the 21.6 seconds `--backbone` added. Writing through views means the block is
+    # always current and never rebuilt.
+    live_points = np.empty((3 * n_res, 3), dtype=np.float64)
+    n_live = live_points[:n_res]
+    c_live = live_points[n_res : 2 * n_res]
+    o_live = live_points[2 * n_res :]
+    n_live[:] = n_start
+    c_live[:] = c_start
+    o_live[:] = c_start
     for unit in range(n_units):
         c_live[unit], n_live[unit + 1] = _place_unit(ca[unit], ca[unit + 1], azimuths[unit])
     for unit in range(n_units):
@@ -526,8 +565,7 @@ def refine_backbone(
     ]
 
     def refresh_movable_neighbours() -> None:
-        points = np.vstack([n_live, c_live, o_live])
-        tree = cKDTree(points)
+        tree = cKDTree(live_points)
         for unit in range(n_units):
             midpoint = 0.5 * (ca[unit] + ca[unit + 1])
             found = np.asarray(tree.query_ball_point(midpoint, reach), dtype=np.int64)
@@ -562,7 +600,7 @@ def refine_backbone(
             penalty += clash_weight * np.square(np.clip(gaps, 0.0, None)).sum(1)
         moving = movable_neighbours[unit][which]
         if moving.size:
-            others = np.vstack([n_live, c_live, o_live])[moving]
+            others = live_points[moving]
             gaps = clash_distance - np.linalg.norm(points[:, None, :] - others[None, :, :], axis=2)
             penalty += clash_weight * np.square(np.clip(gaps, 0.0, None)).sum(1)
         return penalty
@@ -620,11 +658,13 @@ def refine_backbone(
     before = total_energy()
     sweeps = 0
     converged = False
+    previous: float | None = None
     for sweep in range(max_sweeps):
         sweeps = sweep + 1
         # The generated atoms moved last sweep, so who each unit can hit has changed with them.
         refresh_movable_neighbours()
         largest_move = 0.0
+        swept = 0.0
         span = 180.0 / (1.0 + sweep)
         for unit in range(n_units):
             incumbent = azimuths[unit]
@@ -633,10 +673,25 @@ def refine_backbone(
             values = score_candidates(unit, trials)
             best = int(np.argmin(values))
             chosen = float(trials[best])
+            swept += float(values[best])
             apply(unit, chosen)
             azimuths[unit] = chosen
             largest_move = max(largest_move, abs(chosen - incumbent))
-        if largest_move <= tolerance:
+        # Converge on the OBJECTIVE, not on how far the azimuths moved.
+        #
+        # The move-size test this replaced could not fire. Candidates are drawn from a window that
+        # narrows as 180/(1+sweep) across `candidates` points, so the smallest non-zero move
+        # available is the candidate spacing -- 15.65 degrees on the first sweep and still 0.52 on
+        # the thirtieth, against a 0.25 degree tolerance. `largest_move <= tolerance` therefore
+        # meant `largest_move == 0`, so every long region ran the full sweep budget and reported
+        # `converged` as False even once the geometry had stopped changing in any way that mattered.
+        #
+        # `swept` is the sum of the accepted scores over the sweep. It double-counts terms shared
+        # between neighbouring units, exactly as total_energy does, which is why it is only ever
+        # compared against itself.
+        improvement = float("inf") if previous is None else previous - swept
+        previous = swept
+        if largest_move == 0.0 or improvement <= tolerance:
             converged = True
             break
 
@@ -647,7 +702,8 @@ def refine_backbone(
     # that have since been refined. Re-derive them, or they keep drifting out of geometry as
     # everything around them improves: measured on dnmt3a, N(0) and C(0) ended up 1.788 A apart
     # against a correct 2.459, because N(0) was aimed at where C(0) used to be.
-    n_final, c_final, o_final = n_live, c_live, o_live
+    # Copies, not the views above: the caller must not hold a window onto a shared buffer.
+    n_final, c_final, o_final = n_live.copy(), c_live.copy(), o_live.copy()
     if n_res >= 2:
         n_final[0] = _terminal_nitrogen(ca[0], c_final[0], ca[1])
         c_final[-1] = _terminal_carbon(ca[-1], n_final[-1], ca[-2])

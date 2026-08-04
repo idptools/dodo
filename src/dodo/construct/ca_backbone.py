@@ -66,7 +66,7 @@ observations. It is IDR data on purpose: this module exists to rebuild disordere
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final
 
@@ -521,7 +521,12 @@ def _seam_obstacles(structure: Structure, residues: Iterable[int]) -> np.ndarray
     return np.asarray(collected, dtype=np.float64)
 
 
-def add_backbone_to_rebuilt(structure: Structure, *, refine: bool = True) -> Structure:
+def add_backbone_to_rebuilt(
+    structure: Structure,
+    *,
+    refine: bool = True,
+    on_region_done: Callable[[int], None] | None = None,
+) -> Structure:
     """Return a copy with N, C and O placed on the regions DODO rebuilt.
 
     Only the rebuilt regions gain atoms. Folded domains are returned exactly as they arrived,
@@ -539,6 +544,11 @@ def add_backbone_to_rebuilt(structure: Structure, *, refine: bool = True) -> Str
         measured over 3,643 held-out residues it improves every criterion at once -- N 0.188 to
         0.164 A, C 0.283 to 0.210, O 0.816 to 0.614, and the N-CA-C spread 11.70 to 3.47 degrees
         against a real 2.94.
+
+    on_region_done
+        Called with each region's residue count as its backbone is finished. This pass is slow
+        enough on a large structure to look like a hang without it -- on p300 it is most of the
+        wall time -- so a caller needs to report progress through it, not merely before it.
 
     Returns
     -------
@@ -584,6 +594,8 @@ def add_backbone_to_rebuilt(structure: Structure, *, refine: bool = True) -> Str
             refined = refine_backbone(ca, n_xyz, c_xyz, obstacles=np.vstack(obstacle_blocks))
             n_xyz, c_xyz, o_xyz = refined.n_xyz, refined.c_xyz, refined.o_xyz
         obstacle_blocks.append(np.vstack([n_xyz, c_xyz, o_xyz]))
+        if on_region_done is not None:
+            on_region_done(stop - start)
         for offset, residue in enumerate(range(start, stop)):
             placed[residue] = {"N": n_xyz[offset], "C": c_xyz[offset], "O": o_xyz[offset]}
 

@@ -36,14 +36,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import pairwise
+from typing import TYPE_CHECKING
 
 import numpy as np
+from scipy.spatial import cKDTree
 
-from ..constants import CA_CLASH_DISTANCE, DEFAULT_MODE, MAX_FD_PLACEMENT_ATTEMPTS
+from ..constants import (
+    CA_CA_BOND_LENGTH,
+    CA_CLASH_DISTANCE,
+    DEFAULT_MODE,
+    MAX_FD_PLACEMENT_ATTEMPTS,
+)
 from ..exceptions import BuildError, GeometryError
 from ..geometry.transforms import rotation_between_vectors
 from ..structure import Chain, Domain, DomainKind, Structure
 from .dimensions import DimensionTarget, target_dimensions
+
+if TYPE_CHECKING:
+    from .pipeline import RegionOutcome
 
 __all__ = [
     "DomainPlacement",
@@ -245,6 +255,140 @@ def _placed_atom_mask(structure: Structure, placed: list[Domain]) -> np.ndarray:
     for domain in placed:
         mask[domain.atom_slice] = True
     return mask
+
+
+def place_domain_after(
+    structure: Structure,
+    *,
+    region: Domain,
+    downstream: Domain | None,
+    engine: object,
+    rng: np.random.Generator,
+    model: int,
+    mode: str,
+    clash_distance: float = CA_CLASH_DISTANCE,
+) -> RegionOutcome:
+    """Build ``region`` from a generated conformer, then move ``downstream`` to meet its far end.
+
+    The conformer-driven counterpart to :func:`reposition_folded_domains`. That function moves a
+    domain to a *predicted* separation and leaves a region to be built into the gap; this one takes
+    the region's own conformer as given and moves the domain to wherever it ends.
+
+    Each candidate conformer is attached to the upstream anchor -- which is already final, since the
+    chain is walked N to C -- and the downstream domain is then translated so its entry alpha carbon
+    sits one virtual bond from the conformer's last one. A candidate is rejected if that leaves the
+    domain colliding with anything already placed, and the next is tried. Dimension never enters it.
+
+    ``downstream=None`` covers a terminal IDR, where there is no domain beyond the region to move.
+    The conformer is still taken as generated rather than selected for its size, which is the
+    consistent thing to do: under this mode a tail's length is STARLING's statement about that
+    sequence, and filtering it would reintroduce exactly the selection the mode exists to avoid --
+    on one region it narrowed the achieved spread from 44.4 A to 11.3 A.
+    """
+    from ..construct.pipeline import RegionOutcome
+    from ..engines.starling import place_between_anchors
+
+    chain = structure.chains[int(structure.chain_index[region.span.start])]
+    residues = (region.span.start + 1, region.span.stop)
+    sequence = structure.sequence[region.span.slice]
+
+    anchor = region.span.n_anchor
+    if anchor is None:
+        raise GeometryError("place_domain_after needs a region with an N-terminal anchor.")
+    anchor_xyz = structure.ca_xyz[anchor]
+
+    try:
+        pool, _pool_notes = engine.usable_conformers(  # type: ignore[attr-defined]
+            sequence, n_conformations=1, rng=rng
+        )
+    except Exception as exc:
+        return RegionOutcome(
+            model=model,
+            chain_id=chain.chain_id,
+            residues=residues,
+            n_residues=len(region.span),
+            built=False,
+            reason=f"{type(exc).__name__}: {exc}",
+        )
+
+    obstacles = structure.xyz[structure.placed_atom_mask()]
+    original = None if downstream is None else downstream.xyz.copy()
+    for index in range(pool.shape[0]):
+        placed = place_between_anchors(
+            pool[index],
+            n_anchor_xyz=anchor_xyz,
+            c_anchor_xyz=None,
+            rng=rng,
+            obstacles=obstacles,
+            conformer_index=index,
+        )
+        if not placed.ok:
+            continue
+        coords = placed.ca_coords
+        # One virtual bond beyond the conformer's last alpha carbon, continuing its own direction.
+        if downstream is not None:
+            direction = coords[-1] - coords[-2] if coords.shape[0] >= 2 else coords[-1] - anchor_xyz
+            downstream.xyz[:] = original
+            _place_at_separation(
+                structure,
+                downstream,
+                from_point=coords[-1],
+                separation=CA_CA_BOND_LENGTH,
+                direction=direction,
+            )
+            if _collides(structure, downstream, obstacles, coords, clash_distance):
+                continue
+        structure.set_ca_xyz(np.arange(region.span.start, region.span.stop), coords)
+        region.rebuilt = True
+        region.placed = True
+        return RegionOutcome(
+            model=model,
+            chain_id=chain.chain_id,
+            residues=residues,
+            n_residues=len(region.span),
+            built=True,
+            achieved_end_to_end=float(np.linalg.norm(coords[-1] - coords[0])),
+            reason=(
+                "conformer taken as generated"
+                if downstream is None
+                else "domain positioned to match this conformer"
+            ),
+        )
+
+    if downstream is not None and original is not None:
+        downstream.xyz[:] = original
+    return RegionOutcome(
+        model=model,
+        chain_id=chain.chain_id,
+        residues=residues,
+        n_residues=len(region.span),
+        built=False,
+        reason=(
+            f"none of {pool.shape[0]} conformer(s) could be placed clear of what was already there"
+        ),
+    )
+
+
+def _collides(
+    structure: Structure,
+    domain: Domain,
+    obstacles: np.ndarray,
+    region_coords: np.ndarray,
+    clash_distance: float,
+) -> bool:
+    """Return True if a freshly moved domain is too close to the obstacles or its own linker."""
+    moved = domain.xyz
+    if obstacles.shape[0]:
+        tree = cKDTree(obstacles)
+        if tree.query(moved)[0].min() < clash_distance:
+            return True
+    # The linker that positioned it is excluded near its own junction, where proximity is bonding
+    # rather than collision -- the entry CA is deliberately one bond from the conformer's last.
+    if region_coords.shape[0] > 2:
+        tree = cKDTree(region_coords[:-2])
+        if tree.query(moved)[0].min() < clash_distance:
+            return True
+    return False
 
 
 def reposition_folded_domains(

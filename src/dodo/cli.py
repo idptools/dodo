@@ -179,6 +179,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "-s", "--strategy", default="auto", choices=_STRATEGY_CHOICES, help="(default: auto)"
     )
     _add_common_build_arguments(fetch_parser)
+    for sub in (rebuild_parser, fetch_parser):
+        sub.add_argument(
+            "--domain-placement",
+            default="predicted",
+            choices=("predicted", "conformer"),
+            help=(
+                "how the folded domains get their positions. 'predicted' (default) moves "
+                "them to ALBATROSS's predicted linker dimension and builds the linker into "
+                "that gap. 'conformer' needs --engine starling and inverts it: a generated "
+                "conformer is taken as-is and the next domain moves to meet it, so nothing "
+                "is selected on dimension and the ensemble keeps STARLING's full spread. "
+                "Domains then differ between models"
+            ),
+        )
 
     sequence_parser = subparsers.add_parser(
         "sequence",
@@ -328,7 +342,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "sequence":
             report = build_from_sequence(args.sequence, **common)
         elif args.command == "rebuild":
-            report = rebuild(args.structure, strategy=args.strategy, progress=progress, **common)
+            report = rebuild(
+                args.structure,
+                strategy=args.strategy,
+                progress=progress,
+                domain_placement=args.domain_placement,
+                **common,
+            )
         elif args.command == "fetch":
             from .io import fetch_alphafold, resolve_uniprot_accession
 
@@ -350,11 +370,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 with tempfile.TemporaryDirectory(prefix="dodo-fetch-") as scratch:
                     path = fetch_alphafold(accession, cache_dir=Path(scratch))
                     print(f"using {path} (not cached)", file=sys.stderr)
-                    report = rebuild(path, strategy=args.strategy, progress=progress, **common)
+                    report = rebuild(
+                        path,
+                        strategy=args.strategy,
+                        progress=progress,
+                        domain_placement=args.domain_placement,
+                        **common,
+                    )
             else:
                 path = fetch_alphafold(accession)
                 print(f"using {path}", file=sys.stderr)
-                report = rebuild(path, strategy=args.strategy, progress=progress, **common)
+                report = rebuild(
+                    path,
+                    strategy=args.strategy,
+                    progress=progress,
+                    domain_placement=args.domain_placement,
+                    **common,
+                )
         else:  # pragma: no cover - argparse restricts the choices
             parser.error(f"unknown command {args.command!r}")
 

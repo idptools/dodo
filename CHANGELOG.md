@@ -149,6 +149,36 @@ in a viewer shows only the disordered regions moving.
 
 ### Fixed
 
+- **`--backbone` was more than twice as slow as it needed to be, for two separate reasons.** On p300
+  it went from **23.6 s to 11.0 s** (the backbone pass itself from 21.6 s to 9.0 s), with placement
+  accuracy unchanged — N 0.147 to 0.148 Å, C 0.150 to 0.152, O 0.448 to 0.451, N–CA–C spread 3.06 to
+  3.09 degrees.
+
+  The first was `numpy.cross`. It supports arbitrary axes and pays for that on every call with
+  `normalize_axis_tuple` and `moveaxis` — Python-level bookkeeping that dwarfs six multiplies on
+  small arrays. Profiling one 583-residue region found 219,816 calls costing 6.0 s cumulative, with
+  1.3 million calls to `normalize_axis_tuple` beneath them validating an axis that was never anything
+  but -1. Written out by component instead. `numpy.linalg.norm` had the same problem.
+
+  The second was that **refinement never converged.** Candidates are drawn from a window narrowing as
+  `180/(1+sweep)`, so the smallest non-zero move available is the candidate spacing — 15.65 degrees
+  on the first sweep and still 0.52 on the thirtieth, against a 0.25 degree tolerance. The test
+  `largest_move <= tolerance` therefore meant `largest_move == 0`: every long region burned the full
+  30-sweep budget and reported `converged=False` even after the geometry had stopped changing.
+  Convergence is now judged on the objective, which finishes a 583-residue region in 15 sweeps and a
+  60-residue one in 7.
+
+  One thing that looked like the obvious culprit and was **not**: the clash term rebuilt a `(3N, 3)`
+  array with `np.vstack` on every call, roughly 137,000 times per structure. Fixing it — the live
+  arrays are now views into one buffer — saved 0.2 s of 21.5. Worth keeping, but the profile, not the
+  guess, found the real cost.
+
+- **The progress bar stopped at the end of the alpha-carbon rebuild** and left the backbone pass
+  unreported, which on p300 was most of the wait. It now accounts for both passes and names the
+  region it is working on, so a single long region is distinguishable from a stall.
+
+
+
 - **`--backbone` no longer damages geometry at region seams.** The seam bond itself stays strained —
   that is unavoidable and documented — but three successive attempts to place the seam carbon and its
   oxygen *by construction* each introduced a different collision, because each was blind to one more
@@ -204,6 +234,27 @@ in a viewer shows only the disordered regions moving.
 - **The STARLING isolation warning is emitted once per run, not once per model**, and is 392
   characters instead of about 800. A ten-model run printed it ten times, which is how a warning
   worth reading becomes one nobody reads.
+
+### Added
+
+- **`--domain-placement conformer`** (`domain_placement="conformer"`), opt-in and requiring
+  `--engine starling`. Positions the folded domains to match each generated conformer instead of
+  generating conformers to match a predicted domain separation.
+
+  The default path predicts a linker's end-to-end distance, moves the domains to it, and selects
+  conformers that match — which is right for the walk engine, because it builds *to* a dimension.
+  STARLING does not: it samples a distribution. Measured on dnmt3a, its end-to-end distances scatter
+  with a standard deviation of 41% of the mean against a 5% selection tolerance, so about a tenth of
+  conformers survive and they form a narrow band at the mean. The two models agree on the mean
+  (133.0 Å against 136.6 Å on one region); what selection throws away is the spread.
+
+  Measured on dnmt3a over three models: regions built went from 6/9 to **9/9**, and the achieved
+  end-to-end spread from **sd 10.8 Å to sd 44.9 Å**. A conformer is now rejected only if the domain
+  placement it implies collides with something already placed.
+
+  Two consequences: the domains differ between models rather than sharing one arrangement, and
+  `--mode` has nothing to multiply for the affected regions. Loops are unaffected — they are pinned
+  inside a single domain, so nothing can be repositioned for them.
 
 ### Changed
 

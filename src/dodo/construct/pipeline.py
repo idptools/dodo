@@ -456,21 +456,30 @@ def _obstacles_for_span(
 
 
 def _warn_starling_isolation() -> None:
-    """Warn that STARLING never sees the folded domains. Short on purpose.
+    """Warn that the STARLING engine is UNSUPPORTED in 2.0, and why.
 
-    The previous version of this ran to eleven lines. It was accurate and nobody read it, which
-    makes it worse than a short one: the single fact a user has to take away is that the ensemble
-    is not conditioned on the rest of the structure. The full explanation lives in the docs.
+    It is undocumented as of 2.0 -- removed from the README and the guide -- but the flag still
+    exists, so anyone who knows it can still reach it. An undocumented path that quietly returns a
+    broken structure is worse than one that is absent, so this says so rather than leaving the user
+    to discover it from the coordinates.
+
+    The observed failure is not subtle. When region generation fails, that region KEEPS ITS INPUT
+    COORDINATES while the folded domains have already been repositioned, so the output holds the
+    original IDR geometry connected to domains that have moved out from under it. The rebuild is
+    reported as failed and the CLI exits 2, but the file is still written.
 
     Called from :func:`_make_engine`, which runs once per rebuild -- so a ten-model run warns once
     rather than ten times, and no module-level "have I said this yet" flag is needed to arrange it.
     """
     warnings.warn(
-        "STARLING generates each region from its SEQUENCE ALONE -- it never sees the folded "
-        "domains, so a conformer cannot avoid them and its statistics do not account for them. "
-        "DODO picks the conformer that best fits the anchor separation and places it rigidly. "
-        "Read a STARLING region as a realistic IDR conformation that has been positioned, not "
-        "one sampled in the presence of the domains around it.",
+        "The starling engine is UNDOCUMENTED in DODO 2.0 and has not been verified end to end "
+        "since its last fix. CHECK THE EXIT STATUS, not just the output file: a region listed as "
+        "NOT BUILT keeps its INPUT coordinates while the folded domains are repositioned anyway, "
+        "so a failed run still writes a structure whose regions connect to domains that have "
+        "moved out from under them. Use engine='walk' for anything you intend to rely on."
+        "\n\nSeparately, and by design: STARLING generates each region from its SEQUENCE ALONE. It "
+        "never sees the folded domains, so a conformer cannot avoid them and its statistics do not "
+        "account for them.",
         UserWarning,
         stacklevel=3,
     )

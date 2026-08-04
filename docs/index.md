@@ -55,7 +55,7 @@ extra is not permitted to reference a git URL.
 
 It is a geometric sampler, not a force field, and a multi-model file is not a trajectory. The
 conformations are physically plausible and correctly sized; they are not sampled from a Boltzmann
-distribution. For ensemble-grade conformations use `--engine starling`.
+distribution. It is a geometric sampler, not a substitute for a simulation.
 
 ## Where things are
 

@@ -521,10 +521,29 @@ def refine_backbone(
             extra="fast",
         )
 
+    # One object per region, holding the neighbour tables the compiled sweep AND the compiled energy
+    # both read. Built here rather than inside either of them so the fixed tables -- a KD-tree over
+    # every obstacle in the structure -- are built once for the region instead of once per use.
+    #
+    # Not built at all with no sweeps to run: there is then nothing for the kernel to do, so the
+    # numpy path is the only path, for the energy as well. That keeps `max_sweeps=0` bit-comparable
+    # between backends, which is what `test_zero_sweeps_behaves_the_same_either_way` asks for.
+    compiled: Any | None = None
+    if kernel is not None and max_sweeps > 0:
+        compiled = kernel.RegionKernel(
+            ca,
+            obstacles=obstacle_points,
+            clash_distance=clash_distance,
+            angle_weight=angle_weight,
+            clash_weight=clash_weight,
+            rama_weight=rama_weight,
+            rama_table=_RAMA_TABLE,
+        )
+    use_kernel = compiled is not None
+
     from scipy.spatial import cKDTree
 
     fixed = ca if obstacle_points is None else np.vstack([ca, obstacle_points])
-    fixed_tree = cKDTree(fixed)
 
     # Seed each azimuth from the starting placement, so refinement begins where the table put it.
     azimuths = np.empty(n_units)
@@ -589,24 +608,31 @@ def refine_backbone(
 
     # Fixed-atom neighbours, per unit and per movable atom. Obstacle points carry no residue, so
     # they are never excluded; the alpha carbons, which occupy the first n_res rows, are.
+    #
+    # Skipped entirely when the kernel is driving, because then nothing reads them: the compiled
+    # sweep and the compiled energy both use the equivalent padded tables inside `compiled`.
+    # Building them anyway meant a KD-tree over 12,517 obstacles plus 3 x n_units Python
+    # `_bond_separation` comprehensions per region, thrown away.
     fixed_neighbours: list[list[np.ndarray]] = []
-    for unit in range(n_units):
-        midpoint = 0.5 * (ca[unit] + ca[unit + 1])
-        found = np.asarray(fixed_tree.query_ball_point(midpoint, reach), dtype=np.int64)
-        per_atom: list[np.ndarray] = []
-        for kind, offset in movable_kinds:
-            is_ca = found < n_res
-            separation = np.array(
-                [
-                    _bond_separation(kind, unit + offset, "CA", int(j))
-                    if j < n_res
-                    else _BONDED_SEPARATION + 1
-                    for j in found
-                ],
-                dtype=np.int64,
-            )
-            per_atom.append(found[~(is_ca & (separation <= _BONDED_SEPARATION))])
-        fixed_neighbours.append(per_atom)
+    if not use_kernel:
+        fixed_tree = cKDTree(fixed)
+        for unit in range(n_units):
+            midpoint = 0.5 * (ca[unit] + ca[unit + 1])
+            found = np.asarray(fixed_tree.query_ball_point(midpoint, reach), dtype=np.int64)
+            per_atom: list[np.ndarray] = []
+            for kind, offset in movable_kinds:
+                is_ca = found < n_res
+                separation = np.array(
+                    [
+                        _bond_separation(kind, unit + offset, "CA", int(j))
+                        if j < n_res
+                        else _BONDED_SEPARATION + 1
+                        for j in found
+                    ],
+                    dtype=np.int64,
+                )
+                per_atom.append(found[~(is_ca & (separation <= _BONDED_SEPARATION))])
+            fixed_neighbours.append(per_atom)
 
     # The backbone must also avoid ITSELF, which is a separate problem from avoiding the fixed
     # atoms above and was originally missed. The alpha carbons are guaranteed 3.2 A apart by the
@@ -699,7 +725,7 @@ def refine_backbone(
         if unit + 1 < n_units:
             o_live[unit + 1] = _place_oxygen(ca[unit + 1], c_live[unit + 1], n_live[unit + 2])
 
-    def total_energy() -> float:
+    def numpy_total_energy() -> float:
         value = 0.0
         for unit in range(n_units):
             value += float(score_candidates(unit, np.asarray([azimuths[unit]]))[0])
@@ -708,34 +734,48 @@ def refine_backbone(
         # the before and after readings, which is all it is used for.
         return value / 2.0
 
-    refresh_movable_neighbours()
+    def total_energy() -> float:
+        """Return the objective over the whole region, at the live state.
+
+        Called exactly twice -- once for `before`, once for `after` -- and it was measured costing
+        2.8x the compiled sweep it reports on, because the numpy form pushes every peptide unit
+        through `score_candidates` one array call per term. The compiled form is the same objective,
+        established term by term on byte-identical inputs rather than assumed; see
+        ``tests/unit/test_backbone_kernel.py``.
+
+        The numpy backend keeps the numpy scorer. Both readings come from the same one, whichever
+        that is, so `before` and `after` stay comparable with each other -- the only thing they are
+        used for.
+        """
+        if compiled is not None:
+            return float(compiled.energy(n_live, c_live, o_live, azimuths))
+        refresh_movable_neighbours()
+        return numpy_total_energy()
+
     before = total_energy()
     sweeps = 0
     converged = False
     previous: float | None = None
-    if kernel is not None and max_sweeps > 0:
-        # ONLY the sweep loop is replaced. Everything around it -- the seeding, `before`, the
-        # terminal atoms, the notes, `after` -- stays shared with the numpy path, so a
-        # RefinementResult means the same thing whichever backend produced it. Returning early from
-        # the kernel instead left energy_before/after as NaN and dropped the non-ideal-spacing note,
-        # which three existing tests caught.
-        k_n, k_c, k_o, k_az, sweeps, converged = kernel.refine_region(
-            ca,
-            n_start,
-            c_start,
-            obstacles=obstacle_points,
-            clash_distance=clash_distance,
-            angle_weight=angle_weight,
-            clash_weight=clash_weight,
-            rama_weight=rama_weight,
+    if compiled is not None:
+        # ONLY the sweep loop and the objective it minimises are compiled. Everything around them --
+        # the seeding, the terminal atoms, the notes, the non-ideal-spacing check, and the fact that
+        # `before` and `after` are both real numbers read off the same scorer -- stays shared with
+        # the numpy path, so a RefinementResult means the same thing whichever backend produced it.
+        # Returning early from the kernel instead left energy_before/after as NaN and dropped the
+        # non-ideal-spacing note, which three existing tests caught.
+        #
+        # The live views and `azimuths` are refined IN PLACE, which is also what removes the second
+        # seeding: the kernel used to re-derive the same azimuths and the same canonicalized atoms
+        # from `n_start`/`c_start` and hand them back to be copied over these arrays.
+        sweeps, converged = compiled.sweep_to_convergence(
+            n_live,
+            c_live,
+            o_live,
+            azimuths,
             max_sweeps=max_sweeps,
             tolerance=tolerance,
             candidates=candidates,
         )
-        n_live[:] = k_n
-        c_live[:] = k_c
-        o_live[:] = k_o
-        azimuths[:] = k_az
     else:
         for sweep in range(max_sweeps):
             sweeps = sweep + 1
@@ -777,7 +817,6 @@ def refine_backbone(
                 converged = True
                 break
 
-    refresh_movable_neighbours()
     after = total_energy()
     # Three atoms belong to no peptide unit -- N of the first residue, C and O of the last -- so no
     # azimuth ever moved them, and they still sit where they were placed relative to neighbours

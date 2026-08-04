@@ -76,8 +76,9 @@ def _add_common_build_arguments(parser: argparse.ArgumentParser) -> None:
         default="walk",
         choices=_ENGINE_CHOICES,
         help=(
-            "conformation engine (default: walk; starling needs "
-            "pip install 'idptools-dodo[starling]')"
+            "conformation engine (default: walk). 'starling' is UNDOCUMENTED in 2.0 and not "
+            "verified end to end: check the exit status, because a failed region keeps its "
+            "input coordinates while the folded domains move anyway"
         ),
     )
     # Backbone placement for REBUILT regions is --backbone, below. Side-chain placement is not in
@@ -187,10 +188,8 @@ def _build_parser() -> argparse.ArgumentParser:
             help=(
                 "how the folded domains get their positions. 'predicted' (default) moves "
                 "them to ALBATROSS's predicted linker dimension and builds the linker into "
-                "that gap. 'conformer' needs --engine starling and inverts it: a generated "
-                "conformer is taken as-is and the next domain moves to meet it, so nothing "
-                "is selected on dimension and the ensemble keeps STARLING's full spread. "
-                "Domains then differ between models"
+                "that gap. 'conformer' requires --engine starling, which is undocumented in "
+                "2.0, so it is undocumented too"
             ),
         )
 

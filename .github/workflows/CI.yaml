@@ -170,7 +170,8 @@ jobs:
       - name: Install the package, then force the declared minimums
         run: |
           python -m pip install -e ".[test]"
-          python -m pip install "numpy==2.0.*" "scipy==1.13.*" "getSequence==3.0.*" "tqdm==4.66.*"
+          python -m pip install "numpy==2.0.*" "scipy==1.13.*" "getSequence==3.0.*" "tqdm==4.66.*" \
+            "numba==0.60.*"
 
       - name: Show what actually resolved
         # Printed, because a floor job that silently resolved something newer would pass while

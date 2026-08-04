@@ -95,6 +95,12 @@ dependencies = [
     # Progress reporting. Pure Python, no dependencies of its own, ~60 kB -- cheap enough to be
     # unconditional, and a long rebuild without a progress bar reads as a hang.
     "tqdm>=4.66",
+    # The compiled backbone-refinement kernel. MEASURED at 16x the pure-numpy path on a real region,
+    # and 7.76 s to 0.49 s across all six of p300's rebuilt regions, which is why it is a base
+    # dependency rather than an extra. refine_backbone(backend="numpy") keeps the numpy path
+    # reachable, and an import failure -- a platform without a wheel, a numpy numba has not caught up
+    # with -- falls back to it silently rather than failing a rebuild.
+    "numba>=0.60",
 ]
 
 [project.optional-dependencies]
@@ -268,6 +274,13 @@ convention = "numpy"
 # deliberate, readable abbreviation in a module that references dozens of them.
 "tests/**" = ["D100", "D101", "D102", "D103", "D104", "N812"]
 
+# E702: the kernel is scalar arithmetic on unpacked components; splitting each grouped assignment
+#   across three lines turns a six-line rotation into twenty and hides the structure it exists to show.
+# N803/N806: it names variables after the ATOMS they hold -- Cx, Nx, Ox are the carbon, nitrogen and
+#   oxygen of a peptide unit. Lowercasing them loses the only thing making 200 lines of scalar
+#   arithmetic followable.
+"src/dodo/construct/backbone_kernel.py" = ["E702", "N803", "N806"]
+
 [tool.mypy]
 # NOT the runtime floor, which is 3.10 (requires-python above). This governs the syntax level
 # mypy parses THIRD-PARTY STUBS at, and it has to be >= 3.12 because numpy's own bundled
@@ -298,6 +311,19 @@ module = [
     "starling.*",
     "getSequence.*",
 ]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Annotations inside an njit function are erased -- numba infers its own types from the call site and
+# mypy cannot see into the compiled body -- so requiring them buys noise on 200 lines of scalar
+# arithmetic. The module's public entry point, refine_region, is annotated and checked as usual.
+module = ["dodo.construct.backbone_kernel"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+
+[[tool.mypy.overrides]]
+module = ["numba.*", "llvmlite.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

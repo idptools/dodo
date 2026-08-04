@@ -75,7 +75,7 @@ entry, and only when the input alpha carbons are not uniformly spaced, as descri
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 
 import numpy as np
 from scipy.spatial.distance import cdist
@@ -89,7 +89,7 @@ from ..constants import (
     N_CA_BOND_LENGTH,
     N_CA_C_ANGLE,
 )
-from ..exceptions import GeometryError
+from ..exceptions import GeometryError, InvalidParameterError, MissingDependencyError
 from .ca_backbone import _terminal_carbon, _terminal_nitrogen, _terminal_oxygen
 
 __all__ = [
@@ -398,6 +398,25 @@ def _place_oxygen_batch(ca: np.ndarray, c: np.ndarray, n_next: np.ndarray) -> np
     return placed
 
 
+def _load_kernel() -> Any:
+    """Return the compiled kernel module, or None when numba is not importable.
+
+    Cached on the function, so a missing numba costs one failed import per process rather than
+    one per region. Deliberately tolerant: numba is a base dependency, but a platform without a
+    wheel, or a numpy it has not caught up with, should fall back rather than fail a rebuild.
+    """
+    cached = getattr(_load_kernel, "_cached", "unset")
+    if cached == "unset":
+        try:
+            from . import backbone_kernel
+        except Exception:
+            cached = None
+        else:
+            cached = backbone_kernel
+        _load_kernel._cached = cached  # type: ignore[attr-defined]
+    return cached
+
+
 def refine_backbone(
     ca_xyz: np.ndarray,
     n_xyz: np.ndarray,
@@ -411,6 +430,7 @@ def refine_backbone(
     max_sweeps: int = 30,
     tolerance: float = 0.25,
     candidates: int = 24,
+    backend: str = "auto",
 ) -> RefinementResult:
     """Refine N, C and O of a backbone, holding the alpha carbons fixed.
 
@@ -489,6 +509,17 @@ def refine_backbone(
     n_res = ca.shape[0]
     n_units = n_res - 1
     obstacle_points = None if obstacles is None else np.asarray(obstacles, dtype=np.float64)
+
+    if backend not in ("auto", "numba", "numpy"):
+        raise InvalidParameterError(f"Unknown backend {backend!r}. Use 'auto', 'numba' or 'numpy'.")
+    kernel = None if backend == "numpy" else _load_kernel()
+    if kernel is None and backend == "numba":
+        raise MissingDependencyError(
+            "numba",
+            "compiling the backbone refinement inner loop, which is 16x faster than the pure-numpy "
+            "path; pass backend='numpy' to use that instead",
+            extra="fast",
+        )
 
     from scipy.spatial import cKDTree
 
@@ -682,41 +713,69 @@ def refine_backbone(
     sweeps = 0
     converged = False
     previous: float | None = None
-    for sweep in range(max_sweeps):
-        sweeps = sweep + 1
-        # The generated atoms moved last sweep, so who each unit can hit has changed with them.
-        refresh_movable_neighbours()
-        largest_move = 0.0
-        swept = 0.0
-        span = 180.0 / (1.0 + sweep)
-        for unit in range(n_units):
-            incumbent = azimuths[unit]
-            trials = incumbent + np.linspace(-span, span, candidates)
-            trials = np.concatenate([[incumbent], trials])
-            values = score_candidates(unit, trials)
-            best = int(np.argmin(values))
-            chosen = float(trials[best])
-            swept += float(values[best])
-            apply(unit, chosen)
-            azimuths[unit] = chosen
-            largest_move = max(largest_move, abs(chosen - incumbent))
-        # Converge on the OBJECTIVE, not on how far the azimuths moved.
-        #
-        # The move-size test this replaced could not fire. Candidates are drawn from a window that
-        # narrows as 180/(1+sweep) across `candidates` points, so the smallest non-zero move
-        # available is the candidate spacing -- 15.65 degrees on the first sweep and still 0.52 on
-        # the thirtieth, against a 0.25 degree tolerance. `largest_move <= tolerance` therefore
-        # meant `largest_move == 0`, so every long region ran the full sweep budget and reported
-        # `converged` as False even once the geometry had stopped changing in any way that mattered.
-        #
-        # `swept` is the sum of the accepted scores over the sweep. It double-counts terms shared
-        # between neighbouring units, exactly as total_energy does, which is why it is only ever
-        # compared against itself.
-        improvement = float("inf") if previous is None else previous - swept
-        previous = swept
-        if largest_move == 0.0 or improvement <= tolerance:
-            converged = True
-            break
+    if kernel is not None and max_sweeps > 0:
+        # ONLY the sweep loop is replaced. Everything around it -- the seeding, `before`, the
+        # terminal atoms, the notes, `after` -- stays shared with the numpy path, so a
+        # RefinementResult means the same thing whichever backend produced it. Returning early from
+        # the kernel instead left energy_before/after as NaN and dropped the non-ideal-spacing note,
+        # which three existing tests caught.
+        k_n, k_c, k_o, k_az, sweeps, converged = kernel.refine_region(
+            ca,
+            n_start,
+            c_start,
+            obstacles=obstacle_points,
+            clash_distance=clash_distance,
+            angle_weight=angle_weight,
+            clash_weight=clash_weight,
+            rama_weight=rama_weight,
+            max_sweeps=max_sweeps,
+            tolerance=tolerance,
+            candidates=candidates,
+        )
+        n_live[:] = k_n
+        c_live[:] = k_c
+        o_live[:] = k_o
+        azimuths[:] = k_az
+    else:
+        for sweep in range(max_sweeps):
+            sweeps = sweep + 1
+            # The generated atoms moved last sweep, so who each unit can hit has changed with them.
+            refresh_movable_neighbours()
+            largest_move = 0.0
+            swept = 0.0
+            span = 180.0 / (1.0 + sweep)
+            for unit in range(n_units):
+                incumbent = azimuths[unit]
+                trials = incumbent + np.linspace(-span, span, candidates)
+                trials = np.concatenate([[incumbent], trials])
+                values = score_candidates(unit, trials)
+                best = int(np.argmin(values))
+                chosen = float(trials[best])
+                swept += float(values[best])
+                apply(unit, chosen)
+                azimuths[unit] = chosen
+                largest_move = max(largest_move, abs(chosen - incumbent))
+            # Converge on the OBJECTIVE, not on how far the azimuths moved.
+            #
+            # The move-size test this replaced could not fire. Candidates are drawn from a window
+            # that
+            # narrows as 180/(1+sweep) across `candidates` points, so the smallest non-zero move
+            # available is the candidate spacing -- 15.65 degrees on the first sweep and still 0.52
+            # on
+            # the thirtieth, against a 0.25 degree tolerance. `largest_move <= tolerance` therefore
+            # meant `largest_move == 0`, so every long region ran the full sweep budget and reported
+            # `converged` as False even once the geometry had stopped changing in any way that
+            # mattered.
+            #
+            # `swept` is the sum of the accepted scores over the sweep. It double-counts terms
+            # shared
+            # between neighbouring units, exactly as total_energy does, which is why it is only ever
+            # compared against itself.
+            improvement = float("inf") if previous is None else previous - swept
+            previous = swept
+            if largest_move == 0.0 or improvement <= tolerance:
+                converged = True
+                break
 
     refresh_movable_neighbours()
     after = total_energy()

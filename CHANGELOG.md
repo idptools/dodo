@@ -271,6 +271,37 @@ in a viewer shows only the disordered regions moving.
 
 ### Changed
 
+- **Backbone refinement now runs a compiled kernel by default**, `dodo.construct.backbone_kernel`,
+  with `refine_backbone(backend="numpy")` keeping the pure-numpy path reachable. This adds `numba` as
+  a base dependency; an import failure falls back to numpy silently rather than failing a rebuild.
+
+  The refinement objective is cheap arithmetic evaluated an enormous number of times -- for a
+  583-residue region, 397 units x 25 candidates x 15 sweeps -- and profiling put about 60% of the
+  time in numpy's per-call dispatch rather than the arithmetic. Batching can only amortise that, never
+  remove it: batching ten models recovered 3.6x of a theoretical 10x, and batching over peptide units
+  cost more in extra sweeps than it saved. Compiling removes it outright. Measured on a 398-residue
+  region, **2.47 s to 0.35 s (7.1x)**; the sweep loop alone is 16x, and the difference is the
+  `total_energy` passes that stay in numpy so that a `RefinementResult` means the same thing from
+  either backend.
+
+  Equivalence is established rather than assumed. On byte-identical inputs the two agree bit-for-bit
+  on C, N and O placement, on the Ramachandran term and on the clash term, and to 1e-13 on the two
+  N-CA-C angle terms where `math.acos` and `np.arccos` round differently -- and both select the same
+  candidate. Accuracy against all-atom truth is equivalent (N 0.148 vs 0.139 A, O 0.451 vs 0.445,
+  identical angle statistics, zero clashes, bonds exact).
+
+  **Output is not bit-identical between backends.** That 1e-13 eventually flips a nearly balanced
+  decision, after which a greedy search diverges to different -- measurably equivalent -- coordinates.
+  It was never bit-identical across numpy versions or BLAS builds either, for the same reason.
+
+  Worth recording for anyone who revisits this: a suspected bug here took four failed attempts to
+  chase, and every one compared the END STATES of two independent runs. A greedy search amplifies any
+  perturbation chaotically, so that comparison cannot separate a cause from its consequences. The
+  pure-function comparison on identical inputs settled it in one shot, and there was no bug. The test
+  that does it is in `tests/unit/test_backbone_kernel.py`.
+
+
+
 - **STARLING conformers are now filtered before they are repaired, and generated in rounds.** Repair
   is the expensive step — 3.8 s for 100 conformers of 380 residues — and two defects survive it: a
   chain the model lost, and one that already collides with itself. Both are now detected by checks

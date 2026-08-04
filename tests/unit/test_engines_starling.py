@@ -18,6 +18,7 @@ proxy.
 from __future__ import annotations
 
 import contextlib
+import warnings
 from dataclasses import dataclass, replace
 from itertools import pairwise
 from types import SimpleNamespace
@@ -789,7 +790,15 @@ def test_wrong_residue_count_raises_rather_than_being_padded(
         )
 
 
-def test_nan_from_starling_is_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_nan_conformer_is_dropped_and_the_good_one_still_builds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One bad conformer out of two must cost that conformer, not the region.
+
+    This test previously asserted the opposite -- that any NaN was fatal -- and that policy is what
+    made every region of a real p300 run fail while 79-98% of each ensemble was usable. See
+    :class:`TestNonFiniteConformersAreDroppedNotFatal` for the measured fractions.
+    """
     rng = np.random.default_rng(0)
     coords = np.stack([cone_chain(20, rng), cone_chain(20, rng)])
     coords[1, 5] = np.nan
@@ -799,7 +808,27 @@ def test_nan_from_starling_is_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(S, "_import_starling", lambda: module)
     monkeypatch.setattr(S, "starling_installed", lambda: True)
     monkeypatch.setattr(S, "_loaded_starling", lambda: module)
-    with pytest.raises(EngineError, match="non-finite"):
+    # The surviving conformer measures 34.8 A end-to-end, so the target has to be that -- otherwise
+    # the region fails dimension selection and the test stops telling us anything about the NaN.
+    with pytest.warns(UserWarning, match="Dropped 1 of 2"):
+        result = StarlingEngineFactory().generate(
+            request_for(20, target=34.8), None, np.random.default_rng(0)
+        )
+    assert np.all(np.isfinite(result.ca_coords)), "a NaN reached the built coordinates"
+
+
+def test_an_entirely_non_finite_ensemble_is_still_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Filtering is not tolerating: with no finite conformer left there is nothing to build."""
+    rng = np.random.default_rng(0)
+    coords = np.stack([cone_chain(20, rng), cone_chain(20, rng)])
+    coords[:, 5] = np.nan
+    module = SimpleNamespace(
+        generate=lambda sequence, conformations=1, **kw: FakeEnsemble(coordinates=coords)
+    )
+    monkeypatch.setattr(S, "_import_starling", lambda: module)
+    monkeypatch.setattr(S, "starling_installed", lambda: True)
+    monkeypatch.setattr(S, "_loaded_starling", lambda: module)
+    with pytest.raises(EngineError, match="All 2 STARLING conformer"):
         StarlingEngineFactory().generate(
             request_for(20, target=20.0), None, np.random.default_rng(0)
         )
@@ -2965,3 +2994,76 @@ def test_assembly_does_not_loosen_the_bond_gate_for_a_sub_engine() -> None:
     )
     with pytest.raises(BuildError, match="CA-CA bond"):
         engine.generate(request_for(121, target=90.0), None, np.random.default_rng(0))
+
+
+class TestNonFiniteConformersAreDroppedNotFatal:
+    """A NaN conformer must be discarded, not take the whole region down with it.
+
+    This is the bug that made a real p300 run fail every one of its six regions. The check used to
+    raise whenever ANY conformer was non-finite, on the stated reasoning that "NaN must not reach a
+    structure file, so this is fatal rather than filtered". The premise is right and the
+    inference is wrong: the way to keep a NaN out of a file is to drop the conformer carrying it.
+
+    MEASURED on that run, per region: 21, 11, 2, 8, 3 and 3 bad conformers out of 100. So 79-98% of
+    every ensemble was usable and was being thrown away. The visible symptom was indirect and much
+    worse than an error -- a failed region keeps its INPUT coordinates while the folded domains are
+    still repositioned, so the output held original IDR geometry connected to domains that moved.
+
+    These call the extractor directly, so they run without STARLING installed.
+    """
+
+    @staticmethod
+    def _payload(n_conformers: int, n_residues: int, bad_rows: tuple[int, ...]) -> np.ndarray:
+        rng = np.random.default_rng(0)
+        coords = rng.normal(size=(n_conformers, n_residues, 3)) * 10.0
+        for row in bad_rows:
+            coords[row, 0, 0] = np.nan
+        return coords
+
+    def test_the_finite_conformers_survive_and_the_bad_ones_are_dropped(self) -> None:
+        coords = self._payload(100, 20, tuple(range(21)))
+        with pytest.warns(UserWarning, match="Dropped 21 of 100"):
+            got = S._coordinates_from_result(coords, "A" * 20, 20)
+        assert got.shape == (79, 20, 3)
+        assert np.all(np.isfinite(got)), "a non-finite conformer survived the filter"
+        # The survivors must be the ORIGINAL good rows, not a reindexed or reordered copy.
+        assert np.array_equal(got, coords[21:])
+
+    @pytest.mark.parametrize("bad", [1, 2, 3, 8, 11, 21])
+    def test_every_bad_fraction_seen_in_the_real_failure_still_builds(self, bad: int) -> None:
+        """The six regions of the failing run, by their measured bad counts."""
+        coords = self._payload(100, 24, tuple(range(bad)))
+        with pytest.warns(UserWarning):
+            got = S._coordinates_from_result(coords, "A" * 24, 24)
+        assert got.shape[0] == 100 - bad
+        assert np.all(np.isfinite(got))
+
+    def test_a_single_non_finite_value_does_not_fail_the_region(self) -> None:
+        """One NaN in one conformer used to be fatal for all 100."""
+        coords = self._payload(100, 20, (57,))
+        with pytest.warns(UserWarning, match="Dropped 1 of 100"):
+            got = S._coordinates_from_result(coords, "A" * 20, 20)
+        assert got.shape[0] == 99
+
+    def test_all_non_finite_still_raises_because_there_is_nothing_to_build(self) -> None:
+        """Filtering is not the same as tolerating: an empty survivor set must be fatal."""
+        coords = self._payload(4, 20, (0, 1, 2, 3))
+        with pytest.raises(EngineError, match="All 4 STARLING conformer"):
+            S._coordinates_from_result(coords, "A" * 20, 20)
+
+    def test_an_all_finite_ensemble_is_returned_untouched_and_warns_nothing(self) -> None:
+        coords = self._payload(10, 20, ())
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any warning here is a regression
+            got = S._coordinates_from_result(coords, "A" * 20, 20)
+        assert np.array_equal(got, coords)
+
+    @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
+    def test_infinities_are_dropped_too_not_only_nan(self, value: float) -> None:
+        """``isfinite`` covers both, and an inf reaching a PDB is no better than a NaN."""
+        coords = self._payload(20, 20, ())
+        coords[5, 3, 1] = value
+        with pytest.warns(UserWarning, match="Dropped 1 of 20"):
+            got = S._coordinates_from_result(coords, "A" * 20, 20)
+        assert got.shape[0] == 19
+        assert np.all(np.isfinite(got))

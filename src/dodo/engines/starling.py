@@ -54,6 +54,7 @@ import importlib.util
 import inspect
 import os
 import sys
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from types import ModuleType
@@ -2039,13 +2040,31 @@ def _coordinates_from_result(result: Any, sequence: str, n_residues: int) -> np.
         )
     if coords.shape[0] == 0:
         raise EngineError("STARLING returned an ensemble with zero conformers.")
-    if not np.all(np.isfinite(coords)):
-        bad = int(np.count_nonzero(~np.isfinite(coords).all(axis=(1, 2))))
-        raise EngineError(
-            f"{bad} of {coords.shape[0]} STARLING conformer(s) contain non-finite "
-            f"coordinates. NaN must not reach a structure file, so this is fatal rather "
-            f"than filtered."
+    finite = np.isfinite(coords).all(axis=(1, 2))
+    if not finite.all():
+        bad = int(np.count_nonzero(~finite))
+        if not finite.any():
+            raise EngineError(
+                f"All {coords.shape[0]} STARLING conformer(s) contain non-finite coordinates, "
+                f"so there is nothing to build from. This is a STARLING generation failure, not "
+                f"a DODO one -- check the installed version and the sequence."
+            )
+        # Dropped, NOT fatal. This used to raise whenever ANY conformer was non-finite, which is
+        # the wrong inference from a correct premise: a NaN must never reach a structure file, but
+        # the way to ensure that is to discard the conformers carrying it, not to throw away the
+        # good ones with them. MEASURED on a p300 rebuild, where it made every region fail: the
+        # bad fraction ran 2-21% per region, so 79-98% of each ensemble was usable and discarded.
+        # A region failing here keeps its INPUT coordinates while the folded domains are still
+        # repositioned, so the visible symptom was a structure whose IDRs connected to domains
+        # that had moved out from under them.
+        warnings.warn(
+            f"Dropped {bad} of {coords.shape[0]} STARLING conformers for non-finite "
+            f"coordinates; building from the remaining {int(finite.sum())}. A NaN here comes "
+            f"from STARLING's generation, not from DODO.",
+            UserWarning,
+            stacklevel=2,
         )
+        coords = coords[finite]
     return coords
 
 

@@ -18,9 +18,7 @@ needed, and rebuilds the IDR to the predicted dimensions.
 You can also ask for regions more compact or more expanded than predicted. And you
 can generate several conformers into one multi-model PDB, which in VMD looks *like* a
 simulation trajectory — to be very clear, it is **not** equivalent to a simulation, but it's
-nice for visualization. Finally, you can also use the IDR ensemble prediction tool
-[STARLING](https://github.com/idptools/sparrow) to generate more realistic IDR ensembles
-for your structure. 
+nice for visualization.
 
 ![DODO_EXAMPLE](https://github.com/idptools/dodo/blob/main/images/DODO_example.png)
 
@@ -39,18 +37,15 @@ Requires Python 3.10 or newer.
 pip install git+https://github.com/idptools/dodo.git
 ```
 
-Two installs, and that is the whole story:
+One install, and that is the whole story:
 
 ```bash
-pip install idptools-dodo                 # everything you need to rebuild a structure
-pip install "idptools-dodo[starling]"     # adds STARLING ensembles (large: ~2.4 GB of weights)
+pip install idptools-dodo
 ```
 
-The base install depends on **numpy, scipy and getSequence** — small, fast, and no torch. It gets
-you structure reading and writing, region identification, IDR rebuilding, protein-name lookup for
-`dodo fetch`, and the validator.
-
-STARLING is the only extra, because it is the only dependency heavy enough to be worth opting into.
+The base install depends on **numpy, scipy, numba and getSequence** — small, fast, and no torch. It
+gets you structure reading and writing, region identification, IDR rebuilding, protein-name lookup
+for `dodo fetch`, and the validator.
 
 **Most users should also install sparrow**, which provides ALBATROSS:
 
@@ -93,10 +88,8 @@ dodo regions AF-P04637-F1-model_v6.pdb
 | `-o`, `--out` | *required* | Output PDB path |
 | `-m`, `--mode` | `predicted` | Target dimension as a multiplier on the predicted end-to-end distance |
 | `-n`, `--models` | `1` | Number of conformers. Folded domains are positioned once and held fixed across all models; only the disordered regions differ |
-| `-e`, `--engine` | `walk` | `walk` or `starling` |
 | `-s`, `--strategy` | `auto` | How to identify regions: `auto`, `density`, `contact`, `plddt` |
 | `--seed` | none | Makes output reproducible |
-| `--domain-placement` | `predicted` | `predicted`, or `conformer` to position folded domains from STARLING conformers |
 | `--backbone` | off | Also place N, C and O on the rebuilt regions, inferred from the alpha carbons |
 | `--ca-only` | off | Alpha carbons only, folded domains included |
 | `-b`, `--annotate-regions` | off | Encode region type in the B-factor column, for colouring |
@@ -368,68 +361,6 @@ past the automatic bond-detection cutoff in both VMD and PyMOL — so without CO
 region renders as a cloud of disconnected dots. This isn't cosmetic polish; its absence defeats
 the tool.
 
-## The STARLING engine, and what it does not know
-
-`--engine starling` replaces the self-avoiding walk with conformers from
-[STARLING](https://github.com/idptools/starling), a generative model of disordered ensembles. It is
-the only optional dependency, because it is large — roughly 2.4 GB of weights.
-
-### STARLING models IDRs *alone*
-
-This is the most important thing to understand about the engine, and you cannot see it in the
-output, so DODO warns about it on every run.
-
-**STARLING is given a sequence and nothing else.** Not the folded domains, not their positions, not
-the space they occupy. It was trained on isolated disordered regions and that is what it models. So
-a STARLING conformer:
-
-- cannot avoid the folded domains, because it was never shown them;
-- has conformational statistics that are **not** conditioned on them either.
-
-What DODO does with that conformer is pick the one whose own end-to-end distance best matches what
-the anchors demand, then place it as a rigid body so its first alpha carbon sits one bond from the
-N-anchor and its last one bond from the C-anchor. Regions it cannot fit are reported, never forced.
-
-So the region's **internal geometry is STARLING's** and its **placement is DODO's**. Read a STARLING
-region as a realistic IDR conformation that has been positioned — not as one sampled in the presence
-of the domains it sits between. If that distinction matters for what you are doing, it matters a
-lot.
-
-The walk engine is the opposite trade: its conformations are geometric rather than learned, but it
-is aware of every already-placed atom and avoids all of them.
-
-### Regions longer than 380 residues
-
-STARLING will not generate a region longer than 380 residues, and real IDRs routinely are — p300's
-disordered N-terminus alone is over a thousand. DODO handles this rather than erroring or silently
-downgrading to a random walk.
-
-The region is split into segments within the cap, each generated separately, and the segments are
-then arranged in space. That is sound on polymer-scaling grounds rather than being a workaround: for
-a chain with Flory exponent `ν`, a segment of `N/k` residues has end-to-end distance `~(N/k)^ν`, and
-arranging `k` of them self-avoidingly with a step of that order gives `~(N/k)^ν × k^ν = N^ν` overall.
-The assembled chain scales with length exactly as one long chain would.
-
-Two things the assembly has to get right, because independently generated segments know nothing
-about each other:
-
-- **Segments overlap where they join.** Adjacent segments share residues, and the splice is chosen
-  from candidate rotations about the join, so the chain is continuous rather than merely adjacent.
-- **Clashes are checked between segments as well as within them.** A segment generated in isolation
-  has no idea another segment occupies the same space, so the arrangement measures and rejects.
-
-### Bond lengths are corrected, not just checked
-
-STARLING is a diffusion model that reconstructs coordinates from a predicted distance map, so its
-virtual CA–CA bonds scatter around 3.8 Å rather than sitting on it. That is normal model output, but
-it is not a protein — the trans-peptide CA–CA distance is rigid.
-
-So DODO projects every conformer onto an exact 3.81 Å bond before using it, with a SHAKE-style
-iterative correction. Screening alone, which is what this used to do, either rejects usable
-conformers for ordinary diffusion noise or passes that noise into the output file. On synthetic
-diffusion-like traces the worst bond deviation goes from 0.19–1.02 Å to 0.0000 Å, moving atoms by
-0.12–0.72 Å depending on how noisy the input was.
-
 ## Current limitations
 
 Honestly stated, with what's fixed since 1.x marked.
@@ -437,8 +368,7 @@ Honestly stated, with what's fixed since 1.x marked.
 1. **~~Rebuilding uses a simple random walk, so conformations aren't scientifically useful.~~**
    Partly addressed. The walk is now a self-avoiding, angle-constrained growth walk that hits
    the predicted dimensions and produces a genuine ensemble across models. It is still a
-   geometric sampler, not a force field — for ensemble-grade conformations, use
-   `--engine starling`.
+   geometric sampler, not a force field, and it is not a substitute for a simulation.
 
 2. **Rebuilt IDRs contain only alpha carbons.** Still true in 2.0, and deliberately so — getting
    the alpha-carbon trace right comes first. Note this has never applied to the regions DODO

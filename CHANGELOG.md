@@ -9,7 +9,7 @@ not listed, however large, unless you can see it from outside.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0] — unreleased
+## [2.0.0] — 2026-08-04
 
 DODO 2.0 is a rewrite. **It breaks the 1.x API deliberately**, so read the migration notes below
 before upgrading a script.
@@ -271,6 +271,34 @@ in a viewer shows only the disordered regions moving.
 
 ### Changed
 
+- **Fixed: a single non-finite STARLING conformer no longer fails the whole region.** The check
+  rejected an entire ensemble if *any* conformer contained a NaN, on the reasoning that "NaN must not
+  reach a structure file, so this is fatal rather than filtered". The premise is right and the
+  inference is not: the way to keep a NaN out of a file is to discard the conformer carrying it.
+  Non-finite conformers are now dropped with a warning, and only an ensemble with *no* finite
+  conformer left is fatal.
+
+  This was severe in practice. On a 10-model p300 rebuild it failed all six regions in every model --
+  60 failures -- while the bad fraction was only **2-21% per region**, so 79-98% of each ensemble was
+  usable and was being thrown away.
+
+  The symptom was much worse than an error message, and the mechanism is general rather than
+  STARLING-specific: **a region whose build fails keeps its input coordinates, while the folded
+  domains are repositioned regardless.** When every region fails, the output is the original IDR
+  geometry connected to domains that have moved out from under it. The run is correctly reported as
+  failed and the CLI exits 2, but the file is still written.
+  `tests/data/structures/testing_translation.pdb` reproduces that on the default walk engine -- two
+  domains moved, a 280-residue terminal IDR left unbuilt, a written model with a 31.6 A gap. So check
+  the exit status, not just the file. Whether a declared-failed rebuild should write at all is
+  unresolved.
+
+- **The STARLING engine is undocumented in 2.0, pending verification.** `--engine starling` and
+  `--domain-placement conformer` still work and are still tested, but they are removed from the README
+  and the guide, marked UNSUPPORTED in `--help`, and warn when used. The failure above is fixed and
+  covered by 13 tests that run without STARLING installed, but the full path has not been re-run
+  against a real STARLING install, so it stays undocumented until it has been.
+
+
 - **Backbone refinement now runs a compiled kernel by default**, `dodo.construct.backbone_kernel`,
   with `refine_backbone(backend="numpy")` keeping the pure-numpy path reachable. This adds `numba` as
   a base dependency; an import failure falls back to numpy silently rather than failing a rebuild.
@@ -280,9 +308,48 @@ in a viewer shows only the disordered regions moving.
   time in numpy's per-call dispatch rather than the arithmetic. Batching can only amortise that, never
   remove it: batching ten models recovered 3.6x of a theoretical 10x, and batching over peptide units
   cost more in extra sweeps than it saved. Compiling removes it outright. Measured on a 398-residue
-  region, **2.47 s to 0.35 s (7.1x)**; the sweep loop alone is 16x, and the difference is the
-  `total_energy` passes that stay in numpy so that a `RefinementResult` means the same thing from
-  either backend.
+  region, **2.47 s to 0.35 s (7.1x)**.
+
+  Three things are compiled, because each one became the bottleneck as soon as the previous was fixed:
+
+  - The **sweep loop**, 16x on its own.
+  - The **objective**, once the sweep was fast enough that *reporting* it dominated. `energy_before`
+    and `energy_after` are read once each per region, and the numpy scorer pushed every peptide unit
+    through `score_candidates`: over p300's six regions, 12 calls cost 0.562 s against the compiled
+    sweep's 0.204 s of self time -- two readings cost 2.8x the optimisation they described. Compiled
+    they cost 0.026 s, taking refinement **1.92x**.
+  - The **neighbour search**, which was a `cKDTree` built and queried in Python in the middle of an
+    otherwise compiled path, at 0.199 s against the sweep's 0.204 s. A uniform cell list in nopython
+    mode costs 0.011 s, **18x**, taking `refine_region` a further **1.80x**. `sweep_region` is
+    unchanged across that change (68 calls, 0.219 vs 0.221 s), which is what shows only the search
+    moved.
+
+  End to end, `rebuild --backbone` now takes **0.92 s on dnmt3a, 1.45 s on arf19 and 3.18 s on p300**,
+  against 23.6 s for p300 before any of this work. Seam counts, intra-residue damage and impossible
+  pairs are unchanged across three seeds on all three structures.
+
+  The compiled neighbour search is also *better*, not merely faster, in two ways. It is a true radius
+  search, where `cKDTree.query(k=48)` can only ever examine the 48 nearest; and it counts qualifying
+  neighbours without a ceiling, so the cap is checked rather than trusted. That found a real latent
+  bug in the guard it replaced: the old one raised only if the 48th *nearest* point survived the
+  covalent-separation filter, so a constructed case kept 47 of 59 qualifying neighbours and **silently
+  dropped 12** without raising. **A crowded region that previously completed with a quietly truncated
+  objective will now raise `GeometryError` instead.** Measured headroom is comfortable -- the worst
+  uncapped count is 41 on p300, 38 on dnmt3a and 23 on arf19, against a cap of 48 -- so this is not
+  expected to fire on real input, but it is a behaviour change rather than a pure fix.
+
+  Note also that `MAX_NEIGHBOURS = 48` has less headroom than an earlier note claimed. Measured over
+  *every* clash call of a full p300 rebuild rather than one region, the kept sets peak at **41** and
+  the pre-filter count at **43**, not the maximum of 15 a single region suggested. Do not lower it.
+
+  Two levers were measured and rejected, recorded so they are not re-litigated. `fastmath=True` is
+  worth 1.14x on the sweep loop but only **1.2%** on a whole rebuild, and its `nnan` licence lets the
+  `acos` domain clamp swallow a NaN -- `_angle` returns `nan` with it off and `180.0` with it on --
+  which is not worth 1.2% in a geometry kernel. Intel **SVML is unavailable** rather than unhelpful:
+  no `intel-cmplr-lib-rt` wheel exists for arm64 on any platform. A faster **threading layer** is a
+  dead end too, with `omp` measuring 0.86x against the default `workqueue`; neither matters while this
+  code is serial. `prange` over the *model* axis does scale (16.4x at 18 models) but needs the pipeline
+  to collect every model's CA trace before one batched pass, so it is not wired up.
 
   Equivalence is established rather than assumed. On byte-identical inputs the two agree bit-for-bit
   on C, N and O placement, on the Ramachandran term and on the clash term, and to 1e-13 on the two

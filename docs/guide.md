@@ -34,10 +34,8 @@ region does.
 | `-o`, `--out` | *required* | Output PDB path |
 | `-m`, `--mode` | `predicted` | Multiplier on the predicted end-to-end distance |
 | `-n`, `--models` | `1` | Number of conformers |
-| `-e`, `--engine` | `walk` | `walk` or `starling` |
 | `-s`, `--strategy` | `auto` | Region identification: `auto`, `density`, `contact`, `plddt` |
 | `--seed` | none | Makes output bit-identical |
-| `--domain-placement` | `predicted` | `predicted` or `conformer` — the latter needs `--engine starling`, see below |
 | `--backbone` | off | Also place N, C and O on the rebuilt regions — see below |
 | `--ca-only` | off | Alpha carbons only, folded domains included |
 | `-b`, `--annotate-regions` | off | Encode region type in the B-factor column, for colouring |
@@ -111,44 +109,6 @@ These modes meant something different in 1.x, where they were Ångströms per re
 name gives a different structure, and short regions come out **larger** than they did. See the
 changelog.
 :::
-
-### Positioning domains from conformers (`--domain-placement conformer`)
-
-Opt-in, and only with `--engine starling`. It inverts the pipeline for connecting and terminal IDRs.
-
-The default (`predicted`) is the algorithm at the top of this page: predict the linker's end-to-end
-distance, move the folded domains to it, build the linker into that gap. For the walk engine that is
-exactly right — the engine builds *to* a dimension.
-
-STARLING does not build to a dimension. It samples a distribution, and its end-to-end distance is a
-draw rather than a target. Selecting the draws that happen to match a predicted number is expensive:
-measured on dnmt3a, STARLING's end-to-end distances scatter with a standard deviation of **41% of
-the mean**, while the selection tolerance is 5% of the target. So roughly a tenth of conformers
-survive, and they form a narrow band at the mean — which flattens the very distribution STARLING was
-used for. The two models agree closely on the *mean* (133.0 Å against 136.6 Å on one region), so
-what selection discards is the spread, not a disagreement.
-
-With `--domain-placement conformer`, a conformer is taken as generated and the **next domain moves
-to meet it**. Nothing is selected on dimension; a conformer is rejected only if the domain placement
-it implies collides with something already placed. Measured on dnmt3a over three models:
-
-| | `predicted` | `conformer` |
-|---|---|---|
-| regions built | 6 / 9 | **9 / 9** |
-| achieved end-to-end spread | sd 10.8 Å | **sd 44.9 Å** |
-| range | 24.5–46.9 Å | 23.7–131.9 Å |
-
-Two consequences to be aware of:
-
-- **The folded domains differ between models.** Under `predicted` they are positioned once and shared
-  across every model, so a viewer flicking between frames sees only the disordered regions move.
-  Here each model's conformers decide where its domains go, which is a genuine ensemble of the whole
-  molecule rather than of the linkers alone — but it looks different.
-- **`--mode` stops meaning anything** for the regions this applies to. A multiplier needs a predicted
-  target to multiply, and there is not one.
-
-Loops are unaffected either way: a loop is pinned inside a single folded domain, so there is nothing
-to reposition, and loops always use the walk engine.
 
 ### Backbone reconstruction (`--backbone`)
 

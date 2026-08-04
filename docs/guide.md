@@ -37,6 +37,7 @@ region does.
 | `-e`, `--engine` | `walk` | `walk` or `starling` |
 | `-s`, `--strategy` | `auto` | Region identification: `auto`, `density`, `contact`, `plddt` |
 | `--seed` | none | Makes output bit-identical |
+| `--domain-placement` | `predicted` | `predicted` or `conformer` — the latter needs `--engine starling`, see below |
 | `--backbone` | off | Also place N, C and O on the rebuilt regions — see below |
 | `--ca-only` | off | Alpha carbons only, folded domains included |
 | `-b`, `--annotate-regions` | off | Encode region type in the B-factor column, for colouring |
@@ -110,6 +111,44 @@ These modes meant something different in 1.x, where they were Ångströms per re
 name gives a different structure, and short regions come out **larger** than they did. See the
 changelog.
 :::
+
+### Positioning domains from conformers (`--domain-placement conformer`)
+
+Opt-in, and only with `--engine starling`. It inverts the pipeline for connecting and terminal IDRs.
+
+The default (`predicted`) is the algorithm at the top of this page: predict the linker's end-to-end
+distance, move the folded domains to it, build the linker into that gap. For the walk engine that is
+exactly right — the engine builds *to* a dimension.
+
+STARLING does not build to a dimension. It samples a distribution, and its end-to-end distance is a
+draw rather than a target. Selecting the draws that happen to match a predicted number is expensive:
+measured on dnmt3a, STARLING's end-to-end distances scatter with a standard deviation of **41% of
+the mean**, while the selection tolerance is 5% of the target. So roughly a tenth of conformers
+survive, and they form a narrow band at the mean — which flattens the very distribution STARLING was
+used for. The two models agree closely on the *mean* (133.0 Å against 136.6 Å on one region), so
+what selection discards is the spread, not a disagreement.
+
+With `--domain-placement conformer`, a conformer is taken as generated and the **next domain moves
+to meet it**. Nothing is selected on dimension; a conformer is rejected only if the domain placement
+it implies collides with something already placed. Measured on dnmt3a over three models:
+
+| | `predicted` | `conformer` |
+|---|---|---|
+| regions built | 6 / 9 | **9 / 9** |
+| achieved end-to-end spread | sd 10.8 Å | **sd 44.9 Å** |
+| range | 24.5–46.9 Å | 23.7–131.9 Å |
+
+Two consequences to be aware of:
+
+- **The folded domains differ between models.** Under `predicted` they are positioned once and shared
+  across every model, so a viewer flicking between frames sees only the disordered regions move.
+  Here each model's conformers decide where its domains go, which is a genuine ensemble of the whole
+  molecule rather than of the linkers alone — but it looks different.
+- **`--mode` stops meaning anything** for the regions this applies to. A multiplier needs a predicted
+  target to multiply, and there is not one.
+
+Loops are unaffected either way: a loop is pinned inside a single folded domain, so there is nothing
+to reposition, and loops always use the walk engine.
 
 ### Backbone reconstruction (`--backbone`)
 
@@ -215,11 +254,31 @@ no bond violations and no impossible contacts whatsoever:
 dodo sequence GRNQNGGGYQNYNNQGYQGHGGQHQNNYNQYPCNYFGPGYNN --backbone -o my_idr.pdb
 ```
 
-### Why CONECT records matter
+### Why CONECT records matter, and what to do in VMD
 
-CA–CA spacing is 3.81 Å, past the automatic bond-detection cutoff in both VMD and PyMOL. Without
-CONECT records a rebuilt region renders as a cloud of disconnected dots. This is not cosmetic
-polish; its absence defeats the tool. They are written by default — leave them on.
+CA–CA spacing is 3.81 Å, well past the distance cutoff either VMD or PyMOL uses to infer bonds. So a
+CA-only region has no bonds a viewer can find for itself, and without CONECT records it renders as a
+cloud of disconnected dots. They are written by default — leave them on.
+
+DODO's CONECT output is complete: measured on p300, all 1,520 consecutive CA–CA pairs inside rebuilt
+regions carry a record, in the fixed columns the format specifies, and `dodo validate` checks this.
+**PyMOL honours them and draws the trace.**
+
+**VMD frequently does not.** VMD infers bonds by distance when it loads a PDB and its handling of
+CONECT is unreliable, so a rebuilt region can still come up as dots however correct the file is. That
+is not something DODO can fix from this side. The fix is to use a representation that does not
+consult the bond list at all:
+
+```
+# In the VMD representation dialog, set Drawing Method to:
+Trace        # connects consecutive alpha carbons directly
+Tube         # same, drawn thicker
+```
+
+`Trace` and `Tube` follow residue order rather than bonds, which is exactly right for a CA-only
+model. If you need the bonds themselves — for a selection or an analysis rather than a picture —
+`topo readvarxyz` / the `topotools` plugin can add them explicitly, or convert to a format that
+carries topology, such as PSF.
 
 ## The Python API
 

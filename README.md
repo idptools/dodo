@@ -96,6 +96,7 @@ dodo regions AF-P04637-F1-model_v6.pdb
 | `-e`, `--engine` | `walk` | `walk` or `starling` |
 | `-s`, `--strategy` | `auto` | How to identify regions: `auto`, `density`, `contact`, `plddt` |
 | `--seed` | none | Makes output reproducible |
+| `--domain-placement` | `predicted` | `predicted`, or `conformer` to position folded domains from STARLING conformers |
 | `--backbone` | off | Also place N, C and O on the rebuilt regions, inferred from the alpha carbons |
 | `--ca-only` | off | Alpha carbons only, folded domains included |
 | `-b`, `--annotate-regions` | off | Encode region type in the B-factor column, for colouring |

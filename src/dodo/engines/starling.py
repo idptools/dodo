@@ -1535,6 +1535,61 @@ class StarlingEngine:
         result, _ = self.generate_detailed(request, obstacles, rng)
         return result
 
+    def usable_conformers(
+        self,
+        sequence: str,
+        *,
+        n_conformations: int = 1,
+        rng: np.random.Generator,
+    ) -> tuple[np.ndarray, list[str]]:
+        """Repaired, physically valid conformers for one sequence, with NO dimension selection.
+
+        The pool :meth:`generate_detailed` would rank and choose from, handed over unranked. Nothing
+        here knows or cares what end-to-end distance the caller wants, and that is the point: it
+        exists for the conformer-driven placement mode, where the folded domains are moved to suit
+        the conformer instead of the conformer being chosen to suit the domains.
+
+        Worth being explicit about why that is not merely a convenience. Selecting conformers by
+        end-to-end distance discards most of the ensemble and flattens what is left. Measured on
+        dnmt3a's regions, STARLING's end-to-end distances scatter with a standard deviation of 41%
+        of the mean, while the selection tolerance is 5% of the target -- so roughly 10% of
+        conformers survive, and they are a narrow slice at the mean. The width of that distribution
+        is the main thing STARLING knows that a single predicted number does not, so a caller that
+        can avoid selecting on it should.
+
+        Raises
+        ------
+        EngineError
+            The sequence is longer than STARLING's cap, or no conformer survived repair.
+        """
+        _require_generator(rng)
+        module = _import_starling()
+        entry_point = _generate_callable(module)
+        cap = starling_max_length()
+        if len(sequence) > cap.value:
+            raise EngineError(
+                f"STARLING cannot generate a {len(sequence)}-residue sequence: its cap is {cap}."
+            )
+        # A dummy target, never read: _usable_conformers works from the sequence and the counts.
+        # IDRRequest validates that the field is positive and finite, so it cannot simply be None.
+        request = IDRRequest(
+            sequence=sequence,
+            n_residues=len(sequence),
+            target_end_to_end=1.0,
+            n_anchor_xyz=None,
+            c_anchor_xyz=None,
+            n_anchor_prev_xyz=None,
+            c_anchor_next_xyz=None,
+            n_conformations=n_conformations,
+        )
+        wanted = max(self.ensemble_size, n_conformations * self.oversample)
+        usable, notes, _ = self._usable_conformers(request, entry_point, wanted, rng)
+        if usable.shape[0] == 0:
+            raise EngineError(
+                f"No usable conformer for this {len(sequence)}-residue sequence. {'; '.join(notes)}"
+            )
+        return usable, notes
+
     def generate_detailed(
         self,
         request: IDRRequest,

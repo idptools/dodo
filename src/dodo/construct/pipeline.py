@@ -46,11 +46,12 @@ from ..constants import (
     MIN_IDR_LENGTH,
     SHORT_REGION_TOLERANCE,
 )
+from ..engines.walk import SelfAvoidingWalk
 from ..exceptions import BuildError, DodoError, InvalidParameterError
 from ..regions.identify import RegionAssignment, Strategy, assign_regions
 from ..structure import Domain, DomainKind, Span, Structure
 from .dimensions import DimensionTarget, target_dimensions
-from .place import DomainPlacement, reposition_folded_domains
+from .place import DomainPlacement, PlacementReport, reposition_folded_domains
 
 __all__ = [
     "RebuildReport",
@@ -501,6 +502,10 @@ class _Progress:
     def advance(self, residues: int) -> None:
         self._bar.update(residues)
 
+    def describe(self, text: str) -> None:
+        """Relabel the bar, so a long second phase is not mistaken for a stall."""
+        self._bar.set_description_str(text)
+
     def next_model(self, done: int, total: int) -> None:
         if total > 1:
             # set_description_str, not set_description: the latter appends its own colon, and the
@@ -517,6 +522,9 @@ class _NoProgress:
     __slots__ = ()
 
     def advance(self, residues: int) -> None:
+        return
+
+    def describe(self, text: str) -> None:
         return
 
     def next_model(self, done: int, total: int) -> None:
@@ -542,6 +550,178 @@ def _progress_bar(requested: bool | None, total: int) -> _Progress | _NoProgress
         return _Progress(total)
     except ImportError:
         return _NoProgress()
+
+
+def _loop_engine() -> object:
+    """Return the engine loops are built with, which is ALWAYS the self-avoiding walk.
+
+    Not the engine the caller asked for, and this is not a limitation to be lifted later -- a loop
+    is the one region type a generative IDR model structurally cannot serve.
+
+    A loop is pinned at both ends inside a SINGLE folded domain, and that domain is not DODO's to
+    move. Its end-to-end distance is therefore already decided by geometry, exactly, before anything
+    is generated. STARLING conditions on sequence alone and returns a distribution: measured on
+    dnmt3a's regions, its end-to-end distances scatter with a standard deviation of 41% of the mean,
+    so the chance a conformer happens to land on the one distance a loop's anchors permit is small,
+    and there is no second lever -- unlike a connecting IDR, where the domains can be moved to suit
+    the conformer.
+
+    Sending loops to STARLING anyway is what produced ``residues 1712-1726: NOT BUILT (loop in FD
+    1578-1830)`` on p300: every loop in the structure failed while the IDRs around them built.
+    """
+    from ..engines.walk import SelfAvoidingWalk
+
+    return SelfAvoidingWalk()
+
+
+def _rebuild_from_conformers(
+    structure: Structure,
+    *,
+    model: int,
+    mode: str,
+    engine: object,
+    rng: np.random.Generator,
+    min_length: int,
+    model_targets: dict[tuple[str, int, int], np.ndarray],
+    on_region_done: Callable[[int], None] | None = None,
+) -> list[RegionOutcome]:
+    """Rebuild a model by moving the folded domains to suit the conformers, not the reverse.
+
+    The inverse of :func:`_rebuild_one_model`, and only for STARLING. There, a target end-to-end
+    distance is predicted, the domains are moved to it, and conformers are selected for matching it.
+    Here no target exists: a conformer is taken as generated and the *next domain moves to meet it*.
+
+    Why the inversion is worth having. STARLING samples a distribution, and selecting from it by
+    end-to-end distance throws most of it away -- measured on dnmt3a, its distances scatter with a
+    standard deviation of 41% of the mean against a 5% selection tolerance, so about 10% of
+    conformers survive and they are a narrow slice at the mean. The width is the main thing STARLING
+    knows that one predicted number does not, so an ensemble built this way keeps it: across models,
+    the inter-domain distances ARE STARLING's end-to-end distribution rather than a flattened
+    version of it.
+
+    Order of operations, which is forced rather than chosen:
+
+    1. Walk the chain N to C. The first folded domain stays put; every later one is placed by the
+       conformer of the IDR that reaches it, so each becomes final in turn and every conformer is
+       attached to an upstream anchor that is already final.
+    2. Loops come after their own domain is final. A loop lives inside a folded domain, so building
+       one before that domain moves would leave it behind when the domain travels.
+    3. Terminal IDRs come last: they move nothing, and by then their anchor has stopped moving.
+
+    A conformer is rejected only if the domain placement it implies collides with something already
+    placed -- the one physically meaningful filter left once dimension matching is gone.
+    """
+    from ..engines.starling import StarlingEngine
+    from .place import place_domain_after
+
+    # model_targets is accepted for signature parity with _rebuild_one_model and deliberately
+    # unused: a per-model end-to-end draw is exactly what this mode does not need.
+    del model_targets
+    loops_engine = _loop_engine()
+    outcomes: list[RegionOutcome] = []
+    for domain in structure.folded_domains():
+        domain.placed = False
+
+    pool_engine = engine.sub_engine if hasattr(engine, "sub_engine") else engine
+    if not isinstance(pool_engine, StarlingEngine):
+        raise InvalidParameterError(
+            "domain_placement='conformer' needs the starling engine; the walk engine builds a "
+            "region TO a dimension, so there is nothing for a domain to be positioned against."
+        )
+
+    for chain in structure.chains:
+        ordered = list(chain.domains)
+        # The first folded domain anchors the whole chain; nothing upstream can move it.
+        for domain in ordered:
+            if domain.kind is DomainKind.FOLDED:
+                domain.placed = True
+                break
+
+        for index, domain in enumerate(ordered):
+            if domain.kind is not DomainKind.IDR or domain.span.is_terminal:
+                continue
+            sequence = structure.sequence[domain.span.slice]
+            if len(sequence) < min_length:
+                continue
+            downstream = ordered[index + 1] if index + 1 < len(ordered) else None
+            if downstream is None or downstream.kind is not DomainKind.FOLDED:
+                continue
+            outcome = place_domain_after(
+                structure,
+                region=domain,
+                downstream=downstream,
+                engine=pool_engine,
+                rng=rng,
+                model=model,
+                mode=mode,
+            )
+            outcomes.append(outcome)
+            downstream.placed = True
+            if on_region_done is not None:
+                on_region_done(len(domain.span))
+
+    # Every folded domain has now stopped moving, so loops and terminal IDRs can be built against
+    # anchors that are final.
+    for parent in structure.folded_domains():
+        for loop_index, loop in enumerate(parent.loops):
+            loop_outcome = _build_region(
+                structure,
+                span=loop,
+                sequence=structure.sequence[loop.slice],
+                target=None,
+                model=model,
+                rng=rng,
+                engine=loops_engine,
+                min_length=min_length,
+                label=f"loop in FD {parent.span.start + 1}-{parent.span.stop}",
+            )
+            outcomes.append(loop_outcome)
+            if loop_outcome.built:
+                parent.rebuilt_loops.add(loop_index)
+            if on_region_done is not None:
+                on_region_done(len(loop))
+
+    for domain in structure.idrs():
+        if not domain.span.is_terminal:
+            continue
+        if len(domain.sequence) < min_length or domain.span.n_anchor is None:
+            # Too short to bother with, or free at its N end -- place_domain_after attaches to the
+            # N-anchor, so an N-terminal tail still goes through the ordinary builder.
+            outcomes.append(
+                _build_region(
+                    structure,
+                    span=domain.span,
+                    sequence=domain.sequence,
+                    target=target_dimensions(domain.sequence, mode=mode)
+                    if len(domain.sequence) >= min_length
+                    else None,
+                    model=model,
+                    rng=rng,
+                    engine=engine,
+                    min_length=min_length,
+                    label="terminal IDR",
+                    domain=domain,
+                )
+            )
+        else:
+            # Nothing downstream to move, but the conformer is still taken as generated rather than
+            # selected for its size -- the consistent thing under this mode.
+            outcomes.append(
+                place_domain_after(
+                    structure,
+                    region=domain,
+                    downstream=None,
+                    engine=pool_engine,
+                    rng=rng,
+                    model=model,
+                    mode=mode,
+                )
+            )
+        domain.placed = True
+        if on_region_done is not None:
+            on_region_done(len(domain.span))
+
+    return outcomes
 
 
 def _make_engine(engine_name: str) -> object:
@@ -627,6 +807,8 @@ def _rebuild_one_model(
     connecting = [d for d in idrs if not d.span.is_terminal]
     terminal = [d for d in idrs if d.span.is_terminal]
 
+    # Built with the walk engine whatever the caller asked for -- see _loop_engine.
+    loops_engine = engine if isinstance(engine, SelfAvoidingWalk) else _loop_engine()
     for parent, loop_index, loop in loops:
         loop_outcome = _build_region(
             structure,
@@ -640,7 +822,7 @@ def _rebuild_one_model(
             target=None,
             model=model,
             rng=rng,
-            engine=engine,
+            engine=loops_engine,
             min_length=min_length,
             label=f"loop in FD {parent.span.start + 1}-{parent.span.stop}",
         )
@@ -696,6 +878,7 @@ def rebuild(
     strategy: Strategy | str = Strategy.AUTO,
     engine: str = "walk",
     backbone: bool = False,
+    domain_placement: str = "predicted",
     min_length: int = MIN_IDR_LENGTH,
     seed: int | None = None,
     progress: bool | None = None,
@@ -737,6 +920,24 @@ def rebuild(
         Shortest region worth rebuilding. Shorter ones keep their input coordinates.
     seed
         Seed for reproducibility. With a fixed seed the output is bit-identical.
+    domain_placement
+        How the folded domains get their positions. ``"predicted"`` (the default, and the only
+        option for the walk engine) moves them to ALBATROSS's predicted end-to-end distance for each
+        linker, then builds the linker into that gap.
+
+        ``"conformer"`` inverts it, and needs ``engine="starling"``: a conformer is taken as
+        generated and the *next domain moves to meet it*. Nothing is selected on dimension.
+
+        Use it when you want STARLING's ensemble rather than a slice of it. Measured on dnmt3a,
+        STARLING's end-to-end distances scatter with a standard deviation of 41% of the mean while
+        the selection tolerance is 5% of the target, so ``"predicted"`` keeps roughly 10% of
+        conformers and they are a narrow band at the mean -- which flattens the very distribution
+        STARLING was used for. Under ``"conformer"`` the inter-domain distances across a multi-model
+        run *are* that distribution.
+
+        The trade is that the domains then differ between models rather than sharing one
+        arrangement, and loops are unaffected either way: they are pinned inside a single domain, so
+        there is nothing to reposition and they always use the walk engine.
     progress
         Show a progress bar on stderr. ``None`` (the default) shows one when stderr is a terminal
         and stays silent otherwise, so piped output and log files do not fill with carriage
@@ -826,7 +1027,30 @@ def rebuild(
     for assignment in base_assignments:
         report.notes.extend(assignment.notes)
 
-    placement = reposition_folded_domains(base, mode=mode, rng=rng)
+    if domain_placement not in ("predicted", "conformer"):
+        raise InvalidParameterError(
+            f"Unknown domain_placement {domain_placement!r}. Use 'predicted' or 'conformer'."
+        )
+    conformer_placed = domain_placement == "conformer"
+    if conformer_placed and engine != "starling":
+        raise InvalidParameterError(
+            "domain_placement='conformer' needs engine='starling'. The walk engine builds a region "
+            "TO a predicted dimension, so there is no generated conformer for a domain to be "
+            "positioned against."
+        )
+
+    if conformer_placed:
+        # Deliberately NOT repositioned here. Under this mode each model's conformers decide where
+        # the domains go, so moving them to a predicted separation first would be work thrown away
+        # -- and worse, it would make the first model's arrangement look authoritative when it is
+        # one draw among many.
+        placement = PlacementReport()
+        report.notes.append(
+            "Folded domains are positioned per model, from each linker's own conformer, so they "
+            "differ between models rather than sharing one arrangement."
+        )
+    else:
+        placement = reposition_folded_domains(base, mode=mode, rng=rng)
     report.placements.extend(placement.placements)
     report.notes.extend(placement.notes)
     for clashing in placement.clashing:
@@ -834,12 +1058,16 @@ def rebuild(
 
     # Total work for the progress bar: every region every model will attempt, weighted by length.
     # Counted from the assignment rather than guessed, so the bar cannot overrun or stop short.
-    total_work = n_models * sum(
+    rebuildable = sum(
         len(span)
         for assignment in base_assignments
         for domain in assignment.domains
         for span in ([domain.span] if domain.kind is DomainKind.IDR else list(domain.loops))
     )
+    # Twice per residue when a backbone is requested: once to place the alpha carbons and once to
+    # place N, C and O on them. Counting only the first left the bar at 100% while the backbone pass
+    # ran on, which on p300 was most of the wait with no indication anything was still happening.
+    total_work = n_models * rebuildable * (2 if backbone else 1)
     tracker = _progress_bar(progress, total_work)
     # One engine for the whole run, so a per-sequence cache inside it survives across models.
     engine_instance = _make_engine(engine)
@@ -862,7 +1090,8 @@ def rebuild(
             # should not fire. Promote it to an error so a regression here is loud rather than
             # buried in a user's terminal.
             warnings.simplefilter("error", category=_junction_warning())
-            outcomes = _rebuild_one_model(
+            builder = _rebuild_from_conformers if conformer_placed else _rebuild_one_model
+            outcomes = builder(
                 working,
                 model=model_number,
                 mode=mode,
@@ -880,7 +1109,19 @@ def rebuild(
         if backbone:
             from .ca_backbone import add_backbone_to_rebuilt
 
-            final = add_backbone_to_rebuilt(final)
+            # Labelled per region as well as advanced per region: the longest region on p300 is
+            # 583 residues and takes a few seconds on its own, so without the label a single long
+            # region looks identical to a stall.
+            done = [0]
+
+            def note(residues: int, _done: list[int] = done) -> None:
+                _done[0] += 1
+                tracker.describe(f"placing backbone (region {_done[0]})")
+                tracker.advance(residues)
+
+            tracker.describe("placing backbone")
+            final = add_backbone_to_rebuilt(final, on_region_done=note)
+            tracker.describe("rebuilding")
         report.models.append(final)
         tracker.next_model(model_number, n_models)
 

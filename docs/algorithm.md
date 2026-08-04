@@ -121,6 +121,21 @@ disordered regions move.
 [STARLING](https://github.com/idptools/starling), a generative model of disordered ensembles. It is
 the only optional dependency, because it is large — roughly 2.4 GB of weights.
 
+### Loops always use the walk engine
+
+`--engine starling` applies to terminal and connecting IDRs only. Loops are built by the
+self-avoiding walk regardless, and this is structural rather than a gap to be closed.
+
+A loop is pinned at both ends inside a **single** folded domain, and that domain is not DODO's to
+move, so the loop's end-to-end distance is decided exactly by geometry before anything is generated.
+STARLING conditions on sequence alone and returns a *distribution* — measured on dnmt3a's regions,
+its end-to-end distances scatter with a standard deviation of 41% of the mean — so the chance a
+conformer lands on the one distance the anchors permit is small, and unlike a connecting IDR there
+is no second lever, because the domain cannot be moved to suit the conformer.
+
+Asking STARLING for loops anyway is what produced `residues 1712-1726: NOT BUILT (loop in FD
+1578-1830)` on p300: every loop failed while the IDRs around them built.
+
 ### STARLING models IDRs *alone*
 
 This is the most important thing to understand about the engine, and you cannot see it in the

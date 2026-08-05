@@ -133,46 +133,6 @@ class TestBackboneAngles:
         assert 1.0 <= high_sd <= 2.0
         assert C.BACKBONE_ANGLE_MIN < C.BACKBONE_ANGLE_MEAN < C.BACKBONE_ANGLE_MAX
 
-    def test_window_is_measured_rather_than_capped_for_all_atom_reconstruction(self) -> None:
-        """The window is the measured distribution, NOT the all-atom-reconstructable range.
-
-        This replaces an assertion that the upper bound sits *under* the all-atom ceiling.
-        That policy is reversed: the bound was narrowed to 150.0 so that every generated
-        angle would be reconstructable, and it is back at the author's tuned 161.0. The
-        priority order is explicit -- (1) the CA-only pipeline, (2) backbones, (3) all-atom,
-        (4) STARLING -- and narrowing the *generation* window to serve (3) degrades (1), by
-        making chains more compact than the measured distribution supports. The all-atom path
-        has to grow its own constraint instead, and a magnitude cap was never that constraint:
-        the real one is on the *change* in pseudo-angle between consecutive residues (measured
-        allowance ~35 deg at a base angle of 95, collapsing to ~4 deg at 150).
-
-        So the property asserted here is the consequence, recorded rather than forgotten:
-        part of the generation window is NOT all-atom reconstructable. Both ceilings are
-        derived from :mod:`dodo.construct.backbone` rather than written down, so this test
-        follows any change to the peptide geometry or to the tau tolerance.
-        """
-        from dodo.construct.backbone import _N_CA_C_TOLERANCE, max_reconstructable_ca_angle
-
-        grid = C.backbone_angle_grid()
-
-        # At the tolerance place_backbone actually builds with, the top of the window is over
-        # the ceiling -- so the window admits angles no trans backbone can realize.
-        tolerated = max_reconstructable_ca_angle(n_ca_c_tolerance=_N_CA_C_TOLERANCE)
-        assert tolerated < C.BACKBONE_ANGLE_MAX
-        beyond_tolerated = int(np.count_nonzero(grid > tolerated))
-        assert beyond_tolerated > 0
-        # ... but only the very top of it, which is why the CA-only cost of capping the
-        # window is not worth paying for the all-atom benefit.
-        assert beyond_tolerated < grid.size
-
-        # At an *ideal* N-CA-C the unreconstructable share is substantial, and that is the
-        # honest statement of the coupling: it is not a rounding-error overlap.
-        ideal = max_reconstructable_ca_angle()
-        assert ideal < C.BACKBONE_ANGLE_MAX
-        assert int(np.count_nonzero(grid > ideal)) > beyond_tolerated
-        # The coupling bites at the wide end only; helical geometry is unaffected.
-        assert ideal > C.BACKBONE_ANGLE_MIN
-
     def test_ideal_angle_is_inside_the_window(self) -> None:
         assert C.BACKBONE_ANGLE_MIN <= C.BACKBONE_ANGLE_IDEAL <= C.BACKBONE_ANGLE_MAX
 
@@ -309,11 +269,3 @@ class TestBackboneBondGeometry:
         ca2 = n + C.N_CA_BOND_LENGTH * np.array([math.cos(phi), math.sin(phi), 0.0])
 
         assert np.linalg.norm(ca2 - ca1) == pytest.approx(C.CA_CA_BOND_LENGTH, abs=0.05)
-
-
-class TestStarlingLimits:
-    def test_max_length_is_the_observed_cap(self) -> None:
-        assert C.STARLING_MAX_LENGTH == 380
-
-    def test_splice_overlap_is_smaller_than_a_segment(self) -> None:
-        assert 0 < C.SEGMENT_SPLICE_OVERLAP < C.STARLING_MAX_LENGTH

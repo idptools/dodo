@@ -51,7 +51,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 
-# There is exactly ONE extra: [starling]. Everything else a user needs is installed by
+# There are no user-facing extras in this release. Everything else a user needs is installed by
 # `pip install idptools-dodo`, and nothing here pulls in torch.
 #
 # Changes from v1's list:
@@ -117,13 +117,6 @@ dependencies = [
 # polymer scaling law (constants.flory_end_to_end) that is sequence-blind, warns that it has
 # done so, and is documented as an approximation.
 
-# STARLING generative IDR ensembles. The ONLY extra, and optional for a real reason: it is a
-# large, computationally intensive dependency -- roughly 2.4 GB of weights plus a deep tree --
-# and most users rebuilding a structure for a figure do not need it.
-#
-# The distribution is `idptools-starling`; `starling-ensemble` (which this used to name) does
-# not exist on PyPI at all, so `pip install dodo[starling]` hard-failed.
-starling = ["idptools-starling>=2.0"]
 
 # NOTE: there are deliberately no other extras, and the ones that existed are worth recording
 # so they are not recreated:
@@ -133,8 +126,7 @@ starling = ["idptools-starling>=2.0"]
 #   [lookup]      getSequence. Now a normal dependency -- it is three small packages.
 #   [viz]         matplotlib, for "the debug plotter". No module in src/dodo imports matplotlib
 #                 and there is no plotter, so it installed a large dependency to enable nothing.
-#   [all]         a union of the above. With one extra left there is nothing for it to union,
-#                 and `dodo[all]` not installing STARLING would be the more surprising reading.
+#   [all]         a union of the above. With no extras left, there is nothing for it to union.
 
 test = [
     "pytest>=8.0",
@@ -232,7 +224,6 @@ markers = [
     "network: requires internet access (deselect with -m 'not network')",
     "slow: takes more than a few seconds",
     "albatross: requires sparrow/ALBATROSS to be installed",
-    "starling: requires STARLING to be installed",
 ]
 
 [tool.ruff]
@@ -308,7 +299,6 @@ strict = true
 module = [
     "scipy.*",
     "sparrow.*",
-    "starling.*",
     "getSequence.*",
 ]
 ignore_missing_imports = true

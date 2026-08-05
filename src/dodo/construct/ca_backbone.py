@@ -149,6 +149,11 @@ _N_MARGINAL: Final[tuple[float, float, float]] = (+2.3998, -0.0459, +0.1756)
 _C_FORWARD_MARGINAL: Final[tuple[float, float, float]] = (+1.4193, -0.0140, +0.4396)
 _N_FORWARD_MARGINAL: Final[tuple[float, float, float]] = (+2.3997, +0.0130, -0.2806)
 
+#: The per-bin tables as arrays, for the vectorized placement path. Identical values to the tuples
+#: above; the NumPy form lets a whole chain's bins be gathered in one indexing operation.
+_C_TABLE: Final[np.ndarray] = np.array(_C_BY_BIN, dtype=np.float64)
+_N_TABLE: Final[np.ndarray] = np.array(_N_BY_BIN, dtype=np.float64)
+
 
 @dataclass(frozen=True, slots=True)
 class CABackboneResult:
@@ -266,6 +271,216 @@ def _place_carbonyl_oxygen(ca: np.ndarray, c: np.ndarray, n_next: np.ndarray) ->
     return placed
 
 
+_Z_AXIS: Final[np.ndarray] = np.array([0.0, 0.0, 1.0])
+_Y_AXIS: Final[np.ndarray] = np.array([0.0, 1.0, 0.0])
+_X_AXIS: Final[np.ndarray] = np.array([1.0, 0.0, 0.0])
+
+
+def _unit_rows(v: np.ndarray) -> np.ndarray:
+    """Normalize along the last axis, flooring the divisor so no row can divide by zero.
+
+    The scalar :func:`_unit` raises on a zero-length vector; here the only genuinely zero row would
+    be a zero virtual bond, which :func:`_backbone_atoms` rejects up front, so the floor never bites
+    on valid input and simply keeps the discarded branch of a :func:`numpy.where` finite.
+    """
+    norm = np.linalg.norm(v, axis=-1, keepdims=True)
+    unit: np.ndarray = v / np.maximum(norm, 1e-12)
+    return unit
+
+
+def _rotate_rows(v: np.ndarray, axis: np.ndarray, radians: float) -> np.ndarray:
+    """Rodrigues rotation of every row of ``v`` about the matching row of ``axis``."""
+    axis = _unit_rows(axis)
+    cos, sin = float(np.cos(radians)), float(np.sin(radians))
+    dot = np.sum(axis * v, axis=-1, keepdims=True)
+    rotated: np.ndarray = v * cos + np.cross(axis, v) * sin + axis * dot * (1.0 - cos)
+    return rotated
+
+
+def _frames_rows(
+    along: np.ndarray, reference: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Batched :func:`_frame`: x along ``along``, z perpendicular to the along/reference plane.
+
+    Returns the three basis vectors and a boolean mask of the units whose alpha carbons were
+    collinear -- the same ``degenerate`` signal the scalar path reports.
+    """
+    x = _unit_rows(along)
+    normal = np.cross(reference, along)
+    degenerate = np.linalg.norm(normal, axis=-1) < 1e-6
+    use_y = np.abs(x[..., 2]) > 0.9
+    fallback = np.where(use_y[..., None], _Y_AXIS, _Z_AXIS)
+    normal = np.where(degenerate[..., None], np.cross(fallback, along), normal)
+    z = _unit_rows(normal)
+    y = np.cross(z, x)
+    return x, y, z, degenerate
+
+
+def _dihedral_rows(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray, p3: np.ndarray) -> np.ndarray:
+    """Batched form of :func:`_pseudo_dihedral`, in degrees."""
+    b0, b1, b2 = p1 - p0, p2 - p1, p3 - p2
+    axis = _unit_rows(b1)
+    v = b0 - np.sum(b0 * axis, axis=-1, keepdims=True) * axis
+    w = b2 - np.sum(b2 * axis, axis=-1, keepdims=True) * axis
+    y = np.sum(np.cross(axis, v) * w, axis=-1)
+    x = np.sum(v * w, axis=-1)
+    degrees: np.ndarray = np.degrees(np.arctan2(y, x))
+    return degrees
+
+
+def _two_spheres_rows(
+    centre_a: np.ndarray,
+    radius_a: float,
+    centre_b: np.ndarray,
+    radius_b: float,
+    toward: np.ndarray,
+) -> np.ndarray:
+    """Batched form of :func:`_on_two_spheres`.
+
+    Where the spheres do not intersect -- the ``None`` case in the scalar version -- this returns a
+    point one ``radius_a`` bond from ``centre_a`` toward ``toward``, exactly the fallback the scalar
+    caller applies.
+    """
+    diff = centre_b - centre_a
+    sep = np.linalg.norm(diff, axis=-1)
+    sep_safe = np.maximum(sep, 1e-12)
+    axis = diff / sep_safe[..., None]
+    along = (radius_a**2 - radius_b**2 + sep**2) / (2.0 * sep_safe)
+    height_squared = radius_a**2 - along**2
+    valid = (
+        (sep >= 1e-9)
+        & (sep <= radius_a + radius_b)
+        & (sep >= abs(radius_a - radius_b))
+        & (height_squared >= 0.0)
+    )
+    centre = centre_a + along[..., None] * axis
+    spoke = toward - centre
+    spoke = spoke - np.sum(spoke * axis, axis=-1, keepdims=True) * axis
+    arbitrary = _X_AXIS - np.sum(_X_AXIS * axis, axis=-1, keepdims=True) * axis
+    spoke = np.where(np.linalg.norm(spoke, axis=-1, keepdims=True) < 1e-9, arbitrary, spoke)
+    resolved = centre + np.sqrt(np.maximum(height_squared, 0.0))[..., None] * _unit_rows(spoke)
+    fallback = centre_a + radius_a * _unit_rows(toward - centre_a)
+    return np.where(valid[..., None], resolved, fallback)
+
+
+def _carbonyl_rows(ca: np.ndarray, c: np.ndarray, n_next: np.ndarray) -> np.ndarray:
+    """Batched form of :func:`_place_carbonyl_oxygen`."""
+    to_ca = _unit_rows(ca - c)
+    to_n = _unit_rows(n_next - c)
+    normal = np.cross(to_ca, to_n)
+    normal = np.where(np.linalg.norm(normal, axis=-1, keepdims=True) < 1e-6, _Z_AXIS, normal)
+    return c + C_O_BOND_LENGTH * _rotate_rows(to_ca, normal, -np.radians(CA_C_O_ANGLE))
+
+
+def _terminal_nitrogen_rows(ca: np.ndarray, c: np.ndarray, ca_next: np.ndarray) -> np.ndarray:
+    """Batched form of :func:`_terminal_nitrogen`."""
+    to_c = _unit_rows(c - ca)
+    normal = np.cross(to_c, ca_next - ca)
+    normal = np.where(np.linalg.norm(normal, axis=-1, keepdims=True) < 1e-6, _Z_AXIS, normal)
+    return ca + N_CA_BOND_LENGTH * _rotate_rows(to_c, normal, np.radians(N_CA_C_ANGLE))
+
+
+def _terminal_carbon_rows(ca: np.ndarray, n: np.ndarray, ca_prev: np.ndarray) -> np.ndarray:
+    """Batched form of :func:`_terminal_carbon`."""
+    to_n = _unit_rows(n - ca)
+    normal = np.cross(to_n, ca_prev - ca)
+    normal = np.where(np.linalg.norm(normal, axis=-1, keepdims=True) < 1e-6, _Z_AXIS, normal)
+    return ca + CA_C_BOND_LENGTH * _rotate_rows(to_n, normal, -np.radians(N_CA_C_ANGLE))
+
+
+def _terminal_oxygen_rows(ca: np.ndarray, c: np.ndarray, ca_prev: np.ndarray) -> np.ndarray:
+    """Batched form of :func:`_terminal_oxygen`."""
+    to_ca = _unit_rows(ca - c)
+    normal = np.cross(to_ca, ca_prev - c)
+    normal = np.where(np.linalg.norm(normal, axis=-1, keepdims=True) < 1e-6, _Z_AXIS, normal)
+    return c + C_O_BOND_LENGTH * _rotate_rows(to_ca, normal, -np.radians(CA_C_O_ANGLE))
+
+
+def _backbone_atoms(
+    ca: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, tuple[str, ...]]:
+    """Place N, C and O for every peptide unit of one or many CA traces, with no per-residue loop.
+
+    ``ca`` is ``(..., n_residues, 3)`` -- a single trace as ``(n, 3)`` or a batch of conformers as
+    ``(B, n, 3)``. Every step runs over the residue axis (and any leading batch axes) at once: a
+    peptide unit's placement depends only on four alpha carbons that are all known up front, so
+    nothing here is sequential and there is nothing to loop over in Python.
+
+    Returns the three atom arrays (same leading shape as ``ca``), the per-unit ``degenerate`` mask,
+    and the per-unit predictor names. A unit's predictor is fixed by its position in the chain, so
+    ``source`` is one tuple shared by every conformer in a batch.
+    """
+    n = ca.shape[-2]
+    units = n - 1
+    along = ca[..., 1:, :] - ca[..., :-1, :]
+    if np.any(np.linalg.norm(along, axis=-1) < 1e-9):
+        raise GeometryError(
+            "Two consecutive alpha carbons coincide, giving a zero-length virtual bond."
+        )
+
+    # Reference axis fixing each frame's peptide plane. Past the first unit it is the incoming CA-CA
+    # bond; the first unit has no predecessor, so it looks forward (or, for a two-residue chain with
+    # nothing to look at, to a fixed axis) -- matching the scalar path's three frame cases.
+    reference = np.empty_like(along)
+    if units >= 2:
+        reference[..., 1:, :] = ca[..., 1:units, :] - ca[..., : units - 1, :]
+    reference[..., 0, :] = ca[..., 2, :] - ca[..., 1, :] if n >= 3 else _Z_AXIS
+
+    # Predictor per unit, fixed by position: interior units have all four CAs and use the table; the
+    # last uses the trailing marginal; the first uses the leading one.
+    index = np.arange(units)
+    is_table = (index >= 1) & (index <= n - 3)
+    is_marginal = (index == n - 2) & (n >= 3)
+
+    local_c = np.broadcast_to(np.array(_C_FORWARD_MARGINAL), along.shape).copy()
+    local_n = np.broadcast_to(np.array(_N_FORWARD_MARGINAL), along.shape).copy()
+    if n >= 3:
+        local_c[..., n - 2, :] = _C_MARGINAL
+        local_n[..., n - 2, :] = _N_MARGINAL
+    table_units = np.nonzero(is_table)[0]
+    if table_units.size:
+        tau = _dihedral_rows(
+            ca[..., table_units - 1, :],
+            ca[..., table_units, :],
+            ca[..., table_units + 1, :],
+            ca[..., table_units + 2, :],
+        )
+        bins = np.minimum(((tau + 180.0) // _BIN_WIDTH_DEGREES).astype(np.int64), len(_C_TABLE) - 1)
+        local_c[..., table_units, :] = _C_TABLE[bins]
+        local_n[..., table_units, :] = _N_TABLE[bins]
+
+    x, y, z, degenerate = _frames_rows(along, reference)
+    apex = ca[..., :units, :]
+    placed_c = apex + local_c[..., 0:1] * x + local_c[..., 1:2] * y + local_c[..., 2:3] * z
+    placed_n = apex + local_n[..., 0:1] * x + local_n[..., 1:2] * y + local_n[..., 2:3] * z
+
+    n_xyz = np.full(ca.shape, np.nan)
+    c_xyz = np.full(ca.shape, np.nan)
+    o_xyz = np.full(ca.shape, np.nan)
+
+    # N belongs to residue i+1; anchor it to that residue's own alpha carbon so N-CA is exact.
+    n_owner = ca[..., 1 : units + 1, :]
+    n_xyz[..., 1 : units + 1, :] = n_owner + N_CA_BOND_LENGTH * _unit_rows(placed_n - n_owner)
+    # C satisfies both its bonds; the table's prediction chooses where on the intersection circle.
+    c_xyz[..., :units, :] = _two_spheres_rows(
+        apex, CA_C_BOND_LENGTH, n_xyz[..., 1 : units + 1, :], C_N_PEPTIDE_BOND_LENGTH, placed_c
+    )
+    o_xyz[..., :units, :] = _carbonyl_rows(
+        apex, c_xyz[..., :units, :], n_xyz[..., 1 : units + 1, :]
+    )
+
+    # The two atoms no peptide unit covers: N of the first residue, C and O of the last.
+    n_xyz[..., 0, :] = _terminal_nitrogen_rows(ca[..., 0, :], c_xyz[..., 0, :], ca[..., 1, :])
+    c_xyz[..., -1, :] = _terminal_carbon_rows(ca[..., -1, :], n_xyz[..., -1, :], ca[..., -2, :])
+    o_xyz[..., -1, :] = _terminal_oxygen_rows(ca[..., -1, :], c_xyz[..., -1, :], ca[..., -2, :])
+
+    sources = tuple(
+        "table" if is_table[i] else "marginal" if is_marginal[i] else "forward"
+        for i in range(units)
+    )
+    return n_xyz, c_xyz, o_xyz, degenerate, sources
+
+
 def backbone_from_ca(ca_coords: np.ndarray) -> CABackboneResult:
     """Place N, C and O for every residue of a CA-only trace.
 
@@ -297,76 +512,8 @@ def backbone_from_ca(ca_coords: np.ndarray) -> CABackboneResult:
         raise GeometryError("CA coordinates contain a non-finite value.")
 
     n_res = ca.shape[0]
-    n_xyz = np.full((n_res, 3), np.nan)
-    c_xyz = np.full((n_res, 3), np.nan)
-    o_xyz = np.full((n_res, 3), np.nan)
-    sources: list[str] = []
-    collinear = 0
-
-    for i in range(n_res - 1):
-        have_prev = i - 1 >= 0
-        have_next2 = i + 2 < n_res
-
-        if have_prev:
-            frame, degenerate = _frame(ca[i + 1] - ca[i], ca[i] - ca[i - 1])
-            if have_next2:
-                tau = _pseudo_dihedral(ca[i - 1], ca[i], ca[i + 1], ca[i + 2])
-                index = min(int((tau + 180.0) // _BIN_WIDTH_DEGREES), len(_C_BY_BIN) - 1)
-                local_c, local_n = _C_BY_BIN[index], _N_BY_BIN[index]
-                source = "table"
-            else:
-                local_c, local_n = _C_MARGINAL, _N_MARGINAL
-                source = "marginal"
-        elif have_next2:
-            # First peptide unit: no CA(i-1), so build the frame forward instead.
-            frame, degenerate = _frame(ca[i + 1] - ca[i], ca[i + 2] - ca[i + 1])
-            local_c, local_n = _C_FORWARD_MARGINAL, _N_FORWARD_MARGINAL
-            source = "forward"
-        else:
-            # A two-residue segment: no third alpha carbon in either direction, so the peptide
-            # plane is unconstrained. Pick a deterministic frame and say so.
-            frame, degenerate = _frame(ca[i + 1] - ca[i], np.array([0.0, 0.0, 1.0]))
-            local_c, local_n = _C_FORWARD_MARGINAL, _N_FORWARD_MARGINAL
-            source = "forward"
-
-        collinear += int(degenerate)
-        placed_c = ca[i] + frame.T @ np.asarray(local_c)
-        placed_n = ca[i] + frame.T @ np.asarray(local_n)
-        # Anchor each atom to the alpha carbon it is BONDED to, and rescale onto the exact ideal
-        # bond. C belongs to residue i, N to residue i+1, so they anchor to opposite ends -- which
-        # leaves the peptide C-N bond to absorb whatever the CA-CA separation does not match.
-        #
-        # That allocation is the point. Anchoring both to CA(i) and chaining N off C, which is the
-        # obvious way to write this, enforces CA-C and C-N and leaves N-CA(i+1) unconstrained: it
-        # came out at 1.252 +/- 0.115 A against an ideal 1.458. Bonding each atom to its own
-        # residue's alpha carbon makes both of those exact instead.
-        # N first, because it is the better-determined of the two: 0.241 A against C's 0.319 A
-        # over 19,502 peptide units. Anchor it to its OWN residue's alpha carbon so N-CA is exact.
-        n_xyz[i + 1] = ca[i + 1] + N_CA_BOND_LENGTH * _unit(placed_n - ca[i + 1])
-        # Then C, constrained to satisfy BOTH of its bonds -- CA(i)-C and C-N(i+1) -- with the
-        # table's prediction choosing where on the resulting circle it sits.
-        #
-        # This is consistency, not extra information: the placed N is a deterministic function of
-        # the alpha carbons, so conditioning on it cannot sharpen anything. Measured, C's error
-        # rises very slightly, 0.265 -> 0.282 A. What it buys is a chemically valid backbone --
-        # placing C and N independently from opposite alpha carbons left the peptide bond to
-        # absorb the mismatch, and it came out at 1.240 +/- 0.060 A against an ideal 1.329.
-        constrained = _on_two_spheres(
-            ca[i], CA_C_BOND_LENGTH, n_xyz[i + 1], C_N_PEPTIDE_BOND_LENGTH, placed_c
-        )
-        c_xyz[i] = (
-            constrained
-            if constrained is not None
-            else ca[i] + CA_C_BOND_LENGTH * _unit(placed_c - ca[i])
-        )
-        o_xyz[i] = _place_carbonyl_oxygen(ca[i], c_xyz[i], n_xyz[i + 1])
-        sources.append(source)
-
-    # Two atoms belong to no peptide unit: N of the first residue and C, O of the last. Place them
-    # by ideal internal geometry rather than leaving holes -- an incomplete backbone is not usable.
-    n_xyz[0] = _terminal_nitrogen(ca[0], c_xyz[0], ca[1])
-    c_xyz[-1] = _terminal_carbon(ca[-1], n_xyz[-1], ca[-2])
-    o_xyz[-1] = _terminal_oxygen(ca[-1], c_xyz[-1], ca[-2])
+    n_xyz, c_xyz, o_xyz, degenerate, sources = _backbone_atoms(ca)
+    collinear = int(np.count_nonzero(degenerate))
 
     notes = [
         f"Placed {n_res} residue(s) of backbone from alpha carbons: "

@@ -73,12 +73,40 @@ Rewire src (remove STARLING/conformer paths):
 
 ---
 
-## Phase 1 — Wire up batching that already exists  ⬜ NOT STARTED
-- Pipeline: one batched `generate(n_conformations=n_models)` call instead of the external model loop with `n_conformations=1`.
-- Backbone: gather all models' CA traces → one batched refinement pass (authors measured 16.4×, left unwired).
+## Phase 1 — Wire up batching that already exists  ⚠️ REASSESSED (2026-08-05)
+Finding (verified in code): the two items are NOT standalone wire-ups.
+- **Rebuild conformer batch is BLOCKED by per-model inter-region obstacles.** `placed_atom_mask()`
+  (structure.py:610) includes each region as it is built (pipeline.py:365/:674), so within a model
+  region B avoids region A's *this-model* coords. `generate(request, obstacles, rng)` takes ONE
+  shared obstacle array per call, so batching conformers across models can't give conformer m the
+  right per-model obstacle. Correct batching needs per-conformer obstacles → **this is Phase 3**
+  (grow-then-filter with a global clash pass), not a wire-up.
+- **Backbone refinement batch (16.4×)** needs a batched numba kernel + batched placement entry
+  point → that IS the **Phase 2** backbone-vectorization work.
+- `build_from_sequence` / `dodo sequence -n N` already batches (`n_conformations=n_models` in one
+  call); nothing to wire up there, though the walk's two per-conformer inner loops still slow it.
 
-## Phase 2 — Vectorize deterministic backbone placement  ⬜ NOT STARTED
-- Rewrite `ca_backbone.backbone_from_ca` (per-residue loop) as batched numpy over `(batch × residues)`; keep numba refine kernel, add batch axis. Guarded by existing RMSD-ceiling tests.
+Resolution: fold item 1 into Phase 3 and item 2 into Phase 2. Next clean win = Phase 2.
+
+## Phase 2 — Vectorize deterministic backbone placement  ✅ DONE (2026-08-05)
+Rewrote `ca_backbone.backbone_from_ca`'s per-residue Python loop as leading-dim-agnostic batched
+numpy (`_backbone_atoms`, handles `(n,3)` and `(B,n,3)`), plus batched helpers (`_frames_rows`,
+`_dihedral_rows`, `_two_spheres_rows`, `_carbonyl_rows`, terminals). Public API + `CABackboneResult`
+unchanged; scalar seam-helpers kept for `add_backbone_to_rebuilt`.
+
+**Verification (evidence):**
+- Equivalence to the old per-residue impl across 16 traces (edge/random/compact, n=2..200):
+  **max abs coord diff 1.78e-14** (machine epsilon). `source`/`notes` identical.
+- Batched `(B=50,n=100)` vs looped-single: **exactly 0.0** — batch axis correct.
+- Speed: n=583 single trace **32.20 ms → 0.37 ms (87.7×)**; 50×100 conformers loop 10.79 ms →
+  one batched call 1.69 ms (**6.4×**).
+- ruff + `ruff format` clean; `mypy --strict` clean (34 files); full suite **1820 passed, 0 failed**
+  (one error-message contract test adjusted to keep the "zero-length" vocabulary).
+
+**Deferred (the "backbone batch", = old Phase 1 item 2):** `_backbone_atoms` is batch-ready, but
+`add_backbone_to_rebuilt` still calls it per region/model. Wiring the `(B,n,3)` path through it —
+and adding a batch axis to the numba **refinement** kernel (the measured 16.4×, still unchanged) —
+is the follow-up, gated on restructuring the per-region seam/refine loop.
 
 ## Phase 3 — Hybrid vectorized IDR generator  ⬜ NOT STARTED
 - PRIMARY: batched grow-freely-then-filter across regions & conformers (terminal + connecting IDRs); local clash check only.

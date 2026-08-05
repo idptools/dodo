@@ -103,18 +103,74 @@ unchanged; scalar seam-helpers kept for `add_backbone_to_rebuilt`.
 - ruff + `ruff format` clean; `mypy --strict` clean (34 files); full suite **1820 passed, 0 failed**
   (one error-message contract test adjusted to keep the "zero-length" vocabulary).
 
-**Deferred (the "backbone batch", = old Phase 1 item 2):** `_backbone_atoms` is batch-ready, but
-`add_backbone_to_rebuilt` still calls it per region/model. Wiring the `(B,n,3)` path through it —
-and adding a batch axis to the numba **refinement** kernel (the measured 16.4×, still unchanged) —
-is the follow-up, gated on restructuring the per-region seam/refine loop.
+**Deferred (the "backbone batch", = old Phase 1 item 2) — DECISION 2026-08-05: not doing now.**
+Investigated in depth: placement is already batched (Phase 2) and is now ~0.37 ms/region, so the
+only remaining win is the refinement's measured 16.4×, which is numba `prange` thread-parallelism
+over the model axis (kernel header lines 6–8, 91–92). Delivering it needs the whole convergence loop
+compiled as `njit(parallel=True)` (16-arg `sweep_region` + per-sweep grid rebuilds, stacked across
+models) plus restructuring `rebuild()` to run backbone as a post-loop batched pass. Payoff is narrow
+— opt-in `--backbone` × multi-model × multi-core only; nothing for the default path. Ryan chose to
+prioritize Phase 3. Left as a documented low-priority follow-up.
 
-## Phase 3 — Hybrid vectorized IDR generator  ⬜ NOT STARTED
-- PRIMARY: batched grow-freely-then-filter across regions & conformers (terminal + connecting IDRs); local clash check only.
-- Closure: batched SHAKE-with-endpoints for interior IDRs.
-- FALLBACK: current `walk.py` reject-during-growth, per region, only when a batch fully fails.
-- Loops stay on the careful path (most constrained).
-- Also kill the two per-conformer inner loops in the walk.
-- Measure survival rate / closure feasibility against the failures.txt corpus (don't assume).
+## Phase 3 — Hybrid vectorized IDR generator  ⏳ IN PROGRESS (2026-08-05)
+Staged so each slice is verifiable and the tested `walk.py` pipeline stays stable until integration.
+- **Slice 1 ✅ DONE (2026-08-05): batched free growth + self-avoidance filter.** New module
+  `src/dodo/engines/batch_walk.py` (`grow_free_batch`, `self_avoiding_mask`, `end_to_end_distances`,
+  `radii_of_gyration`) + `tests/unit/test_batch_walk.py` (23 tests). Additive; nothing imports it yet.
+  ruff/mypy clean; full suite 1843 passed / 0 failed.
+  MEASURED (the data that drives the rest):
+  - Geometry exact by construction: bond dev ≤1.5e-14 Å; every pseudo-angle in [91,161].
+  - Natural Re vs analytical Flory target — ratio 0.91 (n=10), 0.99 (20), 1.05 (50), 1.12 (100),
+    1.17 (200); CV ~0.28–0.38. So Slice 2 target-steering is mostly SELECTION near the target, not
+    heavy biasing (for normal modes).
+  - Self-avoidance survival collapses with length: 97% (n=10), 85% (20), 48% (50), 17% (100),
+    2% (200), 0.1% (380). → grow-then-filter is great for short/medium, impractical for long free
+    chains. Confirms the hybrid: filter-primary + careful fallback for long/crowded.
+  - Speed: 21 µs/chain (1000×100-mer in 21 ms) vs the current walk's 12,649 ms for 1000 conformers.
+- **Slice 2 ✅ DONE (2026-08-05): target-steering + crowded-environment survival.** Added
+  `steer_to_target`, `generate_free_batch` (+`FreeBatchResult`), and `clears_obstacles_mask` to
+  `batch_walk.py` (+11 tests, 34 total). Steering = grow-and-filter a pool, draw physical targets
+  via the walk's own `sample_end_to_end_targets`, match each to the nearest-Re survivor. ruff/mypy
+  clean; full suite 1854 passed / 0 failed.
+  MEASURED:
+  - Steering accuracy across compact/normal/expanded × n=20–200: achieved-mean ratio **0.975–1.003**,
+    CV preserved at **0.35–0.44** (no ensemble collapse), reachability 0.97–1.00. → hitting mode
+    targets is a solved SELECTION problem, not biasing.
+  - Attrition remains the only real constraint: at n=200 survivors ≈223, reuse 0.44–0.62 (pool thin)
+    → long regions need big oversample or fallback.
+  - Crowding by ONE adjacent domain is moderate: a r=15 Å blob 5 Å from the anchor halves survival
+    (39%→19%), recovering toward free by 30 Å. Manageable via oversample + first-step biasing; the
+    harder interior/between-two-domains case is Slice 3.
+- **Slice 3 ⏳ IN PROGRESS: crowd-aware growth + interior closure (Ryan's "clever setup").**
+  Strategy: bias the few near-anchor steps AWAY from each domain's COM so the chain leaves the
+  crowded shell cheaply, then finish in open space; keep it a soft SKEW (per-conformer scatter),
+  not a fixed stub. Interior = two biased stubs (one per anchor) + a middle segment closed in open
+  space. Domain "face-each-other" orientation lives in step 3 / `place.py`.
+  - **Keystone DONE + validated:** `grow_free_batch` gained an optional von-Mises azimuth skew
+    (`bias_directions`/`bias_residues`/`bias_kappa`) that leans near-anchor steps toward a
+    direction WITHOUT touching the exact bond/angle. Unbiased path bit-identical (max diff 0.0);
+    +4 tests (38 total); ruff/mypy clean.
+    MEASURED (terminal, r=15 Å domain blob): naive self-avoid+clear 19.3/25.8/29.7% (gap 5/10/15)
+    → **biased 41.6/42.2/42.5%** — recovers ABOVE the free no-obstacle baseline (39%), because
+    leaning outward also cuts early self-clashes. Conformers stay diverse (mean pairwise
+    end-direction cosine ~0.28–0.30, i.e. NOT collapsed) — the skew works as intended.
+  - **Two-stub + FABRIK closure DONE + measured:** added `close_chain_ends` (batched FABRIK-style
+    endpoint closure) and `generate_interior_batch` (two biased stubs + free middle closed onto the
+    stub ends). +8 tests (52 total in `test_batch_walk.py`); ruff/mypy clean.
+    MEASURED (n=40, gap 42 Å, two r=15 blobs, B=20000): endpoints exactly one bond from each anchor;
+    **bond error 5.8e-15, 100% feasible closure**; clears both domains 78%. BUT the FABRIK middle
+    ignores the angle window → **only 82% of pseudo-angles in [91,161]**, self-avoid+clears 19%
+    (≈ naive 24%). Diagnosis: the stubs bring P,Q close, so the middle is very slack and FABRIK
+    CRUMPLES it (bad angles, self-clash). FABRIK is the wrong middle tool.
+  - **Next (uses Ryan's shrinking-sphere idea): replace the FABRIK middle with reachability-funnel
+    growth** — grow the middle within the angle window AND inside a sphere around the far anchor
+    that shrinks to the remaining contour each step, so it closes onto the target BY CONSTRUCTION
+    while keeping angles in-window and not crumpling. (This is what the current `walk.py` does via
+    its reachability corridor; batch it.) Then re-measure survival/angle compliance.
+- Slice 4: fallback to the careful `walk.py` per region when a batch fully fails; loops stay careful;
+  wire into a new engine behind the `ConformationEngine` protocol + pipeline.
+- Slice 5: benchmark survival/closure feasibility against the failures.txt corpus (don't assume).
+- Also (independent, low-risk): kill the two per-conformer inner loops in `walk.py`.
 
 ## Phase 4 — Honesty + CI gate  ⬜ NOT STARTED
 - Fix the five README overstatements (region-ID claim, ~10⁻¹³Å→1e-6Å, "physical/genuine ensemble", "by default ALBATROSS", PyPI state).

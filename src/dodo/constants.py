@@ -39,9 +39,7 @@ import numpy as np
 #:
 #: This value was inconsistent across the pre-rewrite code: v1's ``parameters.py``
 #: said 3.8, v2's cone generator used 3.856, and one distance table used 3.89. There is
-#: now exactly one, on Ryan's instruction: 3.81. It applies everywhere, including as the
-#: target that generative-model output is projected onto -- see
-#: :mod:`dodo.geometry.regularize`, since a diffusion model does not produce exact bonds.
+#: now exactly one, on Ryan's instruction: 3.81. It applies everywhere.
 #:
 #: Do not introduce a second value for any specific consumer. Reconciling the three that
 #: were live at once was among the most expensive parts of this rewrite.
@@ -354,21 +352,6 @@ FLORY_RE_EXPONENT: Final[float] = 0.522
 #: Re-read from sparrow at runtime when available rather than trusted blindly.
 ALBATROSS_MIN_LENGTH: Final[int] = 35
 
-# ---------------------------------------------------------------------------
-# Conformation engines
-# ---------------------------------------------------------------------------
-
-#: Hard cap on sequence length for the STARLING engine, in residues.
-#:
-#: Observed against STARLING 2.0.2. Longer IDRs are handled by hierarchical segment
-#: assembly (see engines/hierarchical.py) rather than by erroring out. Queried from
-#: STARLING at runtime where it exposes the limit; this is the fallback.
-STARLING_MAX_LENGTH: Final[int] = 380
-
-#: Residues of overlap between adjacent STARLING segments in hierarchical assembly.
-#: CHOICE. Splicing inside an overlap preserves locally correct backbone statistics
-#: across the junction; butt-joining two independently generated segments does not.
-SEGMENT_SPLICE_OVERLAP: Final[int] = 10
 
 # ---------------------------------------------------------------------------
 # Sampling budgets

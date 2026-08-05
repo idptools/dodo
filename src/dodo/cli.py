@@ -33,7 +33,7 @@ _MODE_CHOICES = (
     "max_expansion",
 )
 _STRATEGY_CHOICES = ("auto", "density", "contact", "plddt")
-_ENGINE_CHOICES = ("walk", "starling")
+_ENGINE_CHOICES = ("walk",)
 
 
 def _add_common_build_arguments(parser: argparse.ArgumentParser) -> None:
@@ -75,11 +75,7 @@ def _add_common_build_arguments(parser: argparse.ArgumentParser) -> None:
         "--engine",
         default="walk",
         choices=_ENGINE_CHOICES,
-        help=(
-            "conformation engine (default: walk). 'starling' is UNDOCUMENTED in 2.0 and not "
-            "verified end to end: check the exit status, because a failed region keeps its "
-            "input coordinates while the folded domains move anyway"
-        ),
+        help="conformation engine (default: walk)",
     )
     # Backbone placement for REBUILT regions is --backbone, below. Side-chain placement is not in
     # 2.0 at all, and there is no flag for it.
@@ -180,19 +176,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "-s", "--strategy", default="auto", choices=_STRATEGY_CHOICES, help="(default: auto)"
     )
     _add_common_build_arguments(fetch_parser)
-    for sub in (rebuild_parser, fetch_parser):
-        sub.add_argument(
-            "--domain-placement",
-            default="predicted",
-            choices=("predicted", "conformer"),
-            help=(
-                "how the folded domains get their positions. 'predicted' (default) moves "
-                "them to ALBATROSS's predicted linker dimension and builds the linker into "
-                "that gap. 'conformer' requires --engine starling, which is undocumented in "
-                "2.0, so it is undocumented too"
-            ),
-        )
-
     sequence_parser = subparsers.add_parser(
         "sequence",
         help="build coordinates for a disordered sequence, with no input structure",
@@ -345,7 +328,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.structure,
                 strategy=args.strategy,
                 progress=progress,
-                domain_placement=args.domain_placement,
                 **common,
             )
         elif args.command == "fetch":
@@ -373,7 +355,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                         path,
                         strategy=args.strategy,
                         progress=progress,
-                        domain_placement=args.domain_placement,
                         **common,
                     )
             else:
@@ -383,7 +364,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     path,
                     strategy=args.strategy,
                     progress=progress,
-                    domain_placement=args.domain_placement,
                     **common,
                 )
         else:  # pragma: no cover - argparse restricts the choices

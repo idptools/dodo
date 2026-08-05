@@ -18,7 +18,6 @@ import pytest
 
 from dodo.cli import main
 from dodo.construct.pipeline import build_from_sequence, rebuild
-from dodo.exceptions import InvalidParameterError
 from dodo.geometry.metrics import end_to_end, validate_ca_trace
 from dodo.io import read_structure
 from dodo.structure import DomainKind
@@ -929,61 +928,3 @@ class TestBackboneDoesNotDamageInputGeometry:
             plain = rebuild(source, seed=0).models[0]
             fancy = rebuild(source, seed=0, backbone=True).models[0]
         assert np.array_equal(plain.ca_xyz, fancy.ca_xyz)
-
-
-class TestDomainPlacementMode:
-    """The opt-in mode that positions folded domains to suit STARLING conformers.
-
-    The default, ``"predicted"``, moves the domains to ALBATROSS's predicted linker dimension and
-    then selects conformers that match it. That selection is expensive in a way that is easy to
-    miss: measured on dnmt3a, STARLING's end-to-end distances scatter with a standard deviation of
-    41% of the mean while the tolerance is 5% of the target, so roughly a tenth of conformers
-    survive and they form a narrow band at the mean. The width of that distribution is the main
-    thing STARLING knows that a single predicted number does not.
-
-    ``"conformer"`` inverts it: the conformer is taken as generated and the next domain moves to
-    meet it. Measured on dnmt3a over three models, that took the achieved end-to-end spread from
-    sd 10.8 A to sd 44.9 A and the build from 6/9 regions to 9/9.
-
-    These tests cover the wiring and the guardrails. The geometry itself needs a real STARLING and
-    is exercised separately.
-    """
-
-    def test_default_is_predicted(self) -> None:
-        """The new mode must be strictly opt-in, so the default has to be the old behaviour."""
-        import inspect
-
-        signature = inspect.signature(rebuild)
-        assert signature.parameters["domain_placement"].default == "predicted"
-
-    def test_conformer_placement_refuses_the_walk_engine(self) -> None:
-        """A walk-built region is built TO a dimension, so no conformer exists to position against.
-
-        Refused rather than silently ignored: a user who asked for this mode and got the predicted
-        one would have no way to tell from the output which they received.
-        """
-        with pytest.raises(InvalidParameterError, match="starling"):
-            rebuild(DNMT3A, domain_placement="conformer", seed=0)
-
-    def test_an_unknown_placement_is_refused(self) -> None:
-        with pytest.raises(InvalidParameterError, match="domain_placement"):
-            rebuild(DNMT3A, domain_placement="whatever", seed=0)
-
-    def test_predicted_placement_is_unchanged_by_the_new_parameter(self) -> None:
-        """Passing the default explicitly must be identical to not passing it at all."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            implicit = rebuild(DNMT3A, seed=0).models[0]
-            explicit = rebuild(DNMT3A, domain_placement="predicted", seed=0).models[0]
-        assert np.array_equal(implicit.xyz, explicit.xyz)
-
-    @pytest.mark.parametrize(
-        ("command", "offered"), [("rebuild", True), ("fetch", True), ("sequence", False)]
-    )
-    def test_the_cli_offers_it_only_where_domains_exist(
-        self, command: str, offered: bool, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """``dodo sequence`` has no folded domains, so offering the flag there would be noise."""
-        with pytest.raises(SystemExit):
-            main([command, "--help"])
-        assert ("--domain-placement" in capsys.readouterr().out) is offered

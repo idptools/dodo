@@ -95,7 +95,7 @@ def test_the_documented_target_dimension_is_still_what_dodo_produces() -> None:
 
 
 def test_no_document_advertises_a_removed_extra() -> None:
-    """There is one extra, [starling]. The others were removed and must not reappear in prose."""
+    """No user-facing extras ship now. Removed ones must not reappear in prose."""
     removed = ("[predictors]", "[lookup]", "[viz]", "[all]", "[albatross]")
     for document in (*DOCUMENTS, "CHANGELOG.md", "docs/algorithm.md", "docs/validation.md"):
         text = (REPO_ROOT / document).read_text()

@@ -13,11 +13,13 @@ from dodo.constants import (
     flory_end_to_end,
 )
 from dodo.engines.batch_walk import (
+    InteriorBatchResult,
     clears_obstacles_mask,
     close_chain_ends,
     end_to_end_distances,
     generate_free_batch,
     generate_interior_batch,
+    generate_terminal_batch,
     grow_free_batch,
     radii_of_gyration,
     self_avoiding_mask,
@@ -184,6 +186,43 @@ class TestObstacleClearance:
         assert np.array_equal(whole, chunked)
 
 
+class TestTerminalGeneration:
+    ANCHOR = np.array([0.0, 0.0, 0.0])
+    AWAY = np.array([1.0, 0.0, 0.0])
+
+    def test_residue_zero_is_one_bond_from_the_anchor_with_exact_bonds(self) -> None:
+        res = generate_terminal_batch(
+            300, 30, self.ANCHOR, self.AWAY, 40.0, np.random.default_rng(0)
+        )
+        coords = res.coords
+        assert coords.shape == (300, 30, 3)
+        gap = np.linalg.norm(coords[:, 0] - self.ANCHOR, axis=1)
+        assert np.allclose(gap, CA_CA_BOND_LENGTH, atol=1e-6)
+        bonds = np.linalg.norm(np.diff(coords, axis=1), axis=-1)
+        assert np.max(np.abs(bonds - CA_CA_BOND_LENGTH)) < 1e-9
+        assert self_avoiding_mask(coords).all()
+
+    def test_steers_to_the_target_end_to_end(self) -> None:
+        res = generate_terminal_batch(
+            400, 40, self.ANCHOR, self.AWAY, 40.0, np.random.default_rng(1)
+        )
+        assert abs(float(res.achieved_end_to_end.mean()) - 40.0) < 4.0
+
+    def test_survivors_clear_the_obstacles(self) -> None:
+        # Domain behind the anchor (at -x); the chain is biased AWAY (+x), so survivors clear it.
+        blob = np.random.default_rng(3).normal(scale=8.0, size=(400, 3)) + np.array(
+            [-15.0, 0.0, 0.0]
+        )
+        res = generate_terminal_batch(
+            400, 30, self.ANCHOR, self.AWAY, 40.0, np.random.default_rng(0), obstacles=blob
+        )
+        assert clears_obstacles_mask(res.coords, blob).all()
+
+    def test_zero_conformers_is_refused(self) -> None:
+        with pytest.raises(EngineError):
+            generate_terminal_batch(0, 30, self.ANCHOR, self.AWAY, 40.0, np.random.default_rng(0))
+
+
 class TestChainClosure:
     def test_restores_bonds_and_pins_ends_when_feasible(self) -> None:
         coords = grow_free_batch(200, 30, np.random.default_rng(0))
@@ -214,7 +253,9 @@ class TestInteriorClosure:
     N_AWAY = np.array([1.0, 0.0, 0.0])
     C_AWAY = np.array([-1.0, 0.0, 0.0])
 
-    def _generate(self, seed: int = 0, n: int = 40, stub: int = 8) -> np.ndarray:
+    def _generate(
+        self, seed: int = 0, n: int = 40, stub: int = 4, closure: str = "funnel"
+    ) -> np.ndarray:
         return generate_interior_batch(
             300,
             n,
@@ -224,7 +265,16 @@ class TestInteriorClosure:
             n_away=self.N_AWAY,
             c_away=self.C_AWAY,
             stub=stub,
-        )
+            closure=closure,
+        ).coords
+
+    def _angle_window_fraction(self, coords: np.ndarray) -> float:
+        u = coords[:, :-2] - coords[:, 1:-1]
+        v = coords[:, 2:] - coords[:, 1:-1]
+        u /= np.linalg.norm(u, axis=-1, keepdims=True)
+        v /= np.linalg.norm(v, axis=-1, keepdims=True)
+        ang = np.degrees(np.arccos(np.clip((u * v).sum(-1), -1.0, 1.0)))
+        return float(((ang >= BACKBONE_ANGLE_MIN) & (ang <= BACKBONE_ANGLE_MAX)).mean())
 
     def test_endpoints_are_one_bond_from_each_anchor(self) -> None:
         coords = self._generate()
@@ -233,10 +283,96 @@ class TestInteriorClosure:
         assert np.allclose(first_gap, CA_CA_BOND_LENGTH, atol=1e-6)
         assert np.allclose(last_gap, CA_CA_BOND_LENGTH, atol=1e-6)
 
-    def test_all_bonds_are_close_to_ideal(self) -> None:
-        coords = self._generate()
+    def test_fabrik_gives_exact_bonds_everywhere(self) -> None:
+        coords = self._generate(closure="fabrik")
         bonds = np.linalg.norm(np.diff(coords, axis=1), axis=-1)
         assert np.max(np.abs(bonds - CA_CA_BOND_LENGTH)) < 1e-2
+
+    def test_funnel_closes_most_chains(self) -> None:
+        coords = self._generate(closure="funnel")
+        bonds = np.linalg.norm(np.diff(coords, axis=1), axis=-1)
+        feasible = np.abs(bonds - CA_CA_BOND_LENGTH).max(axis=1) < 0.05
+        assert feasible.mean() > 0.6
+
+    def test_funnel_keeps_more_angles_in_window_than_fabrik(self) -> None:
+        funnel = self._angle_window_fraction(self._generate(closure="funnel"))
+        fabrik = self._angle_window_fraction(self._generate(closure="fabrik"))
+        assert funnel > fabrik
+        assert funnel > 0.9
+
+    def test_excursion_raises_self_avoidance(self) -> None:
+        # The perpendicular excursion spreads a slack interior chain so it self-clashes far less.
+        common = dict(n_away=self.N_AWAY, c_away=self.C_AWAY)  # noqa: C408 - readability over a literal
+        collapsed = generate_interior_batch(
+            2000,
+            40,
+            self.N_ANCHOR,
+            self.C_ANCHOR,
+            np.random.default_rng(0),
+            funnel_excursion=0.0,
+            **common,
+        )
+        spread = generate_interior_batch(
+            2000,
+            40,
+            self.N_ANCHOR,
+            self.C_ANCHOR,
+            np.random.default_rng(0),
+            funnel_excursion=2.5,
+            **common,
+        )
+        assert (
+            self_avoiding_mask(spread.coords).mean()
+            > self_avoiding_mask(collapsed.coords).mean() + 0.1
+        )
+
+    def _interior(self, **kw: object) -> InteriorBatchResult:
+        return generate_interior_batch(
+            3000,
+            40,
+            self.N_ANCHOR,
+            self.C_ANCHOR,
+            np.random.default_rng(0),
+            n_away=self.N_AWAY,
+            c_away=self.C_AWAY,
+            **kw,  # type: ignore[arg-type]
+        )
+
+    def test_target_rg_is_tracked(self) -> None:
+        # A target Rg inside the closure-healthy band [Rg(2.0), Rg(3.5)] (~14.5-15.9 A here) is hit
+        # within tolerance, is a monotone control, and reports it was not clamped.
+        small = self._interior(target_rg=14.8)
+        large = self._interior(target_rg=15.6)
+        assert abs(float(small.radius_of_gyration.mean()) - 14.8) < 0.8
+        assert abs(float(large.radius_of_gyration.mean()) - 15.6) < 0.8
+        assert large.radius_of_gyration.mean() > small.radius_of_gyration.mean()
+        assert not small.rg_clamped and not large.rg_clamped
+
+    def test_a_compact_target_below_the_floor_is_clamped(self) -> None:
+        # Below the floor the excursion pins to exc_min to keep the anti-collapse spread (the fix
+        # for the wide-gap self-avoidance collapse), so a very compact target is reported clamped.
+        compact = self._interior(target_rg=11.0)
+        assert compact.rg_clamped
+        assert compact.radius_of_gyration.mean() > 13.0  # floored, not driven to 11.0
+
+    def test_result_reports_closure_feasibility(self) -> None:
+        # Crossed stubs (too long for the gap) break the closure; the flag catches it even though a
+        # broken chain can still show an on-target Rg. A normal batch closes far more often.
+        overshoot = self._interior(stub=18)
+        normal = self._interior(stub=4)
+        assert overshoot.feasible_fraction < normal.feasible_fraction
+        assert normal.feasible_fraction > 0.3
+        bonds = np.linalg.norm(np.diff(normal.coords, axis=1), axis=-1)
+        clean = np.abs(bonds - CA_CA_BOND_LENGTH).max(axis=1) < 0.1
+        assert np.array_equal(normal.closure_feasible, clean)
+
+    def test_result_flags_an_unreachable_rg_target(self) -> None:
+        assert not self._interior(target_rg=15.0).rg_clamped
+        assert self._interior(target_rg=100.0).rg_clamped
+
+    def test_unknown_closure_is_refused(self) -> None:
+        with pytest.raises(EngineError):
+            self._generate(closure="nonsense")
 
     def test_shape_and_determinism(self) -> None:
         a = self._generate(seed=7)

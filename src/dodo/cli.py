@@ -33,7 +33,7 @@ _MODE_CHOICES = (
     "max_expansion",
 )
 _STRATEGY_CHOICES = ("auto", "density", "contact", "plddt")
-_ENGINE_CHOICES = ("walk",)
+_ENGINE_CHOICES = ("walk", "batch")
 
 
 def _add_common_build_arguments(parser: argparse.ArgumentParser) -> None:

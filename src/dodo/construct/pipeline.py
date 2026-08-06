@@ -563,9 +563,13 @@ def _make_engine(engine_name: str) -> object:
 
     if engine_name == "walk":
         return SelfAvoidingWalk()
-    raise InvalidParameterError(
-        f"Unknown engine {engine_name!r}. Only 'walk' is available in this release."
-    )
+    if engine_name == "batch":
+        # Vectorized grow-then-filter primary, with the walk as the careful fallback for the hard
+        # tail. Falls back to the same self-avoiding walk this branch would otherwise return.
+        from ..engines.batch_engine import BatchWalkEngine
+
+        return BatchWalkEngine()
+    raise InvalidParameterError(f"Unknown engine {engine_name!r}. Use 'walk' or 'batch'.")
 
 
 def _rebuild_one_model(

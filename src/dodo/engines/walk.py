@@ -122,7 +122,7 @@ from ..exceptions import (
     UnsatisfiableTargetError,
 )
 from ..geometry.metrics import end_to_end, validate_ca_trace
-from ..geometry.sampling import cone_candidates, random_unit_vectors
+from ..geometry.sampling import cone_candidates_batch, random_unit_vectors
 from ..geometry.transforms import align_frame
 from ..geometry.transforms import apply as apply_rotation
 from .base import IDRRequest, IDRResult
@@ -1341,13 +1341,12 @@ class SelfAvoidingWalk:
                 if index == 1
                 else coords[live, index - 2]
             )
-        candidates = np.empty((n_live, count, 3), dtype=np.float64)
-        for row in range(n_live):
-            # One call per conformer: cone_candidates takes a single apex. Its template is
-            # cached, so the per-call cost is a rotation of a precomputed (355, 3) block.
-            candidates[row] = cone_candidates(
-                before[row], previous[row], angles=grid, per_angle=per_angle
-            )
+        # One batched rotation for the whole live set: cone_candidates_batch rotates the
+        # shared cached template onto every conformer's axis at once, and its output is
+        # bit-identical to the per-conformer cone_candidates loop this replaces (verified
+        # against it in the geometry tests). `previous` is the cone apex, `before` the
+        # point defining the axis, exactly as in the scalar call's argument order.
+        candidates = cone_candidates_batch(before, previous, angles=grid, per_angle=per_angle)
         # The cone apex: cone_candidates puts every row of its output exactly one bond length
         # from `previous`, which is what licenses the cull in _nearest_obstacle_distance.
         return candidates, _angle_weights(grid, per_angle), np.asarray(previous, dtype=np.float64)
@@ -1599,7 +1598,7 @@ class SelfAvoidingWalk:
             log_weight = log_weight + goal.log_weight(distance)
 
         # The region's own trace: hard threshold, no ladder, ever.
-        acceptable &= self._nearest_chain_distance(candidates, chain_points) >= CA_CLASH_DISTANCE
+        acceptable &= self._chain_clear_mask(candidates, chain_points, candidate_centres)
 
         # External obstacles: the same hard threshold as the region's own trace, no ladder.
         #
@@ -1724,42 +1723,83 @@ class SelfAvoidingWalk:
         return nearest
 
     @staticmethod
-    def _nearest_chain_distance(candidates: np.ndarray, chain_points: np.ndarray) -> np.ndarray:
-        """Distance from every candidate to the nearest already-placed CA of its own chain.
+    def _chain_clear_mask(
+        candidates: np.ndarray,
+        chain_points: np.ndarray,
+        centres: np.ndarray | None,
+    ) -> np.ndarray:
+        """Mask the candidates clear of every already-placed CA of their own chain.
 
         Parameters
         ----------
         candidates
-            ``(n_live, n_candidates, 3)`` positions.
+            ``(n_live, n_candidates, 3)`` positions, each one bond length from its row's
+            entry in ``centres``.
         chain_points
-            ``(n_live, n_points, 3)`` positions of this conformer's own residues, its
-            anchors and its flanking residues, excluding the ones too close along the
-            sequence to count as a clash.
+            ``(n_live, n_points, 3)`` positions this residue must not clash with -- the
+            conformer's own placed residues, its anchors and its flanking residues, with the
+            sequence-local neighbours already excluded.
+        centres
+            ``(n_live, 3)`` apex each row's candidates orbit, one bond length away.
 
         Returns
         -------
         np.ndarray
-            ``(n_live, n_candidates)`` distances, ``inf`` where there is nothing to hit.
+            ``(n_live, n_candidates)`` boolean, ``True`` where the candidate is at least
+            :data:`~dodo.constants.CA_CLASH_DISTANCE` from every chain point.
 
         Notes
         -----
-        Kept separate from :meth:`_nearest_obstacle_distance` because the two have different
-        thresholds and must not share one: these are alpha carbons of the chain being built,
-        and the threshold on them is never relaxed.
+        Replaces a per-conformer :class:`~scipy.spatial.cKDTree` built and queried once per
+        residue -- the walk's single hottest cost -- with one vectorized pass over the whole
+        live set. It returns the mask ``_nearest_chain_distance(...) >= CA_CLASH_DISTANCE``
+        used to produce, which is all the selection consumed; the raw distances went nowhere
+        else.
+
+        The pass is exact where it counts. Every candidate sits one bond length
+        (:data:`~dodo.constants.CA_CA_BOND_LENGTH`) from its apex, so a chain point farther
+        than ``CA_CA_BOND_LENGTH + CA_CLASH_DISTANCE`` from that apex is farther than the
+        clash distance from *every* candidate in the row and cannot decide the mask.
+        Restricting the distance test to the points inside that radius leaves the mask
+        unchanged while turning an all-points query into a handful of near ones: whenever a
+        candidate does clash, the offending point is within that radius by the triangle
+        inequality, so it is kept and the clash is seen. The kept point's clash is decided on
+        its exact Euclidean distance, which agrees with the tree to the ~1e-15 their two
+        summation orders differ by -- far below any separation a real backbone produces, and
+        checked bit-identical over the engine's builds rather than assumed.
         """
         n_live, count, _ = candidates.shape
-        nearest = np.full((n_live, count), np.inf, dtype=np.float64)
-        if chain_points.shape[1] == 0:
-            return nearest
-        for row in range(n_live):
-            valid = np.all(np.isfinite(candidates[row]), axis=1)
-            if not np.any(valid):
-                continue
-            found, _ = cKDTree(chain_points[row]).query(candidates[row][valid])
-            partial = np.full(count, np.inf)
-            partial[valid] = found
-            nearest[row] = partial
-        return nearest
+        clear = np.ones((n_live, count), dtype=bool)
+        n_points = chain_points.shape[1]
+        if n_points == 0:
+            return clear
+        if centres is None:
+            raise EngineError(
+                "_chain_clear_mask needs the candidate centres to cull far chain points; "
+                "both the cone step and the closure step supply them."
+            )
+        finite = np.all(np.isfinite(candidates), axis=2)
+
+        # Cull chain points that cannot reach any candidate in their row, then gather the
+        # survivors into a dense (n_live, k) block -- k is the most any row keeps.
+        reach = CA_CA_BOND_LENGTH + CA_CLASH_DISTANCE
+        to_apex_sq = np.sum((chain_points - centres[:, None, :]) ** 2, axis=2)
+        near = to_apex_sq <= reach * reach
+        k = int(near.sum(axis=1).max())
+        if k == 0:
+            return clear
+        order = np.argsort(~near, axis=1, kind="stable")[:, :k]
+        picked = np.take_along_axis(chain_points, order[:, :, None], axis=1)
+        picked_near = np.take_along_axis(near, order, axis=1)
+
+        diff = candidates[:, :, None, :] - picked[:, None, :, :]
+        squared = np.sum(diff * diff, axis=3)
+        squared = np.where(picked_near[:, None, :], squared, np.inf)
+        nearest = np.sqrt(np.min(squared, axis=2))
+        # A non-finite candidate hit nothing under the old tree query (its distance came back
+        # inf, so it passed the threshold); keep the degenerate rows unchanged too.
+        cleared: np.ndarray = (nearest >= CA_CLASH_DISTANCE) | ~finite
+        return cleared
 
     # ------------------------------------------------------------------
     # Small helpers

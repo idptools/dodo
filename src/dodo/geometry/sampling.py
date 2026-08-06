@@ -31,11 +31,18 @@ from ..constants import (
     backbone_angle_grid,
 )
 from ..exceptions import GeometryError
-from .transforms import ZERO_LENGTH_TOLERANCE, _as_vector3, apply, rotation_between_vectors
+from .transforms import (
+    ZERO_LENGTH_TOLERANCE,
+    _as_vector3,
+    apply,
+    rotation_between_vectors,
+    rotation_between_vectors_batch,
+)
 
 __all__ = [
     "CacheStatistics",
     "cone_candidates",
+    "cone_candidates_batch",
     "cone_template_cache_info",
     "random_points_on_sphere",
     "random_unit_vectors",
@@ -452,4 +459,69 @@ def cone_candidates(
     # 180 - theta.
     rotation = rotation_between_vectors(_TEMPLATE_AXIS, axis)
     candidates: np.ndarray = apply(template, rotation) + apex
+    return candidates
+
+
+def cone_candidates_batch(
+    previous_ca: np.ndarray,
+    current_ca: np.ndarray,
+    angles: np.ndarray | tuple[float, ...],
+    per_angle: int,
+    bond_length: float | None = None,
+) -> np.ndarray:
+    """Batched :func:`cone_candidates`: one cone per ``(previous_ca[i], current_ca[i])`` pair.
+
+    Row ``i`` of the output equals :func:`cone_candidates` on row ``i`` of the inputs, bit
+    for bit: it shares the same cached template and reproduces the same rotation through
+    :func:`~dodo.geometry.transforms.rotation_between_vectors_batch`. It exists so the walk
+    engine can place the next residue of every live conformer with a single vectorized
+    rotation instead of one Python call per conformer -- the same amortization the batch
+    generators rely on, applied to the fallback path.
+
+    Parameters
+    ----------
+    previous_ca
+        ``(n, 3)`` positions of CA(i-1) for each conformer. Only the direction from here to
+        ``current_ca`` is used.
+    current_ca
+        ``(n, 3)`` positions of CA(i), the cone apices.
+    angles
+        CA-CA-CA pseudo-angles in degrees, order preserved (see :func:`cone_candidates`).
+    per_angle
+        Candidate positions per angle ring.
+    bond_length
+        CA-CA distance in Angstroms; defaults to :data:`dodo.constants.CA_CA_BOND_LENGTH`.
+
+    Returns
+    -------
+    np.ndarray
+        ``(n, len(angles) * per_angle, 3)`` candidate positions, one block of rows per
+        conformer.
+
+    Raises
+    ------
+    GeometryError
+        If ``previous_ca`` and ``current_ca`` do not share shape ``(n, 3)``, if any
+        conformer's two points coincide (the cone axis would be undefined), or if
+        ``per_angle`` is not a positive integer.
+    """
+    prev = np.asarray(previous_ca, dtype=np.float64)
+    curr = np.asarray(current_ca, dtype=np.float64)
+    if prev.shape != curr.shape or prev.ndim != 2 or prev.shape[1] != 3:
+        raise GeometryError(
+            f"previous_ca and current_ca must share shape (n, 3), got {prev.shape} and "
+            f"{curr.shape}."
+        )
+    resolved_angles = np.atleast_1d(np.asarray(angles, dtype=float))
+    count = _require_count(per_angle, "per_angle", GeometryError)
+    length = CA_CA_BOND_LENGTH if bond_length is None else float(bond_length)
+    # Same cache key as the scalar path: a walk step's per-conformer scalar calls and this
+    # one batched call resolve to the identical read-only template object.
+    template = _cone_template(tuple(resolved_angles.tolist()), count, length)
+
+    axis = curr - prev
+    rotations = rotation_between_vectors_batch(_TEMPLATE_AXIS, axis)
+    # apply(template, R) is template @ R.T; batched, that is template against each R.T in
+    # turn, then the apex added back per conformer. Mirrors the scalar `apply(...) + apex`.
+    candidates: np.ndarray = np.matmul(template, rotations.transpose(0, 2, 1)) + curr[:, None, :]
     return candidates

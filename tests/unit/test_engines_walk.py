@@ -1575,3 +1575,66 @@ class TestAnchorAtomsInTheObstacleSet:
         assert excluded < CA_CLASH_DISTANCE, (
             f"expected the first CA to approach the anchor backbone naturally, got {excluded:.2f}"
         )
+
+
+class TestChainClearMask:
+    """Lock the vectorized clash cull to the per-conformer KD-tree mask.
+
+    The cull must reproduce, bit for bit, the mask the per-conformer
+    ``cKDTree(chain_points).query(...) >= CA_CLASH_DISTANCE`` loop produced -- that is the
+    invariant that lets it replace the walk's single hottest inner loop.
+    """
+
+    @staticmethod
+    def _tree_mask(candidates: np.ndarray, chain_points: np.ndarray) -> np.ndarray:
+        """Return the old per-conformer KD-tree clash mask, the reference oracle here."""
+        n_live, count, _ = candidates.shape
+        nearest = np.full((n_live, count), np.inf)
+        if chain_points.shape[1] == 0:
+            return nearest >= CA_CLASH_DISTANCE
+        for row in range(n_live):
+            valid = np.all(np.isfinite(candidates[row]), axis=1)
+            if not np.any(valid):
+                continue
+            found, _ = cKDTree(chain_points[row]).query(candidates[row][valid])
+            partial = np.full(count, np.inf)
+            partial[valid] = found
+            nearest[row] = partial
+        return nearest >= CA_CLASH_DISTANCE
+
+    def test_matches_the_kdtree_mask_including_the_clash_boundary(self) -> None:
+        rng = np.random.default_rng(7)
+        mismatches = 0
+        for _ in range(120):
+            n_live = int(rng.integers(1, 10))
+            count = 355
+            n_points = int(rng.integers(1, 50))
+            centres = rng.normal(size=(n_live, 3)) * 10.0
+            # Candidates exactly one bond length from the apex, as the real caller supplies.
+            directions = rng.normal(size=(n_live, count, 3))
+            directions /= np.linalg.norm(directions, axis=2, keepdims=True)
+            candidates = centres[:, None, :] + CA_CA_BOND_LENGTH * directions
+            chain = rng.normal(size=(n_live, n_points, 3)) * 12.0 + centres[:, None, :]
+            # Plant a point a hair either side of the clash radius from a real candidate, so
+            # the two code paths are forced to agree exactly on the >= boundary.
+            for row in range(n_live):
+                col = int(rng.integers(0, count))
+                unit = rng.normal(size=3)
+                unit /= np.linalg.norm(unit)
+                offset = CA_CLASH_DISTANCE + rng.normal() * 1e-9
+                chain[row, int(rng.integers(0, n_points))] = candidates[row, col] + unit * offset
+            expected = self._tree_mask(candidates, chain)
+            got = SelfAvoidingWalk._chain_clear_mask(candidates, chain, centres)
+            mismatches += int(np.count_nonzero(expected != got))
+        assert mismatches == 0
+
+    def test_no_chain_points_is_all_clear(self) -> None:
+        candidates = np.zeros((3, 355, 3))
+        empty = np.zeros((3, 0, 3))
+        assert np.all(SelfAvoidingWalk._chain_clear_mask(candidates, empty, np.zeros((3, 3))))
+
+    def test_missing_centres_is_refused(self) -> None:
+        candidates = np.zeros((2, 355, 3))
+        chain = np.ones((2, 4, 3))
+        with pytest.raises(EngineError, match="candidate centres"):
+            SelfAvoidingWalk._chain_clear_mask(candidates, chain, None)

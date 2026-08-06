@@ -38,6 +38,7 @@ from dodo.geometry.metrics import (
 )
 from dodo.geometry.sampling import (
     cone_candidates,
+    cone_candidates_batch,
     cone_template_cache_info,
     random_points_on_sphere,
     random_unit_vectors,
@@ -46,6 +47,7 @@ from dodo.geometry.transforms import (
     align_frame,
     apply,
     rotation_between_vectors,
+    rotation_between_vectors_batch,
     rotation_from_axis_angle,
 )
 from dodo.structure import Structure
@@ -206,6 +208,54 @@ class TestRotationBetweenVectors:
             matrix = rotation_between_vectors(a, b)
             assert np.isclose(np.linalg.det(matrix), 1.0)
             assert np.allclose(matrix @ (a / np.linalg.norm(a)), b / np.linalg.norm(b), atol=1e-9)
+
+
+class TestRotationBetweenVectorsBatch:
+    """Lock the batched rotation to the scalar one, row by row.
+
+    The batched form must equal the scalar one bit for bit; that equality is the whole
+    reason it is allowed to replace the walk engine's per-conformer rotation loop.
+    """
+
+    def _targets(self) -> np.ndarray:
+        rng = np.random.default_rng(4242)
+        generic = rng.normal(size=(2000, 3))
+        # Inject the branch-boundary rows: exact +z / -z parallel and antiparallel, tiny
+        # perturbations either side of antiparallel, and a longer antiparallel vector.
+        edge = np.array(
+            [
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, -1.0],
+                [1e-10, 0.0, 1.0],
+                [1e-10, 0.0, -1.0],
+                [0.0, 0.0, -5.3],
+            ]
+        )
+        return np.vstack([edge, generic])
+
+    def test_fixed_source_matches_scalar_bit_for_bit(self) -> None:
+        source = np.array([0.0, 0.0, 1.0])
+        targets = self._targets()
+        batch = rotation_between_vectors_batch(source, targets)
+        for i, target in enumerate(targets):
+            assert np.array_equal(batch[i], rotation_between_vectors(source, target))
+
+    def test_per_row_source_matches_scalar_bit_for_bit(self) -> None:
+        rng = np.random.default_rng(99)
+        sources = rng.normal(size=(500, 3))
+        targets = rng.normal(size=(500, 3))
+        batch = rotation_between_vectors_batch(sources, targets)
+        for i in range(sources.shape[0]):
+            assert np.array_equal(batch[i], rotation_between_vectors(sources[i], targets[i]))
+
+    def test_zero_length_row_raises(self) -> None:
+        targets = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+        with pytest.raises(GeometryError, match="zero-length"):
+            rotation_between_vectors_batch([0.0, 0.0, 1.0], targets)
+
+    def test_wrong_shape_raises(self) -> None:
+        with pytest.raises(GeometryError, match=r"shape \(n, 3\)"):
+            rotation_between_vectors_batch([0.0, 0.0, 1.0], np.zeros((4, 2)))
 
 
 # ---------------------------------------------------------------------------
@@ -889,6 +939,44 @@ def realistic_trace(n: int, seed: int = 0) -> np.ndarray:
             # different seed rather than silently emitting a clashing trace.
             return realistic_trace(n, seed=seed + 10_000)
     return coords
+
+
+class TestConeCandidatesBatch:
+    """Lock the batched cone builder to the scalar cone_candidates, row by row.
+
+    One cone per row, equal to the scalar ``cone_candidates`` on each row bit for bit. This
+    is what lets the walk engine build every live conformer's candidates in one call.
+    """
+
+    def test_matches_scalar_per_row_bit_for_bit(self) -> None:
+        rng = np.random.default_rng(2024)
+        grid = backbone_angle_grid()
+        previous = rng.normal(size=(600, 3)) * 10.0
+        # Apex one generic step from `previous`, plus two rows whose axis lies exactly along
+        # +z / -z -- the degenerate directions the shared rotation has to get right.
+        current = previous + rng.normal(size=(600, 3))
+        current[0] = previous[0] + np.array([0.0, 0.0, CA_CA_BOND_LENGTH])
+        current[1] = previous[1] + np.array([0.0, 0.0, -CA_CA_BOND_LENGTH])
+        batch = cone_candidates_batch(previous, current, angles=grid, per_angle=5)
+        assert batch.shape == (600, grid.size * 5, 3)
+        for i in range(previous.shape[0]):
+            scalar = cone_candidates(previous[i], current[i], angles=grid, per_angle=5)
+            assert np.array_equal(batch[i], scalar)
+
+    def test_shares_the_template_cache_with_the_scalar_path(self) -> None:
+        grid = backbone_angle_grid()
+        previous = np.zeros((3, 3))
+        current = np.tile([CA_CA_BOND_LENGTH, 0.0, 0.0], (3, 1))
+        cone_candidates(previous[0], current[0], angles=grid, per_angle=5)  # warm the cache
+        before = cone_template_cache_info().misses
+        cone_candidates_batch(previous, current, angles=grid, per_angle=5)
+        # A batched call for an already-seen (angles, per_angle, bond) resolves to the same
+        # cached template rather than rebuilding it.
+        assert cone_template_cache_info().misses == before
+
+    def test_mismatched_shapes_raise(self) -> None:
+        with pytest.raises(GeometryError, match=r"shape \(n, 3\)"):
+            cone_candidates_batch(np.zeros((3, 3)), np.zeros((2, 3)), angles=[120.0], per_angle=2)
 
 
 class TestCaBondLengths:

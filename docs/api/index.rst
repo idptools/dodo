@@ -33,19 +33,15 @@ Modules
 
    dodo.cli
    dodo.constants
-   dodo.construct.backbone
    dodo.construct.backbone_refine
    dodo.construct.ca_backbone
    dodo.construct.dimensions
    dodo.construct.pipeline
    dodo.construct.place
    dodo.engines.base
-   dodo.engines.hierarchical
-   dodo.engines.starling
    dodo.engines.walk
    dodo.exceptions
    dodo.geometry.metrics
-   dodo.geometry.regularize
    dodo.geometry.sampling
    dodo.geometry.transforms
    dodo.io.cif

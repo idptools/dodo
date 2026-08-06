@@ -12,9 +12,10 @@ To be clear: the work that the various groups do to make structure predictors is
 and none of this takes away from it in *any way*. But for figures and presentations it's
 useful for disordered regions *look* like what they are.
 
-By default, DODO identifies each disordered region, predicts its end-to-end distance from sequence
-using ALBATROSS ([sparrow](https://github.com/idptools/sparrow)), repositions the folded domains as 
-needed, and rebuilds the IDR to the predicted dimensions. 
+By default, DODO identifies each disordered region and predicts its end-to-end distance from sequence
+— with ALBATROSS ([sparrow](https://github.com/idptools/sparrow)) when sparrow is installed, and an
+analytical scaling law otherwise — then repositions the folded domains as needed and rebuilds the IDR
+to the predicted dimensions. 
 You can also ask for regions more compact or more expanded than predicted. And you
 can generate several conformers into one multi-model PDB, which in VMD looks *like* a
 simulation trajectory — to be very clear, it is **not** equivalent to a simulation, but it's
@@ -27,7 +28,7 @@ nice for visualization.
 > scripts are gone, replaced by `dodo.rebuild()` / `dodo.build_from_sequence()` and a single
 > `dodo` command. See [What changed, and migrating from 1.x](#what-changed-and-migrating-from-1x). The scientific behaviour also
 > changed in ways worth reading about: build modes are now length-independent, and a
-> multi-model run produces a genuine ensemble rather than one conformation repeated.
+> multi-model run produces a spread of distinct conformers rather than one conformation repeated.
 
 ## Installation
 
@@ -37,13 +38,10 @@ Requires Python 3.10 or newer.
 pip install git+https://github.com/idptools/dodo.git
 ```
 
-One install, and that is the whole story:
+It is not yet on PyPI, so the git URL is the install for now. When the wheel is published the command
+becomes `pip install idptools-dodo` — one step, no extra sources.
 
-```bash
-pip install idptools-dodo
-```
-
-The base install depends on **numpy, scipy, numba and getSequence** — small, fast, and no torch. It
+The base install depends on **numpy, scipy, numba, tqdm and getSequence** — small, fast, and no torch. It
 gets you structure reading and writing, region identification, IDR rebuilding, protein-name lookup
 for `dodo fetch`, and the validator.
 
@@ -181,8 +179,10 @@ gap can only produce a compact blob wedged between domains. The fix isn't a bett
 builder; it's moving the domains.
 
 **Folded-domain atoms are never rebuilt.** They come from AlphaFold (or AlphaFold3, or a
-crystal structure) and are trusted. A domain only ever moves as a rigid body, and DODO verifies
-that: internal geometry is asserted unchanged to ~10⁻¹³ Å after every transform.
+crystal structure) and are trusted. A domain only ever moves as a rigid body, and DODO checks
+that: after each domain is repositioned, `verify_rigid` asserts its internal geometry is unchanged
+to within **10⁻⁶ Å** — a bound set to catch a non-rigid transform, not floating-point noise. The
+residual of a float64 rigid move comes in far under it: measured across these structures, ~10⁻¹³ Å.
 
 ## Build modes
 
@@ -268,14 +268,15 @@ Use the fallback to keep a light install working, not to avoid installing sparro
 Four strategies behind one flag:
 
 - **`density`** — DODO's original all-atom density metric: all-atom pairs within 8 Å per
-  residue, thresholded at 480. **This is the method DODO was built and validated on, and it
-  draws better boundaries than sequence-based disorder predictors.** Reimplemented over a
+  residue, thresholded at 480. **This is the method DODO was built and validated on**; the author
+  reports it draws better region boundaries than sequence-based disorder predictors, though that
+  comparison predates this repository and is not benchmarked here. Reimplemented over a
   KD-tree rather than changed — same numbers, 10.1 s down to 7 ms on a 1,086-residue model.
 - **`contact`** — a CA-only alternative. Composition-free (every residue has exactly one CA)
   and invariant to whether side chains are modelled, which the density score is not. Useful for
   comparison and for CA-only input, but it is not the validated method.
 - **`plddt`** — AlphaFold's own per-residue confidence, from the B-factor column. Cheap, but
-  the density method beats disorder-based calls, so this is an explicit opt-in.
+  density is DODO's validated default, so this is an explicit opt-in.
 - **`auto`** (default) — `density` for all-atom input, `contact` for CA-only input (where a
   pair count can't be compared against the tuned threshold). It never picks pLDDT on its own,
   and it tells you what it chose.
@@ -315,7 +316,7 @@ structure.chains[0].domains[1].span                  # inspect, then edit as you
 report = dodo.rebuild(structure, strategy="preset")  # build your version
 ```
 
-## Multi-model output is now a real ensemble
+## Multi-model output is now a spread of conformers
 
 `-n 10` writes ten conformers as MODEL/ENDMDL frames. The folded domains are positioned once
 and held fixed across every model, so a viewer flicking between frames sees only the disordered
@@ -327,13 +328,14 @@ one end and does scatter.
 **In 1.x they effectively didn't.** v1 placed folded domains once outside the model loop and
 targeted only the *mean* predicted end-to-end distance, so every model shared one arrangement
 and essentially one dimension. Measured on an early 2.0 engine, the coefficient of variation of
-end-to-end distance across conformers was 0.006–0.045, where a matched physical reference gives
-0.35–0.48. Sixty models of a 200-residue IDR spanning 1.9 Å of extension is one conformation
-sampled sixty times.
+end-to-end distance across conformers was 0.006–0.045, where a freely-rotating chain with the same
+bond length and CA–CA–CA angle window gives 0.35–0.48. Sixty models of a 200-residue IDR spanning
+1.9 Å of extension is one conformation sampled sixty times.
 
 A predicted end-to-end distance is the **mean of a distribution**, so each model now draws its
-own target from the physical radial distribution $P(R) \propto R^2 e^{-3R^2/2\langle R^2\rangle}$.
-Measured CV is now 0.36–0.53, and the ensemble mean still matches the prediction.
+own target from the ideal-chain radial distribution $P(R) \propto R^2 e^{-3R^2/2\langle R^2\rangle}$,
+whose own coefficient of variation is 0.42. The suite holds the achieved spread inside 0.20–0.60,
+and the ensemble mean still matches the prediction.
 
 Two details worth knowing:
 
@@ -367,8 +369,9 @@ Honestly stated, with what's fixed since 1.x marked.
 
 1. **~~Rebuilding uses a simple random walk, so conformations aren't scientifically useful.~~**
    Partly addressed. The walk is now a self-avoiding, angle-constrained growth walk that hits
-   the predicted dimensions and produces a genuine ensemble across models. It is still a
-   geometric sampler, not a force field, and it is not a substitute for a simulation.
+   the predicted dimensions and produces a spread of distinct conformers across models — but it is
+   a geometric sampler, not a force field, so that spread is not a thermodynamic ensemble and is
+   not a substitute for a simulation.
 
 2. **Rebuilt IDRs contain only alpha carbons.** Still true in 2.0, and deliberately so — getting
    the alpha-carbon trace right comes first. Note this has never applied to the regions DODO
@@ -487,7 +490,7 @@ residue un-rebuilt does not fix it.
 git clone https://github.com/idptools/dodo.git
 cd dodo
 pip install -e ".[dev]"
-pytest                      # 1400 tests
+pytest                      # ~2000 tests
 pytest -m "not slow"        # the fast subset
 ruff check src tests && mypy
 pre-commit install

@@ -41,8 +41,9 @@ two domains — which is not what the sequence says, and is arguably worse than 
 replaced, because it looks deliberate.
 
 Domains are placed by orienting each toward the next, perturbing the orientation, and rejecting
-arrangements that clash. Internal geometry is verified to survive the motion: measured drift is
-around 1e-13 Å, which is floating-point noise rather than deformation.
+arrangements that clash. Internal geometry is verified to survive the motion: `verify_rigid` asserts
+each atom's distance to the domain centroid is unchanged to within 1e-6 Å, and the measured drift is
+around 1e-13 Å — floating-point noise rather than deformation.
 
 ## Why loops get no dimension prediction
 
@@ -70,8 +71,9 @@ the space a loop needs.
 ## Region identification
 
 The default is DODO's original **all-atom density** metric: all-atom pairs within 8 Å, per residue,
-thresholded at 480. This is the method the package was built and validated on, and it draws better
-boundaries than sequence-based disorder predictors. It is reimplemented over a KD-tree rather than
+thresholded at 480. This is the method the package was built and validated on; the author reports it
+draws better boundaries than sequence-based disorder predictors, though that comparison predates this
+repository and is not benchmarked here. It is reimplemented over a KD-tree rather than
 changed — same numbers, 10.1 s down to 7 ms on a 1,086-residue model.
 
 Alternatives, selectable with `-s` / `strategy=`:
@@ -85,8 +87,8 @@ Alternatives, selectable with `-s` / `strategy=`:
   input.
 
 `plddt`
-: AlphaFold's own per-residue confidence, from the B-factor column. An explicit opt-in — the
-  density method was found to draw better boundaries.
+: AlphaFold's own per-residue confidence, from the B-factor column. An explicit opt-in — density
+  is DODO's validated default.
 
 `auto`
 : `density` for all-atom input, `contact` for CA-only input, where a pair count cannot be compared

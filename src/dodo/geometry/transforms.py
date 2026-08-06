@@ -45,6 +45,7 @@ __all__ = [
     "align_frame",
     "apply",
     "rotation_between_vectors",
+    "rotation_between_vectors_batch",
     "rotation_from_axis_angle",
 ]
 
@@ -295,6 +296,90 @@ def rotation_between_vectors(
     # 0 or pi, exactly where this function is most often called from a builder aligning
     # a template that is already nearly in place.
     return rotation_from_axis_angle(cross / sine, float(np.arctan2(sine, cosine)))
+
+
+def rotation_between_vectors_batch(
+    a: np.ndarray | tuple[float, float, float],
+    b: np.ndarray,
+) -> np.ndarray:
+    """Per-row :func:`rotation_between_vectors` for a whole batch, in one vectorized pass.
+
+    Parameters
+    ----------
+    a
+        Source direction: a single 3-vector broadcast to every row, or an ``(n, 3)`` array
+        of per-row sources.
+    b
+        ``(n, 3)`` target directions.
+
+    Returns
+    -------
+    np.ndarray
+        ``(n, 3, 3)`` proper rotations. Row ``i`` equals ``rotation_between_vectors(a_i,
+        b[i])`` bit for bit.
+
+    Raises
+    ------
+    GeometryError
+        If ``b`` is not ``(n, 3)``, if ``a`` is neither ``(3,)`` nor ``(n, 3)``, if either
+        contains non-finite values, or if any row of either has zero length.
+
+    Notes
+    -----
+    The same three-branch logic as the scalar function, applied row-wise: the general
+    axis-angle path runs the whole batch through one :class:`scipy.spatial.transform.Rotation`
+    call, the (near-)parallel rows take the identity, and the antiparallel rows take a pi
+    rotation about an arbitrary perpendicular. Only the antiparallel branch loops, because
+    its axis depends on the row's own source direction; it is empty for essentially every
+    real input (it needs a target within 1e-8 rad of *opposite* the source), so the loop is
+    a formality that keeps the degenerate rows identical to the scalar choice rather than a
+    cost. Written so that the arithmetic on each row matches the scalar path term for term,
+    which is verified against it directly in the geometry tests.
+    """
+    b_arr = np.asarray(b, dtype=np.float64)
+    if b_arr.ndim != 2 or b_arr.shape[1] != 3:
+        raise GeometryError(f"b must have shape (n, 3), got {b_arr.shape}.")
+    n = b_arr.shape[0]
+    a_arr = np.asarray(a, dtype=np.float64)
+    if a_arr.shape == (3,):
+        a_arr = np.broadcast_to(a_arr, (n, 3))
+    elif a_arr.shape != (n, 3):
+        raise GeometryError(f"a must have shape (3,) or {(n, 3)}, got {a_arr.shape}.")
+    if not (np.all(np.isfinite(a_arr)) and np.all(np.isfinite(b_arr))):
+        raise GeometryError("rotation_between_vectors_batch received non-finite input.")
+
+    a_norm = np.sqrt(np.sum(a_arr * a_arr, axis=1))
+    b_norm = np.sqrt(np.sum(b_arr * b_arr, axis=1))
+    if np.any(a_norm <= ZERO_LENGTH_TOLERANCE) or np.any(b_norm <= ZERO_LENGTH_TOLERANCE):
+        raise GeometryError(
+            "rotation_between_vectors_batch received a zero-length vector, so its direction "
+            "is undefined: two coordinates that should be distinct are identical."
+        )
+    unit_a = a_arr / a_norm[:, None]
+    unit_b = b_arr / b_norm[:, None]
+
+    cross = np.cross(unit_a, unit_b)
+    sine = np.sqrt(np.sum(cross * cross, axis=1))
+    cosine = np.clip(np.sum(unit_a * unit_b, axis=1), -1.0, 1.0)
+
+    result = np.empty((n, 3, 3), dtype=np.float64)
+    general = sine > _PARALLEL_SIN_TOLERANCE
+    if np.any(general):
+        # cross / sine, then re-normalized: the scalar path divides by sine and then hands
+        # the result to rotation_from_axis_angle, which normalizes again. Both steps are
+        # reproduced so the rotation vector matches to the last bit.
+        raw = cross[general] / sine[general][:, None]
+        raw_norm = np.sqrt(np.sum(raw * raw, axis=1))
+        unit_axis = raw / raw_norm[:, None]
+        angle = np.arctan2(sine[general], cosine[general])
+        result[general] = Rotation.from_rotvec(unit_axis * angle[:, None]).as_matrix()
+
+    degenerate = ~general
+    if np.any(degenerate):
+        result[degenerate & (cosine > 0.0)] = _IDENTITY
+        for idx in np.flatnonzero(degenerate & (cosine <= 0.0)):
+            result[idx] = rotation_from_axis_angle(_perpendicular_to(unit_a[idx]), np.pi)
+    return result
 
 
 def align_frame(

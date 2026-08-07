@@ -276,7 +276,7 @@ class TestAddBackboneToRebuilt:
 
         structure = dodo.build_from_sequence("GRNQNGGGYQNYNNQGYQGHGG", seed=0).models[0]
         before = structure.n_atoms
-        after = add_backbone_to_rebuilt(structure)
+        after = add_backbone_to_rebuilt(structure).structure
         # An all-IDR structure: every residue is DODO's, so every residue gains N, C and O.
         assert after.n_atoms == before + 3 * structure.n_residues
         assert {str(n) for n in after.atom_name} == {"N", "CA", "C", "O"}
@@ -286,7 +286,7 @@ class TestAddBackboneToRebuilt:
         from dodo.construct.ca_backbone import add_backbone_to_rebuilt
 
         structure = dodo.build_from_sequence("GRNQNGGGYQNYNNQGYQGHGG", seed=0).models[0]
-        result = add_backbone_to_rebuilt(structure)
+        result = add_backbone_to_rebuilt(structure).structure
         assert np.allclose(result.ca_xyz, structure.ca_xyz)
 
     def test_domains_survive_the_rebuild(self) -> None:
@@ -299,7 +299,7 @@ class TestAddBackboneToRebuilt:
         from dodo.construct.ca_backbone import add_backbone_to_rebuilt
 
         structure = dodo.build_from_sequence("GRNQNGGGYQNYNNQGYQGHGG", seed=0).models[0]
-        result = add_backbone_to_rebuilt(structure)
+        result = add_backbone_to_rebuilt(structure).structure
         assert len(result.domains) == len(structure.domains)
         assert [d.kind for d in result.domains] == [d.kind for d in structure.domains]
         assert [d.span for d in result.domains] == [d.span for d in structure.domains]
@@ -310,7 +310,7 @@ class TestAddBackboneToRebuilt:
         from dodo.construct.ca_backbone import add_backbone_to_rebuilt
 
         structure = dodo.build_from_sequence("GRNQNGG", seed=0).models[0]
-        result = add_backbone_to_rebuilt(structure)
+        result = add_backbone_to_rebuilt(structure).structure
         names = [str(n) for n in result.atom_name]
         assert names[:8] == ["N", "CA", "C", "O", "N", "CA", "C", "O"]
 
@@ -321,6 +321,6 @@ class TestAddBackboneToRebuilt:
         from dodo.validate import find_impossible_pairs, validate_bonds
 
         structure = dodo.build_from_sequence("GRNQNGGGYQNYNNQGYQGHGG", seed=0).models[0]
-        result = add_backbone_to_rebuilt(structure)
+        result = add_backbone_to_rebuilt(structure).structure
         assert not find_impossible_pairs(result)
         assert not validate_bonds(result).violations

@@ -138,6 +138,11 @@ Rebuilding the table on 80 frames instead of 100 changed the result by 0.001 Å,
 generalization figure rather than a fit: the shipped table scores 0.163 / 0.215 / 0.626 on the same
 residues.
 
+The table is committed with its provenance: `scripts/derive_peptide_table.py` re-derives every
+constant exactly from the frames in `tests/data/backbone/`, and `tests/unit/test_backbone_table.py`
+runs that check in CI along with the placement accuracy — so the numbers above are reproducible
+rather than a one-off measurement.
+
 Oxygen is the loose one, and unavoidably: its position turns on ψ, which a CA trace constrains only
 weakly. The N–CA–C bond angle comes out at 3.4° spread against 2.8° in real backbone, and all four
 bond lengths are exact by construction.
@@ -150,13 +155,15 @@ rewrite — and `--ca-only` remains the way to strip folded domains down.
 the domain's existing nitrogen still points toward where the region ran in AlphaFold's original
 model — DODO moved the domain rigidly and redrew the region beneath it, and folded-domain atoms are
 not DODO's to move. A peptide unit reaches at most 2.854 Å from an alpha carbon to the nitrogen it
-bonds to; measured across 17 seams in three structures, a rebuilt alpha carbon sits **3.2–4.5 Å**
-away. The bond is therefore not merely hard to get right, it is geometrically unsatisfiable.
+bonds to; measured across these three structures, a rebuilt alpha carbon sits well beyond that —
+around **3–5 Å** away. The bond is therefore not merely hard to get right, it is geometrically
+unsatisfiable.
 
-DODO aims the carbon at the nitrogen and leaves the bond long — around 2.2 Å against an ideal
-1.33 — rather than writing two atoms into the same space, and reports every seam where it does.
-Measured over three structures at five seeds each, that is 4 such bonds on dnmt3a (of 911 residues),
-6 on arf19 and 10 on p300, identically at every seed.
+DODO aims the atom as close as the residue's own N–CA–C angle allows and leaves the bond long —
+measured 2.6–3.7 Å against an ideal 1.33 (mean ~3.0) — rather than writing two atoms into the same
+space, and reports every seam where it does (now on `RebuildReport.backbone_seams`). Measured over
+these three structures at seed 0, that is 4 such bonds on dnmt3a (of 911 residues), 6 on arf19 and
+10 on p300.
 
 Where the carbon and its oxygen go is **checked, not merely constructed**, and that distinction was
 earned the hard way. Three successive versions placed them by geometry alone and each was blind to

@@ -172,8 +172,15 @@ class TestEnergyEquivalence:
         the objective by a fraction of itself, not by 1e-16 of itself.
 
         Obstacles are included because without them the clash term only sees the chain avoiding
-        itself, which is the easy half of it.
+        itself -- and on this fixture the corrected backbone does so cleanly, so that case is
+        skipped (it used to be non-zero only through a first-unit mis-placement, now fixed) and the
+        clash equivalence is proven against obstacles instead.
         """
+        if term == "clash" and not crowded:
+            pytest.skip(
+                "the corrected backbone is self-avoiding here, so the clash term is zero without "
+                "obstacles; the crowded case proves the numpy/kernel clash equivalence"
+            )
         truth = _truth()
         ca = truth["CA"]
         start = backbone_from_ca(ca)

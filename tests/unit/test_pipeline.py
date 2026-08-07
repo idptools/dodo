@@ -22,7 +22,7 @@ from dodo.construct.pipeline import build_from_sequence, rebuild
 from dodo.geometry.metrics import end_to_end, validate_ca_trace
 from dodo.io import read_structure
 from dodo.structure import DomainKind
-from dodo.validate import find_impossible_pairs, validate_bonds
+from dodo.validate import find_impossible_pairs, validate_bonds, validate_clashes
 
 FIXTURES = Path(__file__).resolve().parents[1] / "data" / "structures"
 DNMT3A = FIXTURES / "dnmt3a.pdb"
@@ -953,3 +953,91 @@ class TestBatchEngine:
     def test_unknown_engine_is_refused(self) -> None:
         with pytest.raises(ValueError, match="Unknown engine"):
             rebuild(DNMT3A, engine="nonsense", seed=0, progress=False)
+
+
+#: (introduced-clash ceiling, strained-seam ceiling) per fixture, engine=walk, seed 0. A ratchet
+#: for :class:`TestBackboneBaseline` -- these only ever move DOWN as the backbone redo improves.
+_BACKBONE_BASELINE: dict[str, tuple[int, int]] = {
+    "dnmt3a": (2, 4),
+    "arf19": (0, 6),
+    "p300": (4, 10),
+}
+
+
+class TestBackboneBaseline:
+    """Frozen 2026-08 baseline for ``--backbone`` quality on the committed corpus (BB-0 floor).
+
+    The analytic backbone currently leaves introduced steric clashes and strained seams. The
+    ceilings below are the measured baseline and are **ratchets**: they may only ever move DOWN as
+    the backbone redo (BB-1 clashes, BB-2 seams) improves them. Raising one to make a change pass
+    hides a regression -- fix the change instead. Impossible contacts are a hard invariant, never a
+    ratchet. This also guards BB-0's own deliverable: that strained seams are surfaced on the
+    report rather than left for the validator to rediscover.
+    """
+
+    def _check(self, name: str) -> None:
+        from dodo.construct.ca_backbone import SeamStrain
+
+        source = FIXTURES / f"{name}.pdb"
+        clash_ceiling, seam_ceiling = _BACKBONE_BASELINE[name]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ca = rebuild(source, seed=0, progress=False)
+            bb = rebuild(source, backbone=True, seed=0, progress=False)
+        ca_model, bb_model = ca.models[0], bb.models[0]
+
+        # Hard invariant, never a ratchet: the backbone introduces nothing physically impossible.
+        assert not find_impossible_pairs(bb_model), (
+            f"{name}: --backbone introduced an impossible contact"
+        )
+
+        # Introduced steric clashes must not exceed the frozen baseline (ratchet -- down only).
+        introduced = len(validate_clashes(bb_model).violations) - len(
+            validate_clashes(ca_model).violations
+        )
+        assert introduced <= clash_ceiling, (
+            f"{name}: {introduced} introduced clashes exceeds the baseline ceiling "
+            f"{clash_ceiling}. This ratchet only moves down; fix the change, do not raise it."
+        )
+
+        # Interior rebuilt bonds stay exact: every rebuilt-provenance bond violation is a seam
+        # chain_break, never a wrong-length interior bond.
+        rebuilt = [v for v in validate_bonds(bb_model).violations if v.provenance == "rebuilt"]
+        assert all(v.kind == "chain_break" for v in rebuilt), (
+            f"{name}: a rebuilt interior bond is the wrong length: "
+            + "; ".join(v.message for v in rebuilt if v.kind != "chain_break")
+        )
+
+        # BB-0 deliverable: strained seams are surfaced on the report, typed, within baseline, and
+        # match the chain_breaks the validator sees independently. CA-only placement strains none.
+        assert len(bb.backbone_seams) <= seam_ceiling
+        assert all(isinstance(s, SeamStrain) for s in bb.backbone_seams)
+        assert len(rebuilt) == len(bb.backbone_seams)
+        assert not ca.backbone_seams
+
+    @pytest.mark.parametrize("name", ["dnmt3a", "arf19"])
+    def test_backbone_quality_is_within_the_frozen_baseline(self, name: str) -> None:
+        self._check(name)
+
+    def test_the_joint_clash_polish_earns_its_place(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Stubbing out the coupled-clash polish must make the output measurably worse.
+
+        Guards against the polish silently no-op'ing: single-azimuth refinement alone leaves 9
+        introduced clashes on dnmt3a; the joint polish takes that to 2.
+        """
+        import dodo.construct.ca_backbone as ca_backbone
+
+        source = FIXTURES / "dnmt3a.pdb"
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with monkeypatch.context() as patch:
+                patch.setattr(ca_backbone, "_polish_coupled_clashes", lambda *a, **k: 0)
+                unpolished = rebuild(source, backbone=True, seed=0, progress=False).models[0]
+            polished = rebuild(source, backbone=True, seed=0, progress=False).models[0]
+        without = len(validate_clashes(unpolished).violations)
+        with_polish = len(validate_clashes(polished).violations)
+        assert with_polish < without, f"polish did not reduce clashes: {without} -> {with_polish}"
+
+    @pytest.mark.slow
+    def test_backbone_quality_is_within_the_frozen_baseline_p300(self) -> None:
+        self._check("p300")

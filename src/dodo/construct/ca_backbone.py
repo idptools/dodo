@@ -68,7 +68,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import numpy as np
 
@@ -86,7 +86,9 @@ if TYPE_CHECKING:  # pragma: no cover
     from ..structure import Structure
 
 __all__ = [
+    "BackboneResult",
     "CABackboneResult",
+    "SeamStrain",
     "add_backbone_to_rebuilt",
     "backbone_from_ca",
 ]
@@ -176,6 +178,52 @@ class CABackboneResult:
     o_xyz: np.ndarray
     source: tuple[str, ...]
     notes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SeamStrain:
+    """A seam peptide bond that could not be satisfied, so was left long and reported.
+
+    Where a rebuilt region meets a residue DODO did not rebuild, the peptide bond crosses from an
+    atom this pass placed to one that was already there. When the fixed neighbour -- part of a
+    folded domain moved rigidly in step 3 -- sits farther than the ``2.854 A`` a peptide unit can
+    bridge, no placement satisfies both bonds, so the atom is aimed as close as the residue's own
+    N-CA-C angle allows and the bond is left long. This records that it happened, on the residue it
+    happened to, so a caller can surface it rather than leaving the validator to rediscover it.
+
+    Attributes
+    ----------
+    residue
+        0-based index of the rebuilt boundary residue whose placed atom was strained.
+    side
+        ``"C"`` -- this residue's carbon reaching the next residue's nitrogen -- or ``"N"`` -- this
+        residue's nitrogen reaching the previous residue's carbon.
+    bond_length
+        The resulting peptide-bond length, in Angstroms; ideal is
+        :data:`~dodo.constants.C_N_PEPTIDE_BOND_LENGTH` (1.329).
+    """
+
+    residue: int
+    side: str
+    bond_length: float
+
+
+@dataclass(frozen=True, slots=True)
+class BackboneResult:
+    """What :func:`add_backbone_to_rebuilt` produced: the structure and what it could not close.
+
+    Attributes
+    ----------
+    structure
+        The rebuilt structure with N, C and O placed on every rebuilt region; folded domains are
+        returned exactly as they arrived.
+    strained_seams
+        Every seam left with a long peptide bond, in residue order. Empty when every seam closed --
+        always the case for a from-sequence build, which has no folded domains to seam against.
+    """
+
+    structure: Structure
+    strained_seams: tuple[SeamStrain, ...] = ()
 
 
 def _unit(v: np.ndarray) -> np.ndarray:
@@ -420,11 +468,16 @@ def _backbone_atoms(
 
     # Reference axis fixing each frame's peptide plane. Past the first unit it is the incoming CA-CA
     # bond; the first unit has no predecessor, so it looks forward (or, for a two-residue chain with
-    # nothing to look at, to a fixed axis) -- matching the scalar path's three frame cases.
+    # nothing to look at, to a fixed axis).
     reference = np.empty_like(along)
     if units >= 2:
         reference[..., 1:, :] = ca[..., 1:units, :] - ca[..., : units - 1, :]
-    reference[..., 0, :] = ca[..., 2, :] - ca[..., 1, :] if n >= 3 else _Z_AXIS
+    # ca[1] - ca[2], NOT ca[2] - ca[1]. The forward marginal (_C/_N_FORWARD_MARGINAL) was MEASURED
+    # in the frame this sign builds -- verified by re-deriving it in scripts/derive_peptide_table.py
+    # -- and the frame's z is cross(reference, along), so the opposite sign flips z (and y) and
+    # mis-places the first peptide unit of every region: measured C error 1.06 A against the 0.31 A
+    # the marginal delivers in its own frame. Do not "simplify" this to ca[2] - ca[1].
+    reference[..., 0, :] = ca[..., 1, :] - ca[..., 2, :] if n >= 3 else _Z_AXIS
 
     # Predictor per unit, fixed by position: interior units have all four CAs and use the table; the
     # last uses the trailing marginal; the first uses the leading one.
@@ -668,12 +721,224 @@ def _seam_obstacles(structure: Structure, residues: Iterable[int]) -> np.ndarray
     return np.asarray(collected, dtype=np.float64)
 
 
+def _polish_coupled_clashes(
+    placed: dict[int, dict[str, np.ndarray]],
+    structure: Structure,
+    generated: list[tuple[int, int]],
+    *,
+    rounds: int = 8,
+    grid: int = 25,
+    angle_window: tuple[float, float] = (80.0, 160.0),
+) -> int:
+    """Clear steric clashes coupled between two movable peptide units. Modifies ``placed``.
+
+    The per-unit refinement (:func:`~dodo.construct.backbone_refine.refine_backbone`) moves one
+    azimuth at a time, so a clash coupled between two movable units -- where clearing it by rotating
+    either one alone makes another contact worse -- sits at a local minimum that more sweeps cannot
+    escape (measured: 200 sweeps leaves the same clashes as 30, a wide window barely helps). For
+    each residual clash this jointly searches the azimuths of the one or two *interior* units (both
+    flanking alpha carbons rebuilt, so only rebuilt atoms move -- never a folded-domain or seam
+    atom) that place the clashing atoms, keeping any combination that lowers the total van der Waals
+    overlap without pushing a moved residue's N-CA-C angle out of ``angle_window``.
+
+    The overlap and its element limits are the validator's own
+    (:func:`~dodo.validate.clashes.contact_limit` constants), and only pairs more than one residue
+    apart are scored -- consecutive-residue contacts are backbone bonds or their 1-3/1-4 neighbours,
+    and seam contacts belong to a different problem. Returns the number of joint moves applied.
+    """
+    from scipy.spatial import cKDTree
+
+    from ..validate.clashes import (
+        ALLOWED_OVERLAP,
+        DEFAULT_VDW_RADIUS,
+        HBOND_ALLOWED_OVERLAP,
+        POLAR_ELEMENTS,
+        VDW_RADII,
+    )
+    from .backbone_refine import _angle, _azimuth_frame, _place_oxygen, _place_unit
+
+    rebuilt: set[int] = set()
+    for start, stop in generated:
+        rebuilt.update(range(start, stop))
+    ca = structure.ca_xyz
+    n_res = structure.n_residues
+    units = [
+        u
+        for u in range(n_res - 1)
+        if u in rebuilt and (u + 1) in rebuilt and u in placed and (u + 1) in placed
+    ]
+    if not units:
+        return 0
+    unit_set = set(units)
+
+    azimuth: dict[int, float] = {}
+    for u in units:
+        axis, first, second = _azimuth_frame(ca[u], ca[u + 1])
+        offset = placed[u]["C"] - ca[u]
+        radial = offset - float(np.dot(offset, axis)) * axis
+        azimuth[u] = float(
+            np.degrees(np.arctan2(float(np.dot(radial, second)), float(np.dot(radial, first))))
+        )
+
+    def limit(ea: str, eb: str) -> float:
+        ra = VDW_RADII.get(ea, DEFAULT_VDW_RADIUS)
+        rb = VDW_RADII.get(eb, DEFAULT_VDW_RADIUS)
+        both_polar = ea in POLAR_ELEMENTS and eb in POLAR_ELEMENTS
+        return ra + rb - (HBOND_ALLOWED_OVERLAP if both_polar else ALLOWED_OVERLAP)
+
+    query_r = 2.0 * max(VDW_RADII.get(e, DEFAULT_VDW_RADIUS) for e in ("C", "N", "O", "S"))
+
+    # The whole atom cloud: every fixed atom (folded residues all-atom + rebuilt alpha carbons --
+    # exactly what structure.xyz holds while rebuilt regions are CA-only) plus the placed N/C/O.
+    fixed_xyz = np.asarray(structure.xyz, dtype=np.float64)
+    fixed_res = np.asarray(structure.residue_index)
+    fixed_elem = np.array([str(e).upper() for e in structure.element], dtype=object)
+    mov_keys = [
+        (r, nm)
+        for r in sorted(rebuilt)
+        if r in placed
+        for nm in ("N", "C", "O")
+        if nm in placed[r]  # a seam atom may have been omitted as unsatisfiable
+    ]
+    row = {key: len(fixed_xyz) + i for i, key in enumerate(mov_keys)}
+    all_xyz = np.vstack([fixed_xyz, np.array([placed[r][nm] for r, nm in mov_keys])])
+    all_res = np.concatenate([fixed_res, np.array([r for r, _ in mov_keys], dtype=fixed_res.dtype)])
+    all_elem = np.concatenate([fixed_elem, np.array([nm for _, nm in mov_keys], dtype=object)])
+
+    def unit_of(index: int) -> int | None:
+        if index < len(fixed_xyz):
+            return None  # a fixed atom -- folded, or a rebuilt CA -- never moves
+        r, nm = mov_keys[index - len(fixed_xyz)]
+        u = r - 1 if nm == "N" else r
+        return u if u in unit_set else None
+
+    def place_into(u: int, azimuth_deg: float, target: np.ndarray) -> None:
+        c, n_next = _place_unit(ca[u], ca[u + 1], azimuth_deg)
+        target[row[(u, "C")]] = c
+        target[row[(u + 1, "N")]] = n_next
+        target[row[(u, "O")]] = _place_oxygen(ca[u], c, n_next)
+
+    lo, hi = angle_window
+
+    def angle_ok(u: int, positions: np.ndarray) -> bool:
+        # Moving unit u sets residue u's C and residue u+1's N; check the N-CA-C at both, using the
+        # N and C the move does not touch (placed by the neighbouring units, held fixed here). A
+        # residue whose N or C was omitted at a seam has no angle to check, so it is skipped.
+        for res in (u, u + 1):
+            if (res, "N") in row and (res, "C") in row:
+                angle = _angle(positions[row[(res, "N")]], ca[res], positions[row[(res, "C")]])
+                if not lo <= angle <= hi:
+                    return False
+        return True
+
+    def overlap(
+        moved_rows: list[int],
+        positions: np.ndarray,
+        tree: Any,
+        txyz: np.ndarray,
+        tres: np.ndarray,
+        telem: np.ndarray,
+    ) -> float:
+        total = 0.0
+        for r_idx in moved_rows:
+            point = positions[r_idx]
+            residue = int(all_res[r_idx])
+            element = str(all_elem[r_idx])
+            for j in tree.query_ball_point(point, query_r):
+                if abs(int(tres[j]) - residue) <= 1:
+                    continue
+                distance = float(np.linalg.norm(point - txyz[j]))
+                headroom = limit(element, str(telem[j])) - distance
+                if headroom > 0.0:
+                    total += headroom
+        # Overlap AMONG the moved atoms themselves -- excluded from the static tree, but it is
+        # exactly the clash a two-unit joint search is trying to clear (an atom of one moved unit
+        # against an atom of the other), so it has to be counted or the search is blind to it.
+        for a_pos in range(len(moved_rows)):
+            for b_pos in range(a_pos + 1, len(moved_rows)):
+                ia, ib = moved_rows[a_pos], moved_rows[b_pos]
+                if abs(int(all_res[ia]) - int(all_res[ib])) <= 1:
+                    continue
+                distance = float(np.linalg.norm(positions[ia] - positions[ib]))
+                headroom = limit(str(all_elem[ia]), str(all_elem[ib])) - distance
+                if headroom > 0.0:
+                    total += headroom
+        return total
+
+    def try_polish(unit_group: tuple[int, ...]) -> bool:
+        moved = [r for u in unit_group for r in (row[(u, "C")], row[(u + 1, "N")], row[(u, "O")])]
+        static = np.ones(len(all_xyz), dtype=bool)
+        static[moved] = False
+        txyz, tres, telem = all_xyz[static], all_res[static], all_elem[static]
+        tree = cKDTree(txyz)
+        base = overlap(moved, all_xyz, tree, txyz, tres, telem)
+        if base <= 1e-9:
+            return False
+        trial = all_xyz.copy()
+        grid_offsets = np.linspace(-180.0, 180.0, grid)
+        best = base
+        best_choice: tuple[float, ...] | None = None
+
+        def descend(depth: int, choice: tuple[float, ...]) -> None:
+            nonlocal best, best_choice
+            u = unit_group[depth]
+            for delta in grid_offsets:
+                z = azimuth[u] + float(delta)
+                place_into(u, z, trial)
+                if not angle_ok(u, trial):
+                    continue
+                if depth + 1 < len(unit_group):
+                    descend(depth + 1, (*choice, z))
+                else:
+                    value = overlap(moved, trial, tree, txyz, tres, telem)
+                    if value < best - 1e-9:
+                        best = value
+                        best_choice = (*choice, z)
+
+        descend(0, ())
+        if best_choice is None:
+            return False
+        for u, z in zip(unit_group, best_choice, strict=True):
+            place_into(u, z, all_xyz)
+            azimuth[u] = ((z + 180.0) % 360.0) - 180.0
+        return True
+
+    moves = 0
+    for _ in range(rounds):
+        tree = cKDTree(all_xyz)
+        groups: set[tuple[int, ...]] = set()
+        for i, j in tree.query_pairs(query_r, output_type="ndarray"):
+            if abs(int(all_res[i]) - int(all_res[j])) <= 1:
+                continue
+            distance = float(np.linalg.norm(all_xyz[i] - all_xyz[j]))
+            if distance >= limit(str(all_elem[i]), str(all_elem[j])):
+                continue
+            involved = tuple(sorted({u for u in (unit_of(i), unit_of(j)) if u is not None}))
+            if involved:
+                groups.add(involved)
+        if not groups:
+            break
+        applied = False
+        for group in groups:
+            if try_polish(group):
+                applied = True
+                moves += 1
+        if not applied:
+            break
+
+    for u in units:
+        placed[u]["C"] = all_xyz[row[(u, "C")]].copy()
+        placed[u + 1]["N"] = all_xyz[row[(u + 1, "N")]].copy()
+        placed[u]["O"] = all_xyz[row[(u, "O")]].copy()
+    return moves
+
+
 def add_backbone_to_rebuilt(
     structure: Structure,
     *,
     refine: bool = True,
     on_region_done: Callable[[int], None] | None = None,
-) -> Structure:
+) -> BackboneResult:
     """Return a copy with N, C and O placed on the regions DODO rebuilt.
 
     Only the rebuilt regions gain atoms. Folded domains are returned exactly as they arrived,
@@ -699,8 +964,10 @@ def add_backbone_to_rebuilt(
 
     Returns
     -------
-    Structure
-        A new structure. The input is not modified.
+    BackboneResult
+        The new structure (the input is not modified) plus every seam left with a strained
+        peptide bond, so the caller can report what could not be closed rather than leaving the
+        validator to rediscover it.
     """
     from ..structure import Structure
 
@@ -709,7 +976,7 @@ def add_backbone_to_rebuilt(
         for span in domain.generated_spans():
             generated.append((span.start, span.stop))
     if not generated:
-        return structure
+        return BackboneResult(structure=structure)
 
     # Everything DODO did not generate: folded domains, and any region whose build failed and so
     # still holds its input coordinates. Also every alpha carbon, including the generated ones,
@@ -723,7 +990,7 @@ def add_backbone_to_rebuilt(
     obstacle_blocks = [inherited, structure.ca_xyz]
 
     placed: dict[int, dict[str, np.ndarray]] = {}
-    seams_strained: list[int] = []
+    strained: list[SeamStrain] = []
     for start, stop in generated:
         ca = structure.ca_xyz[start:stop]
         if ca.shape[0] < 2 or not np.all(np.isfinite(ca)):
@@ -782,16 +1049,17 @@ def add_backbone_to_rebuilt(
                         prefer=neighbour_n,
                         avoid=_seam_obstacles(structure, (stop, stop + 1)),
                     )
-                    seams_strained.append(stop - 1)
+                    strained.append(
+                        SeamStrain(
+                            residue=stop - 1,
+                            side="C",
+                            bond_length=float(np.linalg.norm(seam - neighbour_n)),
+                        )
+                    )
                 placed[stop - 1]["C"] = seam
-                # The usual carbonyl construction, strained seam or not. It needs the CA-C-N plane
-                # to be defined, and it now always is: the old fallback aimed C straight at the
-                # neighbour's N, which made the three collinear and sent the construction to an
-                # arbitrary axis (measured: O 0.6 A from its own alpha carbon on p300), but
-                # _closest_on_angle_cone places C off that axis. Using it here matters because it
-                # puts O *trans* to the neighbour's nitrogen by construction; the terminus-style
-                # fallback that replaced it did not know the neighbour existed, and on dnmt3a it
-                # left SER393's O 0.975 A from ASP394's N.
+                # The carbonyl needs the CA-C-N plane, which the two-spheres C (or the cone
+                # fallback) makes well-defined -- it sits off the CA->N axis -- so O lands *trans*
+                # to the neighbour's nitrogen rather than on an arbitrary axis.
                 placed[stop - 1]["O"] = _place_carbonyl_oxygen(anchor_ca, seam, neighbour_n)
         if start > 0:
             neighbour_c = _existing_atom(structure, start - 1, "C")
@@ -815,8 +1083,21 @@ def add_backbone_to_rebuilt(
                         prefer=neighbour_c,
                         avoid=_seam_obstacles(structure, (start - 1, start - 2)),
                     )
-                    seams_strained.append(start)
+                    strained.append(
+                        SeamStrain(
+                            residue=start,
+                            side="N",
+                            bond_length=float(np.linalg.norm(seam - neighbour_c)),
+                        )
+                    )
                 placed[start]["N"] = seam
+
+    # With every region placed and the seams reconciled, clear the steric clashes the per-region
+    # refinement leaves behind -- the ones coupled between two movable units, which single-azimuth
+    # descent cannot escape. Done here, over the whole assembled structure, so a clash between two
+    # different rebuilt regions is visible where a per-region pass could not see it.
+    if refine:
+        _polish_coupled_clashes(placed, structure, generated)
 
     # Rebuild the flat atom records, inserting N before and C, O after each rebuilt CA so the
     # output keeps the conventional N-CA-C-O order within a residue.
@@ -929,4 +1210,4 @@ def add_backbone_to_rebuilt(
             replace(domain, structure=rebuilt, rebuilt_loops=set(domain.rebuilt_loops))
             for domain in source_chain.domains
         ]
-    return rebuilt
+    return BackboneResult(structure=rebuilt, strained_seams=tuple(strained))

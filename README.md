@@ -470,13 +470,18 @@ residues:
 | C | 0.22 Å | 0.14 Å |
 | O | 0.63 Å | 0.40 Å |
 
+The table is reproducible, not a set of magic numbers: `scripts/derive_peptide_table.py` re-derives
+it exactly from the committed frames in `tests/data/backbone/`, and `tests/unit/test_backbone_table.py`
+pins that regeneration and the placement accuracy in CI.
+
 Every bond length inside a rebuilt region is exact by construction. Side chains are still not built.
 
 It is opt-in because of the **seams**. Where a rebuilt region meets a folded domain, that domain's
 nitrogen still points toward where the region ran in AlphaFold's model, and folded-domain atoms are
 not DODO's to move. A peptide unit reaches at most 2.854 Å from an alpha carbon to the nitrogen it
-bonds to; a rebuilt alpha carbon measures 3.2–4.5 Å from it across 17 seams in three structures. The
-bond is unsatisfiable, so DODO leaves it long — about 2.2 Å against an ideal 1.33 — and reports it.
+bonds to; a rebuilt alpha carbon measures well beyond that from it. The bond is unsatisfiable, so
+DODO aims the atom as close as the residue's own N–CA–C angle allows and leaves the bond long —
+measured 2.6–3.7 Å against an ideal 1.33 (mean ~3.0) — and reports it.
 Nothing impossible is written: measured over three structures at three seeds, `--backbone`
 introduces zero atom pairs closer than the 1.00 Å floor below which no real bond exists.
 

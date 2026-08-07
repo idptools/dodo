@@ -34,6 +34,7 @@ import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -52,6 +53,9 @@ from ..regions.identify import RegionAssignment, Strategy, assign_regions
 from ..structure import Domain, DomainKind, Span, Structure
 from .dimensions import DimensionTarget, target_dimensions
 from .place import DomainPlacement, reposition_folded_domains
+
+if TYPE_CHECKING:
+    from .ca_backbone import SeamStrain
 
 __all__ = [
     "RebuildReport",
@@ -128,6 +132,13 @@ class RebuildReport:
     #: rebuilt, so this records position and orientation changes only.
     placements: list[DomainPlacement] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    #: Seams left with a strained (over-long) peptide bond when ``backbone=True``, one entry per
+    #: model per seam. Empty when no backbone was placed or every seam closed. A strained seam is
+    #: geometric, not a bug: the folded neighbour was moved rigidly for the CA target and sits
+    #: farther than a peptide unit can bridge, so the bond is aimed as close as possible and
+    #: reported here rather than silently written long. See
+    #: :class:`~dodo.construct.ca_backbone.SeamStrain`.
+    backbone_seams: list[SeamStrain] = field(default_factory=list)
 
     @property
     def failures(self) -> list[RegionOutcome]:
@@ -200,6 +211,17 @@ class RebuildReport:
                 f"  {len(relaxed)} region(s) needed a relaxed anchor exemption to be buildable:"
             )
             lines += [f"    {o}" for o in relaxed]
+        # Backbone seams that could not be closed. Reported per distinct boundary residue rather
+        # than per model, so a 10-model run of the same structure does not read as ten times the
+        # seams. This is where a backbone=True run tells the user what it left long.
+        if self.backbone_seams:
+            residues = {s.residue for s in self.backbone_seams}
+            worst = max(s.bond_length for s in self.backbone_seams)
+            lines.append(
+                f"  {len(residues)} backbone seam(s) left with a strained peptide bond "
+                f"(worst {worst:.2f} A vs 1.33 A ideal): the folded neighbour was too far to bond "
+                f"to after repositioning, so the bond is aimed as close as possible and left long."
+            )
         lines += [f"  note: {n}" for n in self.notes]
         return "\n".join(lines)
 
@@ -889,7 +911,9 @@ def rebuild(
                 tracker.advance(residues)
 
             tracker.describe("placing backbone")
-            final = add_backbone_to_rebuilt(final, on_region_done=note)
+            placed = add_backbone_to_rebuilt(final, on_region_done=note)
+            final = placed.structure
+            report.backbone_seams.extend(placed.strained_seams)
             tracker.describe("rebuilding")
         report.models.append(final)
         tracker.next_model(model_number, n_models)
@@ -993,7 +1017,12 @@ def build_from_sequence(
             if backbone:
                 from .ca_backbone import add_backbone_to_rebuilt
 
-                structure = add_backbone_to_rebuilt(structure)
+                # A from-sequence build is one all-IDR chain with no folded domains, so there is
+                # no seam to strain; strained_seams is always empty here, but thread it through
+                # for symmetry rather than assuming so.
+                placed = add_backbone_to_rebuilt(structure)
+                structure = placed.structure
+                report.backbone_seams.extend(placed.strained_seams)
             report.models.append(structure)
 
         report.outcomes.append(

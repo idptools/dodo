@@ -123,8 +123,33 @@ current output lies by omission.
     them without touching the numpy/numba refinement or its equivalence tests.
   - Follow-up (open): 3-way / cluster moves for the few remaining both-movable p300 clusters.
 
-## Phase BB-2 — Solve the seam (the first-class blocker)  ⏳ SCOPED — needs a focused effort (2026-08-07)
-The crux of "first-class", and the two easy roads were tried and rejected on evidence:
+## Phase BB-2 — Solve the seam (the first-class blocker)  ⏳ IN PROGRESS (2026-08-07)
+
+**Reframed by a 4-approach exploration (measured on the corpus):** the seam is a *seam-blind
+selection* problem, not a geometry impossibility. The walk's closure picks the terminal CA on its
+circle by pseudo-angle alone, blind to the folded N; every strained C-side seam is actually closable
+by 15-46% of conformers, and even the "impossible" p300 case closes in 19%. Domain-rotation (root
+cause) is a dead end (interior domains are doubly-anchored → one rotation drags the other IDR's
+anchor 3.5-86 Å, up to 161 clashes, non-convergent). Multi-CA CCD reaches 100% but kinks the
+pseudo-angles (41-79° vs the 91° floor) and rewrites the deterministic endgame — fallback only.
+**Chosen solution: D (seam-aware closure) + C (honest validator reframe).**
+
+- ✅ **C — validator reframe DONE (2026-08-07).** A long C-N across a generated↔input boundary is no
+  longer a `chain_break` blamed on `"rebuilt"`; it is `kind="seam"`/`provenance="seam"` (validate/
+  bonds.py) — reported, not counted against `ok`, not attributed to the rebuild (its strain is
+  inherited from the rigidly-repositioned folded N). Result: `--backbone` introduces **0
+  rebuilt-provenance bond violations** on the corpus (seams: dnmt3a 4, arf19 6, p300 10, all now
+  "seam"; arf19 reaches `ok=True`, dnmt3a/p300 `ok=False` only from inherited *input* defects — the
+  same differential-clean bar the CA path meets). +safety test: the identical geometry read back
+  without region info is a `chain_break`, so a real break in non-DODO input is never masked. Zero
+  engine risk; full suite 1548 passed.
+- ⏳ **D — seam-aware closure (next).** Make `_close` prefer the closure-circle azimuth nearest the
+  folded N, under the existing hard angle filter (thread the folded N through `IDRRequest`), so most
+  of the ~73% reachable seams become real short bonds instead of "seam" long bonds. Bit-identical
+  when no seam target is supplied. Combined with multi-conformer generation, closure is a
+  high-probability event. Residual unreachable seams keep the honest "seam" label from C.
+
+Evidence trail for the rejected/earlier roads:
 
 - **BB-2a — honest omission: TRIED, REVERTED.** Omitting the unsatisfiable seam atom (C+O / N)
   does remove the impossible long bond (chain_break → 0), but it (1) does NOT reach

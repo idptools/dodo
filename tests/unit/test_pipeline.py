@@ -1000,24 +1000,52 @@ class TestBackboneBaseline:
             f"{clash_ceiling}. This ratchet only moves down; fix the change, do not raise it."
         )
 
-        # Interior rebuilt bonds stay exact: every rebuilt-provenance bond violation is a seam
-        # chain_break, never a wrong-length interior bond.
-        rebuilt = [v for v in validate_bonds(bb_model).violations if v.provenance == "rebuilt"]
-        assert all(v.kind == "chain_break" for v in rebuilt), (
-            f"{name}: a rebuilt interior bond is the wrong length: "
-            + "; ".join(v.message for v in rebuilt if v.kind != "chain_break")
+        # The rebuild introduces ZERO bond defects. The unavoidable seam bonds are reclassified as
+        # kind="seam"/provenance="seam" (approximate by construction, inherited from the
+        # rigidly-repositioned folded neighbour), so nothing is attributed to "rebuilt" -- the same
+        # differential-clean bar the CA-only path already meets.
+        bond_report = validate_bonds(bb_model)
+        assert not bond_report.of_provenance("rebuilt"), (
+            f"{name}: rebuild introduced a bond defect: "
+            + "; ".join(v.message for v in bond_report.of_provenance("rebuilt"))
         )
-
-        # BB-0 deliverable: strained seams are surfaced on the report, typed, within baseline, and
-        # match the chain_breaks the validator sees independently. CA-only placement strains none.
-        assert len(bb.backbone_seams) <= seam_ceiling
+        # The seams the validator independently sees (kind="seam") match the seams the report
+        # records; both are within baseline and typed. CA-only placement strains no seam.
+        assert len(bond_report.of_kind("seam")) == len(bb.backbone_seams)
         assert all(isinstance(s, SeamStrain) for s in bb.backbone_seams)
-        assert len(rebuilt) == len(bb.backbone_seams)
+        assert len(bb.backbone_seams) <= seam_ceiling
         assert not ca.backbone_seams
 
     @pytest.mark.parametrize("name", ["dnmt3a", "arf19"])
     def test_backbone_quality_is_within_the_frozen_baseline(self, name: str) -> None:
         self._check(name)
+
+    def test_seam_reclassification_needs_the_generated_boundary(self, tmp_path: Path) -> None:
+        """The 'seam' exemption must not mask a real chain break in non-DODO input.
+
+        The rebuilt structure labels its unclosable seams kind='seam' (not counted against ok). The
+        IDENTICAL geometry, written out and read back as a plain PDB with no region assignments,
+        must instead be chain_breaks -- proving the exemption keys strictly on the
+        generated<->input boundary and cannot silently accept a genuine break.
+        """
+        import dodo
+
+        source = FIXTURES / "dnmt3a.pdb"
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            report = rebuild(source, seed=0, backbone=True)
+        with_regions = validate_bonds(report.models[0])
+        seams = with_regions.of_kind("seam")
+        assert seams, "expected the rebuilt structure to carry labelled seams"
+
+        out = tmp_path / "backbone.pdb"
+        dodo.write_pdb(report.models, out)
+        bare = read_structure(out)  # a fresh read carries no generated spans
+        without = validate_bonds(bare)
+        assert not without.of_kind("seam"), "a region-less structure must not get the exemption"
+        assert len(without.of_kind("chain_break")) >= len(seams), (
+            "the same long C-N bonds must read back as honest chain_breaks without region info"
+        )
 
     def test_the_joint_clash_polish_earns_its_place(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Stubbing out the coupled-clash polish must make the output measurably worse.

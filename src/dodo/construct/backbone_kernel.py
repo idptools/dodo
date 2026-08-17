@@ -109,6 +109,13 @@ C_O = 1.231
 ACO = math.radians(120.8)
 NCAC = 111.0
 BIN = 30.0
+# Hard N-CA-C window (dodo.constants.N_CA_C_WINDOW_MIN/MAX; a test pins the copies equal). The
+# penalty is a step, not a slope: it only has to dominate any clash saving a candidate could buy
+# by collapsing the angle -- the worst plausible clash sum is a few thousand -- so that the
+# argmin never picks an angle the bond validator would flag as two atoms on top of each other.
+ANGLE_LO = 80.0
+ANGLE_HI = 160.0
+ANGLE_PENALTY = 1.0e5
 
 
 @nb.njit(cache=True, fastmath=False, inline="always")
@@ -306,6 +313,8 @@ def _unit_value(
             Cz,
         )
         val += angle_w * (a - NCAC) * (a - NCAC)
+        if a < ANGLE_LO or a > ANGLE_HI:
+            val += ANGLE_PENALTY
         phi = _dihedral(
             c_live[unit - 1, 0],
             c_live[unit - 1, 1],
@@ -359,6 +368,8 @@ def _unit_value(
             c_live[unit + 1, 2],
         )
         val += angle_w * (a - NCAC) * (a - NCAC)
+        if a < ANGLE_LO or a > ANGLE_HI:
+            val += ANGLE_PENALTY
         phi = _dihedral(
             Cx,
             Cy,
@@ -546,14 +557,19 @@ def sweep_region(  # noqa: D103 - documented at module level; njit rejects a doc
     return swept, largest
 
 
-#: Neighbours retained per movable atom. MEASURED over EVERY clash call of a full p300 rebuild
-#: (222 calls, 67,791 centres, all six regions, against the real obstacle set): the kept sets run to
-#: a median of 3 and a **maximum of 41**, and the count inside the clash shell before the covalent
-#: separation filter peaks at **43**. So the headroom is 5 points, not the 33 that an earlier
-#: single-region measurement suggested -- do not lower this number. Padding beyond the real count is
-#: harmless (the slots point at :data:`_PAD_COORDINATE`, whose clamped gap is exactly zero), but
-#: truncating below it would silently change the objective, so the cap is checked, never trusted.
-MAX_NEIGHBOURS: int = 48
+#: Neighbours retained per movable atom. MEASURED, twice. Over EVERY clash call of a full p300
+#: rebuild (222 calls, 67,791 centres, all six regions, against the real obstacle set) the kept
+#: sets run to a median of 3 and a maximum of 41, with the in-shell count before the covalent
+#: separation filter peaking at 43 -- which made 48 look like 5 points of headroom. Then the
+#: 117-structure corpus ran with the backbone ON (2026-08-13) and a crowded region of Q9C000 put
+#: **54** fixed atoms in one unit's shell, so 48 was an overflow crash on real input, not a margin.
+#: 96 is ~1.8x that new worst. The cost of the size is small and bounded: pad slots point at
+#: :data:`_PAD_COORDINATE`, whose clamped gap is exactly zero, so extra rows cost one distance
+#: computation each in the scan -- and the refinement is a single-digit share of ``--backbone``
+#: wall time. Truncating below the real count would silently change the objective, so the cap is
+#: checked, never trusted (:func:`_check_neighbour_cap`); a region that beats even this cap falls
+#: back to the capless numpy path rather than failing the rebuild (see ``refine_backbone``).
+MAX_NEIGHBOURS: int = 96
 
 #: Coordinate for a padded neighbour slot, in Angstroms. Far enough that it can never clash.
 _PAD_COORDINATE: float = 1.0e6

@@ -1004,7 +1004,7 @@ def test_whole_assembly_is_fast_enough() -> None:
 def rebuilt_dnmt3a() -> list[Structure]:
     import dodo
 
-    report = dodo.rebuild(DATA / "dnmt3a.pdb", n_models=2, seed=20240617)
+    report = dodo.rebuild(DATA / "dnmt3a.pdb", n_models=2, seed=20240617, backbone=False)
     assert report.ok, report.summary()
     return list(report.models)
 

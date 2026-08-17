@@ -17,11 +17,16 @@ import numpy as np
 import pytest
 
 from dodo.cli import main
-from dodo.constants import CA_CA_BOND_LENGTH
+from dodo.constants import (
+    C_O_BOND_LENGTH,
+    CA_C_BOND_LENGTH,
+    CA_CA_BOND_LENGTH,
+    N_CA_BOND_LENGTH,
+)
 from dodo.construct.pipeline import build_from_sequence, rebuild
 from dodo.geometry.metrics import end_to_end, validate_ca_trace
 from dodo.io import read_structure
-from dodo.structure import DomainKind
+from dodo.structure import DomainKind, Structure
 from dodo.validate import find_impossible_pairs, validate_bonds, validate_clashes
 
 FIXTURES = Path(__file__).resolve().parents[1] / "data" / "structures"
@@ -127,7 +132,7 @@ class TestRebuild:
         distance, which renders as a long spurious straight line, and the orphaned atoms trailed
         along the region's old path as disconnected dots.
         """
-        report = rebuild(DNMT3A, seed=0)
+        report = rebuild(DNMT3A, seed=0, backbone=False)
         structure = report.models[0]
         for domain in structure.domains:
             atoms = structure.atom_slice_for_residues(domain.span.start, domain.span.stop)
@@ -707,16 +712,21 @@ class TestMetapredictIsGone:
 
 
 class TestBackboneFlag:
-    """The opt-in ``backbone=`` flag on the two entry points.
+    """The ``backbone=`` flag on the two entry points, and its default.
 
-    Opt-in rather than default because of the seams: where a rebuilt region joins a residue DODO did
-    not touch, that residue's existing N or C still points toward where the region ran in the
-    *original* model, and folded-domain atoms are not DODO's to move. See
-    :meth:`test_folded_domains_keep_every_atom`.
+    On by default: the backbone is the point of a rebuild for most callers. ``backbone=False`` opts
+    back out to alpha carbons only. The one wrinkle it carries is the seams -- where a rebuilt
+    region joins a residue DODO did not touch, that residue's existing N or C still points toward
+    where the region ran in the *original* model, folded-domain atoms are not DODO's to move, so
+    the seam bond is left long and reported. See :meth:`test_folded_domains_keep_every_atom`.
     """
 
-    def test_off_by_default(self) -> None:
+    def test_on_by_default(self) -> None:
         report = build_from_sequence("GRNQNGGGYQNYNNQGYQGHGG", seed=0)
+        assert {str(n) for n in report.models[0].atom_name} == {"N", "CA", "C", "O"}
+
+    def test_off_when_opted_out(self) -> None:
+        report = build_from_sequence("GRNQNGGGYQNYNNQGYQGHGG", seed=0, backbone=False)
         assert {str(n) for n in report.models[0].atom_name} == {"CA"}
 
     def test_on_when_asked(self) -> None:
@@ -729,7 +739,7 @@ class TestBackboneFlag:
         Same seed, so the alpha carbons are the same coordinates to the bit. If this drifts, the
         backbone pass is perturbing the trace rather than decorating it.
         """
-        plain = build_from_sequence("GRNQNGGGYQNYNNQGYQGHGG", seed=0).models[0]
+        plain = build_from_sequence("GRNQNGGGYQNYNNQGYQGHGG", seed=0, backbone=False).models[0]
         with_backbone = build_from_sequence("GRNQNGGGYQNYNNQGYQGHGG", seed=0, backbone=True).models[
             0
         ]
@@ -982,7 +992,7 @@ class TestBackboneBaseline:
         clash_ceiling, seam_ceiling = _BACKBONE_BASELINE[name]
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ca = rebuild(source, seed=0, progress=False)
+            ca = rebuild(source, seed=0, backbone=False, progress=False)
             bb = rebuild(source, backbone=True, seed=0, progress=False)
         ca_model, bb_model = ca.models[0], bb.models[0]
 
@@ -1069,3 +1079,107 @@ class TestBackboneBaseline:
     @pytest.mark.slow
     def test_backbone_quality_is_within_the_frozen_baseline_p300(self) -> None:
         self._check("p300")
+
+
+def _rebuilt_residues(model: Structure) -> list[int]:
+    """Every residue index DODO rebuilt -- the union of the generated spans."""
+    return [
+        residue
+        for domain in model.domains
+        for span in domain.generated_spans()
+        for residue in range(span.start, span.stop)
+    ]
+
+
+def _atoms_by_name(model: Structure, residue: int) -> dict[str, np.ndarray]:
+    """Return the atoms of one residue keyed by atom name."""
+    atoms = model.atom_slice_for_residues(residue, residue + 1)
+    names = model.atom_name[atoms]
+    xyz = model.xyz[atoms]
+    return {str(name): xyz[i] for i, name in enumerate(names)}
+
+
+class TestBackboneIsFirstClass:
+    """First-class guarantees for ``--backbone``, at EVERY seed on EVERY committed fixture.
+
+    :class:`TestBackboneBaseline` pins the seed-0 clash and seam *ceilings*, which are seed-specific
+    ratchets. These are the guarantees that do not depend on the seed, so they must hold for every
+    conformer the feature will ever emit: it writes nothing physically impossible, every bond it
+    makes inside a rebuilt region is exact, every rebuilt residue gets a complete N/CA/C/O, the only
+    long bonds are the honestly-labelled seams, and the output is reproducible. A regression that
+    surfaced only at seed 1 would pass a seed-0 baseline untouched; this is what closes that gap.
+    """
+
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    @pytest.mark.parametrize("name", ["dnmt3a", "arf19"])
+    def test_first_class_invariants(self, name: str, seed: int) -> None:
+        self._check(name, seed)
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_first_class_invariants_p300(self, seed: int) -> None:
+        self._check("p300", seed)
+
+    def _check(self, name: str, seed: int) -> None:
+        from dodo.construct.ca_backbone import SeamStrain
+
+        source = FIXTURES / f"{name}.pdb"
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            report = rebuild(source, seed=seed, backbone=True, progress=False)
+        model = report.models[0]
+        rebuilt = _rebuilt_residues(model)
+        assert rebuilt, f"{name}: fixture has no rebuilt regions, so it proves nothing here"
+
+        # 1. Nothing physically impossible beyond what the input already contained -- a hard
+        #    invariant at every seed, never a ratchet.
+        inherited = {
+            (p.residue_labels, p.atom_names) for p in find_impossible_pairs(read_structure(source))
+        }
+        introduced = [
+            p
+            for p in find_impossible_pairs(model)
+            if (p.residue_labels, p.atom_names) not in inherited
+        ]
+        assert introduced == [], f"{name} seed {seed}: --backbone introduced {introduced}"
+
+        # 2. The rebuild introduces zero bond defects of its own. Seams are provenance="seam" and
+        #    excluded by design -- inherited strain from a rigidly repositioned neighbour, not a
+        #    defect DODO caused.
+        bonds = validate_bonds(model)
+        assert not bonds.of_provenance("rebuilt"), (
+            f"{name} seed {seed}: rebuilt-provenance bond defect: "
+            + "; ".join(v.message for v in bonds.of_provenance("rebuilt"))
+        )
+
+        # 3. Every rebuilt residue carries a COMPLETE N/CA/C/O backbone, and the three bonds one
+        #    residue determines are exact by construction. (The C-N peptide bond spans two residues;
+        #    where it is long that is a seam, covered by (2) and (4).)
+        for residue in rebuilt:
+            atoms = _atoms_by_name(model, residue)
+            missing = {"N", "CA", "C", "O"} - set(atoms)
+            assert not missing, (
+                f"{name} seed {seed}: rebuilt residue {residue} is missing {missing}"
+            )
+            for first, second, ideal, label in (
+                ("N", "CA", N_CA_BOND_LENGTH, "N-CA"),
+                ("CA", "C", CA_C_BOND_LENGTH, "CA-C"),
+                ("C", "O", C_O_BOND_LENGTH, "C-O"),
+            ):
+                bond = float(np.linalg.norm(atoms[first] - atoms[second]))
+                assert abs(bond - ideal) < 1e-6, (
+                    f"{name} seed {seed} residue {residue}: {label} bond {bond:.6f} A vs {ideal}"
+                )
+
+        # 4. The only long bonds are the seams, and every one the validator independently sees is
+        #    one the report recorded and typed -- the honest-labelling contract, held at every seed.
+        assert len(bonds.of_kind("seam")) == len(report.backbone_seams)
+        assert all(isinstance(s, SeamStrain) for s in report.backbone_seams)
+
+        # 5. Reproducible: the same seed yields byte-identical backbone atoms on a second run.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            again = rebuild(source, seed=seed, backbone=True, progress=False).models[0]
+        assert np.array_equal(model.xyz, again.xyz), (
+            f"{name} seed {seed}: --backbone output is not reproducible"
+        )

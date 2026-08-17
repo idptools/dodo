@@ -42,7 +42,7 @@ class TestInheritedFindings:
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            report = rebuild(DNMT3A, seed=0)
+            report = rebuild(DNMT3A, seed=0, backbone=False)
         result = validate_structure(report.models[0])
 
         assert result.bonds is not None
@@ -108,7 +108,7 @@ class TestInheritedFindings:
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            report = rebuild(DNMT3A, seed=0)
+            report = rebuild(DNMT3A, seed=0, backbone=False)
         path = tmp_path / "out.pdb"
         write_pdb(report.models[0], path)
 

@@ -68,7 +68,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Final
 
 import numpy as np
 
@@ -79,6 +79,8 @@ from ..constants import (
     CA_C_O_ANGLE,
     N_CA_BOND_LENGTH,
     N_CA_C_ANGLE,
+    N_CA_C_WINDOW_MAX,
+    N_CA_C_WINDOW_MIN,
 )
 from ..exceptions import GeometryError
 
@@ -660,11 +662,24 @@ def _place_on_cone(
     avoid: np.ndarray | None = None,
     clash: float = SEAM_CLASH_DISTANCE,
     samples: int = 48,
+    hard_avoid: np.ndarray | None = None,
+    hard_clash: float = 0.0,
+    oxygen_toward: np.ndarray | None = None,
 ) -> np.ndarray:
     """Place an atom at ``length`` from ``apex`` and ``angle_degrees`` off ``apex``->``reference``.
 
     That leaves exactly one free parameter -- the azimuth about the reference axis -- and this picks
     it. Collisions are ruled out first, then ``prefer`` is approached and ``depart`` is escaped.
+
+    ``hard_avoid``/``hard_clash`` is a second obstacle set with its own distance -- in practice a
+    wide shell of every structure atom near the seam, held to the impossible-separation floor,
+    where ``avoid`` stays the deliberately narrow neighbouring-residue set at the seam clash
+    distance. They are separate because widening ``avoid`` itself would add soft gradients from
+    atoms that were never a problem and shift seams that are currently fine. ``oxygen_toward``
+    additionally scores, for each candidate carbon, the carbonyl oxygen that candidate would induce
+    (:func:`_place_carbonyl_oxygen` toward that nitrogen) against ``hard_avoid`` -- because O is
+    fully determined by the chosen C, an O collision can only be avoided by choosing a different C,
+    which is exactly what this term makes the sweep do.
 
     This exists because the strained-seam fallback kept producing the same class of defect in a
     new place each time it was fixed by construction alone. Aiming the carbon straight at the
@@ -695,6 +710,15 @@ def _place_on_cone(
         gaps = np.linalg.norm(candidates[:, None, :] - avoid[None, :, :], axis=2)
         # A hard penalty, not a weighted term: a candidate that collides is not a candidate.
         score += 1e6 * np.square(np.clip(clash - gaps, 0.0, None)).sum(axis=1)
+    if hard_avoid is not None and hard_avoid.shape[0]:
+        gaps = np.linalg.norm(candidates[:, None, :] - hard_avoid[None, :, :], axis=2)
+        score += 1e6 * np.square(np.clip(hard_clash - gaps, 0.0, None)).sum(axis=1)
+        if oxygen_toward is not None:
+            induced = np.array(
+                [_place_carbonyl_oxygen(apex, c, oxygen_toward) for c in candidates]
+            )
+            gaps = np.linalg.norm(induced[:, None, :] - hard_avoid[None, :, :], axis=2)
+            score += 1e6 * np.square(np.clip(hard_clash - gaps, 0.0, None)).sum(axis=1)
     if prefer is not None:
         score += np.linalg.norm(candidates - prefer, axis=1)
     if depart is not None:
@@ -719,6 +743,40 @@ def _seam_obstacles(structure: Structure, residues: Iterable[int]) -> np.ndarray
     if not collected:
         return np.empty((0, 3))
     return np.asarray(collected, dtype=np.float64)
+
+
+def _would_overlap(point: np.ndarray, obstacles: np.ndarray, floor: float) -> bool:
+    """Report whether ``point`` lands within ``floor`` of any obstacle -- no bond is that short.
+
+    The exact two-sphere seam placement makes the peptide bond exact but is blind to every OTHER
+    atom, so it can drop the placed atom onto one: measured on PTBP2, a rebuilt N landed 0.797 A
+    from the folded residue's carbonyl oxygen. The atom the seam actually bonds to sits at the
+    bond length, comfortably above ``floor`` (:data:`IMPOSSIBLE_SEPARATION`, 1.00 A), so this
+    never rejects a good placement -- only one that would write something physically impossible,
+    which is then handed to the obstacle-avoiding cone instead.
+    """
+    if obstacles.shape[0] == 0:
+        return False
+    return bool(np.min(np.linalg.norm(obstacles - point, axis=1)) < floor)
+
+
+#: Radius, in A, of the shell of structure atoms a seam placement is vetoed against.
+#:
+#: DERIVED to be a superset. A seam carbon lies exactly ``CA_C_BOND_LENGTH`` (1.525 A) from its
+#: anchor CA, the carbonyl oxygen it induces at most ~2.44 A from it, and a nitrogen exactly
+#: ``N_CA_BOND_LENGTH`` (1.458 A) -- so every atom a seam can place lies within 2.44 A of the
+#: anchor, and anything that could sit within the 1.00 A impossible floor of one lies within
+#: 3.44 A. 4.0 covers that with margin. The narrow :func:`_seam_obstacles` set is NOT enough here:
+#: measured on Q15642, the exact seam carbon's induced oxygen landed on a folded atom 56 residues
+#: away in sequence -- nearby in space, invisible to a neighbouring-residues-only set.
+_SEAM_VETO_RADIUS: Final[float] = 4.0
+
+
+def _bond_angle(a: np.ndarray, apex: np.ndarray, b: np.ndarray) -> float:
+    """Angle a-apex-b in degrees."""
+    v1, v2 = a - apex, b - apex
+    cos = float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+    return float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))))
 
 
 def _polish_coupled_clashes(
@@ -766,7 +824,15 @@ def _polish_coupled_clashes(
         POLAR_ELEMENTS,
         VDW_RADII,
     )
-    from .backbone_refine import _angle, _azimuth_frame, _place_oxygen, _place_unit
+    from .backbone_refine import (
+        _angle,
+        _angles_batch,
+        _azimuth_frame,
+        _place_oxygen,
+        _place_oxygen_batch,
+        _place_unit,
+        _place_units_batch,
+    )
 
     rebuilt: set[int] = set()
     for start, stop in generated:
@@ -842,47 +908,70 @@ def _polish_coupled_clashes(
                     return False
         return True
 
-    def overlap(
-        moved_rows: list[int],
-        positions: np.ndarray,
-        tree: Any,
-        txyz: np.ndarray,
-        tres: np.ndarray,
-        telem: np.ndarray,
-    ) -> float:
-        total = 0.0
-        for r_idx in moved_rows:
-            point = positions[r_idx]
-            residue = int(all_res[r_idx])
-            element = str(all_elem[r_idx])
-            for j in tree.query_ball_point(point, query_r):
-                if abs(int(tres[j]) - residue) <= 1:
-                    continue
-                distance = float(np.linalg.norm(point - txyz[j]))
-                headroom = limit(element, str(telem[j])) - distance
-                if headroom > 0.0:
-                    total += headroom
-        # Overlap AMONG the moved atoms themselves -- excluded from the static tree, but it is
-        # exactly the clash a two-unit joint search is trying to clear (an atom of one moved unit
-        # against an atom of the other), so it has to be counted or the search is blind to it.
-        for a_pos in range(len(moved_rows)):
-            for b_pos in range(a_pos + 1, len(moved_rows)):
-                ia, ib = moved_rows[a_pos], moved_rows[b_pos]
-                if abs(int(all_res[ia]) - int(all_res[ib])) <= 1:
-                    continue
-                distance = float(np.linalg.norm(positions[ia] - positions[ib]))
-                headroom = limit(str(all_elem[ia]), str(all_elem[ib])) - distance
-                if headroom > 0.0:
-                    total += headroom
-        return total
-
     def try_polish(unit_group: tuple[int, ...]) -> bool:
-        moved = [r for u in unit_group for r in (row[(u, "C")], row[(u + 1, "N")], row[(u, "O")])]
+        # The three atoms each unit moves, each with the anchor and reach that bound where it can
+        # go: C and O hang off CA(u), N off CA(u+1), and each travels on a circle no larger than its
+        # bond(s), so a shell of ``query_r + reach`` around the anchor covers EVERY candidate
+        # position the search will try. Ordering (C, N, O per unit) matches the old ``moved`` list.
+        moved_specs = [
+            spec
+            for u in unit_group
+            for spec in (
+                (row[(u, "C")], ca[u], CA_C_BOND_LENGTH),
+                (row[(u + 1, "N")], ca[u + 1], N_CA_BOND_LENGTH),
+                (row[(u, "O")], ca[u], CA_C_BOND_LENGTH + C_O_BOND_LENGTH),
+            )
+        ]
+        moved = [r for r, _, _ in moved_specs]
         static = np.ones(len(all_xyz), dtype=bool)
         static[moved] = False
         txyz, tres, telem = all_xyz[static], all_res[static], all_elem[static]
-        tree = cKDTree(txyz)
-        base = overlap(moved, all_xyz, tree, txyz, tres, telem)
+        static_tree = cKDTree(txyz)
+
+        # Precompute each moved atom's static neighbours ONCE for the whole group search, not with a
+        # ``query_ball_point`` per atom per candidate. The static cloud is fixed here and the shell
+        # is a superset of any candidate's true neighbours; a neighbour past its own vdW limit adds
+        # zero headroom, so scoring the superset gives the identical overlap sum. That per-candidate
+        # tree query was measured at ~78% of --backbone wall time.
+        nbr_xyz: dict[int, np.ndarray] = {}
+        nbr_lim: dict[int, np.ndarray] = {}
+        for r_idx, anchor, reach in moved_specs:
+            residue = int(all_res[r_idx])
+            element = str(all_elem[r_idx])
+            found = np.asarray(
+                static_tree.query_ball_point(anchor, query_r + reach), dtype=np.int64
+            )
+            if found.size:
+                found = found[np.abs(tres[found] - residue) > 1]
+            nbr_xyz[r_idx] = txyz[found]
+            nbr_lim[r_idx] = np.array([limit(element, str(telem[j])) for j in found])
+
+        # Overlap AMONG the group's own moved atoms -- excluded from the static cloud, but exactly
+        # the clash a joint search is trying to clear. Their element pairs and residues are fixed,
+        # so the vdW limit and within-one-residue exclusion are settled once here, not per score.
+        inter_pairs: list[tuple[int, int, float]] = []
+        for a_pos in range(len(moved)):
+            for b_pos in range(a_pos + 1, len(moved)):
+                ia, ib = moved[a_pos], moved[b_pos]
+                if abs(int(all_res[ia]) - int(all_res[ib])) <= 1:
+                    continue
+                inter_pairs.append((ia, ib, limit(str(all_elem[ia]), str(all_elem[ib]))))
+
+        def score(positions: np.ndarray) -> float:
+            total = 0.0
+            for r_idx in moved:
+                pts = nbr_xyz[r_idx]
+                if pts.shape[0]:
+                    distance = np.sqrt(((pts - positions[r_idx]) ** 2).sum(axis=1))
+                    headroom = nbr_lim[r_idx] - distance
+                    total += float(headroom[headroom > 0.0].sum())
+            for ia, ib, lim in inter_pairs:
+                headroom = lim - float(np.linalg.norm(positions[ia] - positions[ib]))
+                if headroom > 0.0:
+                    total += headroom
+            return total
+
+        base = score(all_xyz)
         if base <= 1e-9:
             return False
         trial = all_xyz.copy()
@@ -890,21 +979,83 @@ def _polish_coupled_clashes(
         best = base
         best_choice: tuple[float, ...] | None = None
 
+        u_rows_of = {u: (row[(u, "C")], row[(u + 1, "N")], row[(u, "O")]) for u in unit_group}
+
+        def evaluate_last(u: int) -> tuple[float, float] | None:
+            """Best ``(overlap, azimuth)`` for unit ``u`` over the whole grid at once.
+
+            Every other unit of the group is held at its current ``trial`` placement. The whole
+            grid is placed, angle-filtered and scored with array operations instead of a
+            Python candidate loop -- which is what makes a fine grid affordable. It returns the same
+            choice the scalar loop would: the total is ``const + var`` where ``const`` is the score
+            of every atom this unit does not move (identical across candidates) and ``var`` is this
+            unit's own contribution, so ``argmin`` over the valid candidates is the global minimum.
+            """
+            grid_az = azimuth[u] + grid_offsets
+            c_b, n_b = _place_units_batch(ca[u], ca[u + 1], grid_az)
+            o_b = _place_oxygen_batch(ca[u], c_b, n_b)
+
+            valid = np.ones(grid_az.shape[0], dtype=bool)
+            if (u, "N") in row and (u, "C") in row:
+                ang = _angles_batch(trial[row[(u, "N")]], ca[u], c_b)
+                valid &= (lo <= ang) & (ang <= hi)
+            if (u + 1, "N") in row and (u + 1, "C") in row:
+                ang = _angles_batch(n_b, ca[u + 1], trial[row[(u + 1, "C")]])
+                valid &= (lo <= ang) & (ang <= hi)
+            if not valid.any():
+                return None
+
+            moving = {u_rows_of[u][0]: c_b, u_rows_of[u][1]: n_b, u_rows_of[u][2]: o_b}
+            var = np.zeros(grid_az.shape[0])
+            for r_idx, pos in moving.items():
+                pts = nbr_xyz[r_idx]
+                if pts.shape[0]:
+                    distance = np.sqrt(((pos[:, None, :] - pts[None, :, :]) ** 2).sum(-1))
+                    headroom = nbr_lim[r_idx][None, :] - distance
+                    var += np.where(headroom > 0.0, headroom, 0.0).sum(1)
+            const = 0.0
+            for r_idx in moved:
+                if r_idx in moving:
+                    continue
+                pts = nbr_xyz[r_idx]
+                if pts.shape[0]:
+                    distance = np.sqrt(((pts - trial[r_idx]) ** 2).sum(1))
+                    headroom = nbr_lim[r_idx] - distance
+                    const += float(headroom[headroom > 0.0].sum())
+            for ia, ib, lim in inter_pairs:
+                a_moving, b_moving = ia in moving, ib in moving
+                if a_moving and b_moving:
+                    continue  # two atoms of unit u -- excluded from inter_pairs already
+                if a_moving or b_moving:
+                    pos = moving[ia] if a_moving else moving[ib]
+                    other = trial[ib] if a_moving else trial[ia]
+                    headroom = lim - np.sqrt(((pos - other) ** 2).sum(-1))
+                    var += np.where(headroom > 0.0, headroom, 0.0)
+                else:
+                    headroom = lim - float(np.linalg.norm(trial[ia] - trial[ib]))
+                    if headroom > 0.0:
+                        const += headroom
+
+            total = np.where(valid, const + var, np.inf)
+            best_i = int(np.argmin(total))
+            if not np.isfinite(total[best_i]):
+                return None
+            return float(total[best_i]), float(grid_az[best_i])
+
         def descend(depth: int, choice: tuple[float, ...]) -> None:
             nonlocal best, best_choice
             u = unit_group[depth]
+            if depth + 1 == len(unit_group):
+                result = evaluate_last(u)
+                if result is not None and result[0] < best - 1e-9:
+                    best = result[0]
+                    best_choice = (*choice, result[1])
+                return
             for delta in grid_offsets:
                 z = azimuth[u] + float(delta)
                 place_into(u, z, trial)
-                if not angle_ok(u, trial):
-                    continue
-                if depth + 1 < len(unit_group):
+                if angle_ok(u, trial):
                     descend(depth + 1, (*choice, z))
-                else:
-                    value = overlap(moved, trial, tree, txyz, tres, telem)
-                    if value < best - 1e-9:
-                        best = value
-                        best_choice = (*choice, z)
 
         descend(0, ())
         if best_choice is None:
@@ -980,7 +1131,14 @@ def add_backbone_to_rebuilt(
         peptide bond, so the caller can report what could not be closed rather than leaving the
         validator to rediscover it.
     """
+    from scipy.spatial import cKDTree
+
     from ..structure import Structure
+    from ..validate.impossible import IMPOSSIBLE_SEPARATION
+
+    # KD-tree over every structure atom (folded all-atom + rebuilt alpha carbons), for the seam
+    # veto shells. Built lazily on the first seam: a from-sequence build has no seams and skips it.
+    seam_tree: cKDTree | None = None
 
     generated: list[tuple[int, int]] = []
     for domain in structure.domains:
@@ -1037,6 +1195,13 @@ def add_backbone_to_rebuilt(
             neighbour_n = _existing_atom(structure, stop, "N")
             if neighbour_n is not None:
                 anchor_ca = structure.ca_xyz[stop - 1]
+                obstacles = _seam_obstacles(structure, (stop, stop + 1))
+                if seam_tree is None:
+                    seam_tree = cKDTree(np.asarray(structure.xyz, dtype=np.float64))
+                near = seam_tree.query_ball_point(anchor_ca, _SEAM_VETO_RADIUS)
+                veto = np.asarray(structure.xyz, dtype=np.float64)[
+                    np.asarray(near, dtype=np.int64)
+                ]
                 seam = _on_two_spheres(
                     anchor_ca,
                     CA_C_BOND_LENGTH,
@@ -1044,21 +1209,46 @@ def add_backbone_to_rebuilt(
                     C_N_PEPTIDE_BOND_LENGTH,
                     placed[stop - 1]["C"],
                 )
+                # The exact point holds both bond lengths and nothing else, so it is CHECKED before
+                # it is accepted -- against everything nearby (measured on PTBP2, an exact seam atom
+                # landed 0.797 A from a folded oxygen), against the carbonyl oxygen it induces (O is
+                # fully determined by C, and on Q15642 the exact C's oxygen landed on a folded atom
+                # 56 residues away in sequence), and against the residue's own N-CA-C angle (on
+                # Q8N8A8 the exact C collapsed it to 78.9 degrees, putting the residue's own N and C
+                # 1.90 A apart -- the geometry the bond validator flags as atoms on top of each
+                # other).
+                if seam is not None:
+                    prev_n = placed[stop - 1].get("N")
+                    angle_bad = prev_n is not None and not (
+                        N_CA_C_WINDOW_MIN
+                        <= _bond_angle(prev_n, anchor_ca, seam)
+                        <= N_CA_C_WINDOW_MAX
+                    )
+                    induced_o = _place_carbonyl_oxygen(anchor_ca, seam, neighbour_n)
+                    if (
+                        angle_bad
+                        or _would_overlap(seam, veto, IMPOSSIBLE_SEPARATION)
+                        or _would_overlap(induced_o, veto, IMPOSSIBLE_SEPARATION)
+                    ):
+                        seam = None
                 if seam is None:
-                    # Unreachable, and for a real reason rather than a numerical one. The existing
-                    # N belongs to a residue DODO did not rebuild, so it still points toward where
-                    # this region ran in the ORIGINAL model -- the domain was moved rigidly and the
-                    # region re-drawn beneath it. Measured on dnmt3a's loop, CA(392) sits 3.741 A
-                    # from N(393) where a peptide unit needs about 2.43, so no C satisfies both
-                    # bonds. Aim C straight at the neighbour instead: the seam bond stays too long
-                    # and is reported, but nothing impossible is written.
+                    # The exact placement is unavailable: the spheres do not intersect (on dnmt3a's
+                    # loop CA(392) sits 3.741 A from N(393) where a peptide unit reaches ~2.43, so
+                    # no C satisfies both bonds), or the exact point failed a check above. Hold this
+                    # residue's own N-CA-C angle and spend the remaining freedom reaching toward the
+                    # neighbour while clearing its atoms AND the wide shell, scoring the induced
+                    # oxygen too: the seam bond stays long and is reported, but nothing impossible
+                    # is written.
                     seam = _place_on_cone(
                         anchor_ca,
                         placed[stop - 1]["N"],
                         N_CA_C_ANGLE,
                         CA_C_BOND_LENGTH,
                         prefer=neighbour_n,
-                        avoid=_seam_obstacles(structure, (stop, stop + 1)),
+                        avoid=obstacles,
+                        hard_avoid=veto,
+                        hard_clash=IMPOSSIBLE_SEPARATION,
+                        oxygen_toward=neighbour_n,
                     )
                     strained.append(
                         SeamStrain(
@@ -1076,6 +1266,13 @@ def add_backbone_to_rebuilt(
             neighbour_c = _existing_atom(structure, start - 1, "C")
             if neighbour_c is not None:
                 first_ca = structure.ca_xyz[start]
+                obstacles = _seam_obstacles(structure, (start - 1, start - 2))
+                if seam_tree is None:
+                    seam_tree = cKDTree(np.asarray(structure.xyz, dtype=np.float64))
+                near = seam_tree.query_ball_point(first_ca, _SEAM_VETO_RADIUS)
+                veto = np.asarray(structure.xyz, dtype=np.float64)[
+                    np.asarray(near, dtype=np.int64)
+                ]
                 seam = _on_two_spheres(
                     first_ca,
                     N_CA_BOND_LENGTH,
@@ -1083,16 +1280,31 @@ def add_backbone_to_rebuilt(
                     C_N_PEPTIDE_BOND_LENGTH,
                     placed[start]["N"],
                 )
+                # Mirror of the C-side acceptance: the exact N is checked against the wide shell
+                # (measured on PTBP2: an exact N 0.797 A from the folded carbonyl O) and against
+                # the residue's own N-CA-C angle. No induced oxygen here -- this residue's O hangs
+                # off its C, which the seam does not move.
+                if seam is not None:
+                    own_c = placed[start].get("C")
+                    angle_bad = own_c is not None and not (
+                        N_CA_C_WINDOW_MIN
+                        <= _bond_angle(seam, first_ca, own_c)
+                        <= N_CA_C_WINDOW_MAX
+                    )
+                    if angle_bad or _would_overlap(seam, veto, IMPOSSIBLE_SEPARATION):
+                        seam = None
                 if seam is None:
-                    # Mirror of the C-side fallback: hold this residue's own N-CA-C angle and spend
-                    # the remaining freedom reaching toward the neighbour's carbon.
+                    # Hold this residue's own N-CA-C angle and spend the remaining freedom reaching
+                    # toward the neighbour's carbon while clearing its atoms and the wide shell.
                     seam = _place_on_cone(
                         first_ca,
                         placed[start]["C"],
                         N_CA_C_ANGLE,
                         N_CA_BOND_LENGTH,
                         prefer=neighbour_c,
-                        avoid=_seam_obstacles(structure, (start - 1, start - 2)),
+                        avoid=obstacles,
+                        hard_avoid=veto,
+                        hard_clash=IMPOSSIBLE_SEPARATION,
                     )
                     strained.append(
                         SeamStrain(

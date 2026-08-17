@@ -245,29 +245,83 @@ win is too modest to justify its cost. **All BB-3 code reverted; the 1D table st
   session's scratchpad if the work is picked up again.
 - Effort spent: **M**; outcome: reverted, 1D table retained.
 
-## Phase BB-4 — Vectorize the refinement  ⬜
-Bring the backbone path up to the CA path's batching philosophy.
-- Wire the deferred **prange-over-models** refinement (measured **20.9×** on dnmt3a's 282-res
-  region; ~16.4× end-to-end on multi-model `--backbone`). Restructure `rebuild()` to run
-  backbone as a **post-model batched pass**, stacking every model's regions and compiling the
-  sweep with `njit(parallel=True)`. Placement is already batched (Phase 2).
-- Payoff is opt-in `--backbone` × multi-model × multi-core only — schedule after BB-1/BB-2
-  make the output actually worth producing at scale.
-- Effort: **L**, risk: **medium** (numba parallel kernel + rebuild restructure).
+## Phase BB-4 — Speed  ✅ DONE (2026-08-13) — but the plan's target was wrong
+**The plan said "vectorize the refinement (prange over models)." Profiling refuted that:** the
+compiled refinement kernel (`sweep_region`) is only **~2.5 %** of `--backbone` wall time — already
+fast. The real cost was `_polish_coupled_clashes`, the coupled-clash polish (BB-1/BB-2.5), which was
+**pure Python and 78 %** of `--backbone` time (p300 ×2 models: 6.16 s of 7.92 s), amplified further
+by the BB-2.5 grid 25→73 change (8.5× more candidates per 2-unit group).
 
-## Phase BB-5 — Promote to first-class  ⬜
-- **Corpus regression tests:** after BB-1/BB-2, assert 0 introduced clashes and 0
-  rebuilt-provenance seam chain-breaks across the fixtures (and add to the offline gate if that
-  lands).
-- **Honest, updated docs;** consider softening `--backbone`'s caveats and, eventually, whether
-  it can be trusted enough to change its default posture.
-- Effort: **M**, risk: **low**.
+- ✅ **Vectorized the clash polish (`ca_backbone._polish_coupled_clashes`).** Two changes, both
+  behaviour-preserving:
+  1. **Precompute each moved atom's static neighbours once per group** instead of a
+     `cKDTree.query_ball_point` per atom per candidate. The static cloud is fixed during a group's
+     search and each moved atom rides a bounded circle, so a `query_r + reach` shell is a provable
+     superset (far neighbours add zero headroom) — exact same overlap sum.
+  2. **Batch the deepest unit's whole azimuth grid** (`_place_units_batch` / `_place_oxygen_batch` /
+     `_angles_batch`) with a `const + var` split, so `argmin` over the valid candidates is the same
+     global minimum the scalar loop found — replacing the per-candidate Python placement/angle/score.
+- **Result: polish 6.16 s → 0.40 s (15×); p300 ×4 `--backbone` 13.8 s → 4.59 s (3×)**; single-model
+  p300 2.5 → 1.4 s, dnmt3a 1.1 → 0.27 s. **Output is bit-identical** to the scalar polish (worst
+  |Δ| = 0.0 over corpus × 4 seeds), clash ratchet unchanged (2/0/3), determinism preserved.
+- **prange-over-models NOT wired** — with the polish at 0.40 s the refinement kernel is no longer the
+  bottleneck, so parallelising it would chase ~2.5 %. Revisit only if profiling shifts.
+- Effort spent: **M**; risk turned out low (pure-numpy, bit-identical, no numba parallel kernel).
+
+## Phase BB-5 — Promote to first-class  ✅ DONE (2026-08-13)
+The release is backbone-only and aims to be first-in-class, so `--backbone` is now the default and
+is held to corpus-wide invariants. **Promoting it surfaced three real defects that opt-in status had
+been hiding** — the corpus harnesses had only ever run the CA-only path.
+
+- ✅ **Default flipped.** `backbone=True` on `rebuild()` and `build_from_sequence()`;
+  `[--backbone | --no-backbone]` on the CLI (argparse `BooleanOptionalAction`). Rebuilt alpha
+  carbons are bit-identical either way, so the backbone stays purely additive. 19 test call sites
+  that used a plain `rebuild()` as a *CA-only* reference now pass `backbone=False` explicitly.
+- ✅ **New offline regression gate:** `TestBackboneIsFirstClass` (tests/unit/test_pipeline.py) over
+  every committed fixture × seeds 0-2 — the guarantees that must hold at *every* seed, where
+  `TestBackboneBaseline` pins only seed-0 ceilings: nothing impossible introduced, zero
+  rebuilt-provenance bond defects, **complete N/CA/C/O on every rebuilt residue with N-CA / CA-C /
+  C-O exact to 1e-6**, seam count matching the report, and byte-identical output on re-run. Plus
+  `test_clashes_within_ceiling` in the historical suite now asserts BOTH regimes (CA-only holds its
+  absolute 0; backbone gets a measured `BACKBONE_CLASH_CEILING = 5`).
+- ✅ **Three defects found and fixed** (all pre-existing, all corpus-only):
+  1. **Impossible contacts at seams.** The exact two-sphere seam placement satisfies both bond
+     lengths and was blind to everything else — PTBP2 put a rebuilt N 0.797 Å from a folded carbonyl
+     O; Q15642's exact C induced an O onto a folded atom **56 residues away in sequence** (invisible
+     to the narrow neighbouring-residue obstacle set). The exact point is now *checked before it is
+     accepted* — against a 4.0 Å shell of every structure atom, against the carbonyl O it induces
+     (O is determined by C, so only a different C can move it), and against the residue's own
+     N-CA-C angle — and falls back to the obstacle-avoiding cone, which now scores the induced O too.
+  2. **Refinement collapsing N-CA-C under clash pressure.** Q8N8A8 and O60271 reached ~79°, putting
+     a residue's own N and C 1.90 Å apart — exactly what the bond validator flags as two atoms on
+     top of each other. The soft angle term (weight 0.124) is deliberately weak and loses to the
+     clash term (40). Both backends now apply a hard 80-160° window
+     (`constants.N_CA_C_WINDOW_MIN/MAX`, derived from the validator's 1.90 Å floor) as a step
+     penalty; a test pins the kernel's literal copies to the shared constants.
+  3. **A crowded region failing the rebuild outright.** `MAX_NEIGHBOURS = 48` overflowed on Q9C000
+     (54 neighbours) and raised `GeometryError`. Raised to 96 (~1.8× the new worst), and
+     `backend="auto"` now degrades a still-over-cap region to the uncapped numpy path instead of
+     failing; explicit `backend="numba"` still raises.
+- ✅ **Docs de-hedged and corrected** across README, `docs/guide.md`, `docs/algorithm.md`, CHANGELOG,
+  the CLI help and both API docstrings: no more "opt-in for now" / "while it earns confidence" /
+  "what would make this the default" / backbone listed under "what comes next". The stale
+  Known-limitations clash figures (dnmt3a 0→1-3, arf19 0→1-15, p300 2→13-31) are replaced with the
+  post-BB-1/BB-2.5 measurements (2 / 0 / 3), and the seam entry now records both rejected closure
+  approaches with their evidence.
+- **Result: 1914 passed, 117 skipped, 0 failed** — including the full 117-structure corpus and
+  9-structure historical suites running with the backbone ON. `--backbone` introduces **zero**
+  separations below the 1.00 Å floor across all 117 structures.
+- Effort spent: **M**; risk: the default flip is a deliberate breaking change to default output.
 
 ---
 
 ## Suggested order & rationale
 BB-0 (foundation ✅) → **BB-1** (clashes down ✅) → **BB-2** (seam: solved by C, honest labeling;
 closure-forcing proven infeasible ✅) → **BB-3** (accuracy: built, measured, HELD ⏸️ — modest win not
-worth the table bloat + clash-ratchet friction) → **BB-4** (speed) and/or the 3-way clash polish next,
-then **BB-5** (promote). Nothing remaining reaches back into the CA engine — all contained to the
-backbone modules.
+worth the table bloat + clash-ratchet friction) → **BB-4** (speed ✅ — vectorised the clash polish,
+the real 78 % bottleneck, 3× on multi-model `--backbone`, bit-identical) → **BB-5** (promoted to
+first-class ✅ — default-on, corpus-wide gate, three latent defects fixed). **All phases are now
+resolved.** The release is backbone-only and first-in-class (all-atom deferred), so the open
+question worth revisiting is **BB-3**: with the clash ratchet now defended corpus-wide and the
+polish 15× faster, the 2D table's accuracy win may be worth its cost after all — re-measure before
+deciding.

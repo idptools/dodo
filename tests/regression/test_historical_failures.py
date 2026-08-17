@@ -79,7 +79,8 @@ CASES: tuple[Case, ...] = (
     Case("P42212", "GFP", "Alex Holehouse"),
 )
 
-#: Maximum steric clashes tolerated per structure. Measured at 0 for all nine, against AFDB v6.
+#: Maximum steric clashes tolerated per structure for the ALPHA-CARBON rebuild. Measured at 0 for
+#: all nine, against AFDB v6.
 #:
 #: A RATCHET: it must only ever move down. It was briefly 12, when p300 and TDP-43 retained a
 #: handful of clashes admitted by the walk's clash relaxation ladder as it descended to its 2.00 A
@@ -89,6 +90,19 @@ CASES: tuple[Case, ...] = (
 #: If a future change cannot hold zero here, the right response is to fix the change, not to raise
 #: this number.
 CLASH_CEILING: int = 0
+
+#: Maximum steric clashes tolerated per structure once the BACKBONE is placed (the default).
+#:
+#: Also a ratchet, and deliberately a separate number. Placing N, C and O adds three atoms per
+#: rebuilt residue into space the alpha-carbon stage never had to keep clear, and the carbonyl
+#: oxygen in particular is not independently movable: it is fully determined by its own C, so the
+#: refinement can only relieve an O contact by moving that C. MEASURED over these nine at seed 0
+#: (2026-08-13): six are clean, and the worst three are GFP 3, p300 4 and PTBP3 2, with gaps of
+#: 1.85-2.80 A -- soft van der Waals overlaps, every one of them far above the 1.00 A floor below
+#: which no bond exists, which :meth:`test_no_impossible_separations` asserts against separately
+#: and absolutely. 5 leaves one clash of headroom over the worst case so a seed-to-seed wobble is
+#: not a failure, and no more.
+BACKBONE_CLASH_CEILING: int = 5
 
 IDS = [f"{c.name}-{c.accession}" for c in CASES]
 
@@ -156,18 +170,27 @@ class TestHistoricalFailures:
         assert not violations, f"{case.name}: " + "; ".join(v.message for v in violations[:5])
 
     def test_clashes_within_ceiling(self, case: Case, _fetched: dict[str, Path]) -> None:
-        """A ratchet, not a target. See :data:`CLASH_CEILING`."""
+        """A ratchet, not a target, for BOTH output regimes.
+
+        The two are asserted separately because they are different claims: the alpha-carbon rebuild
+        holds an absolute zero (:data:`CLASH_CEILING`), while placing the backbone adds three atoms
+        per rebuilt residue and is allowed a small, measured allowance
+        (:data:`BACKBONE_CLASH_CEILING`). Asserting only the default would silently drop the
+        stronger CA-only guarantee; asserting only CA-only would leave the default path unguarded.
+        """
         from dodo.construct.pipeline import rebuild
         from dodo.validate import validate_clashes
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            report = rebuild(_fetched[case.accession], seed=0)
-        violations = validate_clashes(report.models[0]).violations
-        assert len(violations) <= CLASH_CEILING, (
-            f"{case.name}: {len(violations)} clashes exceeds the ceiling of {CLASH_CEILING}. "
-            f"This ratchet only moves down. Worst: " + "; ".join(v.message for v in violations[:3])
-        )
+        for backbone, ceiling in ((False, CLASH_CEILING), (True, BACKBONE_CLASH_CEILING)):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                report = rebuild(_fetched[case.accession], seed=0, backbone=backbone)
+            violations = validate_clashes(report.models[0]).violations
+            assert len(violations) <= ceiling, (
+                f"{case.name} (backbone={backbone}): {len(violations)} clashes exceeds the ceiling "
+                f"of {ceiling}. This ratchet only moves down. Worst: "
+                + "; ".join(v.message for v in violations[:3])
+            )
 
     def test_regions_are_identified(self, case: Case, _fetched: dict[str, Path]) -> None:
         """Region identification produces a complete, non-overlapping partition of every chain.

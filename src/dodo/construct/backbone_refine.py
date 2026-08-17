@@ -88,6 +88,8 @@ from ..constants import (
     CA_CA_BOND_LENGTH,
     N_CA_BOND_LENGTH,
     N_CA_C_ANGLE,
+    N_CA_C_WINDOW_MAX,
+    N_CA_C_WINDOW_MIN,
 )
 from ..exceptions import GeometryError, InvalidParameterError, MissingDependencyError
 from .ca_backbone import _terminal_carbon, _terminal_nitrogen, _terminal_oxygen
@@ -113,6 +115,17 @@ _POLAR_N: Final[float] = 14.8941
 #: unit. Real units measure 163.1 +/- 12.7, so this is an idealization -- and a deliberate one: it
 #: is what reduces the unit to a single free parameter.
 _AZIMUTH_SEPARATION: Final[float] = 180.0
+
+#: Step penalty for an N-CA-C angle outside the hard window
+#: (:data:`~dodo.constants.N_CA_C_WINDOW_MIN`/``MAX``). The soft angle term (weight 0.124) is
+#: deliberately weak -- tightening it was measured to hurt accuracy -- which leaves it able to lose
+#: to a strong clash term: measured on the corpus (2026-08-13), two structures traded the angle
+#: down to ~79 degrees, putting a residue's own N and C 1.90 A apart, which the bond validator
+#: rightly reports as two atoms on top of each other. The step only has to dominate any clash
+#: saving (a few thousand at worst), so candidates inside the window are still ranked purely by
+#: the tuned objective. The compiled kernel applies the identical step (``ANGLE_PENALTY`` in
+#: backbone_kernel.py); a test pins the two equal.
+_ANGLE_WINDOW_PENALTY: Final[float] = 1.0e5
 
 #: Ramachandran penalty, MEASURED from the same 100 frames of all-atom IDR simulation as the
 #: peptide-unit table, over 19,602 phi/psi pairs at 30 degrees, circularly smoothed 3x3.
@@ -530,15 +543,28 @@ def refine_backbone(
     # between backends, which is what `test_zero_sweeps_behaves_the_same_either_way` asks for.
     compiled: Any | None = None
     if kernel is not None and max_sweeps > 0:
-        compiled = kernel.RegionKernel(
-            ca,
-            obstacles=obstacle_points,
-            clash_distance=clash_distance,
-            angle_weight=angle_weight,
-            clash_weight=clash_weight,
-            rama_weight=rama_weight,
-            rama_table=_RAMA_TABLE,
-        )
+        try:
+            compiled = kernel.RegionKernel(
+                ca,
+                obstacles=obstacle_points,
+                clash_distance=clash_distance,
+                angle_weight=angle_weight,
+                clash_weight=clash_weight,
+                rama_weight=rama_weight,
+                rama_table=_RAMA_TABLE,
+            )
+        except GeometryError:
+            # The kernel's neighbour tables hold MAX_NEIGHBOURS rows per movable atom, and the
+            # fixed-atom crowding around a region is set by the INPUT -- folded-domain atoms packed
+            # however the structure packs them -- so no fixed cap is provably enough (measured:
+            # p300's worst shell held 43, then corpus structure Q9C000 produced 54). A region past
+            # the cap is not a failed rebuild; it is a region the compiled path cannot score without
+            # silently truncating the objective. The numpy path scores the same objective with no
+            # cap, so under ``backend="auto"`` degrade to it for this region. An explicit
+            # ``backend="numba"`` keeps the loud error: the caller asked for the kernel by name.
+            if backend == "numba":
+                raise
+            compiled = None
     use_kernel = compiled is not None
 
     from scipy.spatial import cKDTree
@@ -695,6 +721,8 @@ def refine_backbone(
         if 0 < unit < n_res - 1:
             observed = _angles_batch(n_live[unit][None, :], ca[unit][None, :], c_new)
             total += angle_weight * np.square(observed - N_CA_C_ANGLE)
+            outside = (observed < N_CA_C_WINDOW_MIN) | (observed > N_CA_C_WINDOW_MAX)
+            total += np.where(outside, _ANGLE_WINDOW_PENALTY, 0.0)
             phi = _dihedrals_batch(
                 c_live[unit - 1][None, :], n_live[unit][None, :], ca[unit][None, :], c_new
             )
@@ -705,6 +733,8 @@ def refine_backbone(
         if 0 < unit + 1 < n_res - 1:
             observed = _angles_batch(n_new, ca[unit + 1][None, :], c_live[unit + 1][None, :])
             total += angle_weight * np.square(observed - N_CA_C_ANGLE)
+            outside = (observed < N_CA_C_WINDOW_MIN) | (observed > N_CA_C_WINDOW_MAX)
+            total += np.where(outside, _ANGLE_WINDOW_PENALTY, 0.0)
             phi = _dihedrals_batch(c_new, n_new, ca[unit + 1][None, :], c_live[unit + 1][None, :])
             psi = _dihedrals_batch(
                 n_new,

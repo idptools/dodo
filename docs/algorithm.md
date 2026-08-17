@@ -12,8 +12,8 @@ Seven steps. The order is not incidental — it *is* the algorithm.
 4. **Rebuild loops.**
 5. **Rebuild connecting IDRs** between folded domains.
 6. **Rebuild terminal IDRs.**
-7. Alpha carbons only by default. `--backbone` adds N, C and O to the rebuilt regions; side chains
-   are not built. See {doc}`guide`.
+7. **Place the backbone.** N, C and O are added to the rebuilt regions by default;
+   `--no-backbone` leaves them alpha-carbon only. Side chains are not built. See {doc}`guide`.
 
 ## Why folded domains are never rebuilt
 
@@ -199,10 +199,11 @@ diffusion-like traces the worst bond deviation goes from 0.19–1.02 Å to 0.000
 In priority order:
 
 1. Perfecting the alpha-carbon approach — this, and it is where the effort has gone.
-2. Backbone building (N, C, O) for rebuilt regions. **Shipped in 2.0 behind `--backbone`, opt-in**
-   — see {doc}`guide`. Held out against all-atom simulation: N 0.16 Å, C 0.22 Å, O 0.63 Å, with
-   every bond length inside a region exact. What keeps it opt-in is the seams: an exact peptide bond
+2. Backbone building (N, C, O) for rebuilt regions. **Shipped and on by default** — see
+   {doc}`guide`. Held out against all-atom simulation: N 0.16 Å, C 0.22 Å, O 0.63 Å, with every
+   bond length inside a region exact. Its one irreducible limit is the seams: an exact peptide bond
    onto an untouched folded domain is geometrically unsatisfiable from a rebuilt alpha carbon, so
-   those bonds are left long and reported.
+   that bond is drawn as close as possible, left long, and reported. `--no-backbone` returns
+   alpha-carbon-only output.
 3. Full all-atom reconstruction.
 4. STARLING-generated ensembles as the default engine.

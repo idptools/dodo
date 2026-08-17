@@ -115,8 +115,9 @@ in a viewer shows only the disordered regions moving.
   a defect that arrived in your input is not reported as DODO's.
 - **`dodo regions`** prints what DODO thinks your structure looks like, with the score profile and
   threshold behind every boundary, without rebuilding anything.
-- **`--backbone` / `backbone=True` places N, C and O on rebuilt regions**, from the alpha carbons
-  alone. New in 2.0 and **opt-in**, because of the seams (see Known limitations). Four consecutive
+- **N, C and O are placed on rebuilt regions by default**, from the alpha carbons alone — new in
+  2.0. Pass **`--no-backbone`** (or `backbone=False`) for alpha-carbon-only output; rebuilt alpha
+  carbons are bit-identical either way, so the backbone is purely additive. Four consecutive
   alpha carbons determine a pseudo-dihedral, which largely determines where the intervening peptide
   unit sits; DODO bins that angle at 20° against a table measured from 100 frames of all-atom IDR
   simulation, then rotates each unit about its CA–CA axis to settle bond angles, clashes and φ/ψ
@@ -508,17 +509,19 @@ Stated with measurements, over a 117-structure corpus stratified by region topol
   satisfy, and one contains a chain break with consecutive alpha carbons 5.26 Å apart. The third is
   a genuine failure on a 7-residue terminal tail. Every one keeps its input coordinates and is
   reported with a reason.
-- **Rebuilt regions are alpha-carbon only by default.** Deliberate. Regions DODO does *not* rebuild
-  keep every atom. `--backbone` adds N, C and O to the rebuilt regions; side chains are still not
-  built.
-- **`--backbone` introduces a small number of marginal steric contacts.** The alpha carbons cannot
-  self-intersect, but the atoms hung off them can, and one azimuth per peptide unit is not always
-  enough freedom to avoid it. Refinement scores each unit against the folded domains, the rest of
-  its own region, and the regions placed before it. Measured against CA-only output over three
-  seeds: dnmt3a 0 → 1–3 contacts, arf19 0 → 1–15, p300 2 → 13–31. The spread is the honest answer,
-  turning on whether a conformer folds a hairpin back on itself. Worst overlap across all of them is
-  0.48 Å; none is near the 1.00 Å floor below which no real bond exists.
-- **`--backbone` leaves a strained peptide bond at every seam, and this cannot be fixed by
+- **Side chains are not built.** Rebuilt regions get a complete N/CA/C/O backbone and nothing more.
+  Regions DODO does *not* rebuild keep every atom they arrived with, side chains included.
+- **Backbone placement introduces a small number of marginal steric contacts.** The alpha carbons
+  cannot self-intersect, but the atoms hung off them can, and one azimuth per peptide unit is not
+  always enough freedom to avoid it — the carbonyl oxygen especially, which is fully determined by
+  its own carbon and so cannot be moved independently. Refinement scores each unit against the
+  folded domains, the rest of its own region, and the regions placed before it, and a joint
+  two-unit polish then clears the coupled cases single-azimuth descent cannot escape. Measured
+  against CA-only output at seed 0: dnmt3a 2 contacts, arf19 0, p300 3; over nine AlphaFold
+  structures, six are clean and the worst is 4. Overlaps run to 0.8 Å at worst, and **nothing is
+  near the 1.00 Å floor** below which no real bond exists — that is asserted absolutely, across all
+  117 corpus structures.
+- **A strained peptide bond is left at every seam, and this cannot be fixed by
   construction.** A peptide unit reaches at most 2.854 Å from an alpha carbon to the nitrogen it
   bonds to. Where a rebuilt region meets a folded domain, that domain's nitrogen still points toward
   where the region ran in AlphaFold's model, because DODO moved the domain rigidly and redrew the
@@ -527,17 +530,22 @@ Stated with measurements, over a 117-structure corpus stratified by region topol
   unsatisfiable.
 
   DODO aims the carbon at the nitrogen and leaves the bond long (about 2.2 Å against an ideal 1.33)
-  rather than writing two atoms into the same space, and reports every seam. On dnmt3a that is 4–6
-  bonds out of 911. **Zero impossible contacts are introduced**, measured over three structures at
-  three seeds each. Building from sequence has no seams and is completely clean.
+  rather than writing two atoms into the same space, and **labels and reports** every one: they
+  appear on `RebuildReport.backbone_seams`, in the run summary, and as `kind="seam"` /
+  `provenance="seam"` findings from the bond validator — reported, but not blamed on the rebuild,
+  whose own bond geometry is clean. On dnmt3a that is 4–6 bonds out of 911. **Zero impossible
+  contacts are introduced.** Building from sequence has no seams and is completely clean.
 
-  Leaving the seam residue un-rebuilt was tried and rejected. Its alpha carbon being input geometry
-  does make the bond reachable — 2.45–2.52 Å at all 17 seams — but closing onto it requires
+  Two ways to close it were tried and both rejected on measurement. Leaving the seam residue
+  un-rebuilt does make the bond reachable (2.45–2.52 Å at all 17 seams), but closing onto it means
   re-placing its nitrogen, and that residue's side chain was built around where its nitrogen used to
-  be. The new one is driven into the residue's own CB (1.405 Å against a correct 2.45) and, for
-  proline, snaps the ring bond to CD (3.444 Å against 1.47). The real fix is to constrain the walk so
-  its closing alpha carbon lands within peptide reach, which needs constraints reaching further back
-  than the closing step, and is future work.
+  be: the new one is driven into the residue's own CB (1.405 Å against a correct 2.45) and, for
+  proline, snaps the ring bond to CD (3.444 Å against 1.47). Constraining the walk so its closing
+  alpha carbon lands within peptide reach does not work either: over 83 closures across three
+  structures and three seeds, only 22 have an in-reach point that also satisfies the CA–CA–CA
+  pseudo-angle window — and those already close — while 40 never bring the closure circle within
+  reach at all and 21 could only reach by kinking that angle. The strained seam is what independent
+  rigid-body repositioning and chain rebuilding cost.
 - **Reported failures are honest, not silent.** A region DODO cannot build keeps its input
   coordinates and appears in `report.failures` with a reason. It is never replaced with degenerate
   output — 1.x could return coordinate arrays of exact `(0, 0, 0)` rows, or NaN.

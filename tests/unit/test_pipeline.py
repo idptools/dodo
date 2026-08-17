@@ -960,7 +960,7 @@ class TestBatchEngine:
 _BACKBONE_BASELINE: dict[str, tuple[int, int]] = {
     "dnmt3a": (2, 4),
     "arf19": (0, 6),
-    "p300": (4, 10),
+    "p300": (3, 10),  # clashes 4 -> 3: finer coupled-clash azimuth grid (5 deg vs 15 deg)
 }
 
 

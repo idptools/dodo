@@ -727,7 +727,7 @@ def _polish_coupled_clashes(
     generated: list[tuple[int, int]],
     *,
     rounds: int = 8,
-    grid: int = 25,
+    grid: int = 73,
     angle_window: tuple[float, float] = (80.0, 160.0),
 ) -> int:
     """Clear steric clashes coupled between two movable peptide units. Modifies ``placed``.
@@ -740,6 +740,17 @@ def _polish_coupled_clashes(
     flanking alpha carbons rebuilt, so only rebuilt atoms move -- never a folded-domain or seam
     atom) that place the clashing atoms, keeping any combination that lowers the total van der Waals
     overlap without pushing a moved residue's N-CA-C angle out of ``angle_window``.
+
+    Two units is enough: the residual clashes were measured to couple at most two movable units
+    (p300's two clusters are {925,933} and {2190,2195}; the rest are a unit against a *fixed* CA),
+    so a three-unit joint search has nothing to grip -- there is no three-unit cluster. What the
+    borderline ones needed was azimuth *resolution*: at the old 15-degree grid (``grid=25``) the
+    clearing orientation fell between samples, and 5 degrees (``grid=73``) clears one more p300
+    contact (4 -> 3 introduced) with the angle distribution byte-identical and ~+1 s. The
+    ``angle_window`` deliberately stays at ``(80, 160)`` rather than widening: (70, 170) clears one
+    further contact but only by placing a 165.7-degree N-CA-C angle, trading a 0.05 A borderline
+    clash for a badly distorted backbone angle. The two contacts that remain sit against fixed CAs
+    that no azimuth can move.
 
     The overlap and its element limits are the validator's own
     (:func:`~dodo.validate.clashes.contact_limit` constants), and only pairs more than one residue

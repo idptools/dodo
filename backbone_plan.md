@@ -121,18 +121,25 @@ current output lies by omission.
   - The grounding's other refinement ideas (element-vdW objective, clash-aware kernel termination)
     proved **unnecessary**: the objective already sees these clashes, and the joint polish clears
     them without touching the numpy/numba refinement or its equivalence tests.
-  - Follow-up (open): 3-way / cluster moves for the few remaining both-movable p300 clusters.
+  - ✅ **Follow-up RESOLVED (2026-08-07) — and the "3-way" premise was refuted.** Measured the
+    coupling graph of the residual clashes: there is **no three-unit cluster** to move. p300's two
+    residual coupled components are exactly two units each ({925,933}, {2190,2195}); the rest are a
+    movable unit against a *fixed* CA (dnmt3a res386 vs a folded PRO233 CA; p300 res2191 vs a fixed
+    ALA2197 CA), which no azimuth can move. The 2-unit joint search already forms and scores those
+    groups — what the borderline ones needed was azimuth **resolution**. Raising the grid from
+    15 deg (`grid=25`) to 5 deg (`grid=73`) clears one more p300 contact (introduced **4 → 3**) with
+    the N-CA-C angle distribution byte-identical and ~+1 s; ratchet tightened to **p300 (3, 10)**.
+    Rejected: widening `angle_window` to (70,170) clears one further contact but only by placing a
+    165.7 deg N-CA-C angle (real ~111 deg) — trading a 0.05 A borderline clash for a distorted
+    backbone angle. The two remaining p300 contacts sit against fixed CAs (unclearable by the 1-DOF
+    azimuth model); genuinely clearing those is CA-engine territory, not a backbone-polish job.
 
-## Phase BB-2 — Solve the seam (the first-class blocker)  ⏳ IN PROGRESS (2026-08-07)
+## Phase BB-2 — Solve the seam (the first-class blocker)  ✅ DONE (2026-08-07) — solution is C
 
-**Reframed by a 4-approach exploration (measured on the corpus):** the seam is a *seam-blind
-selection* problem, not a geometry impossibility. The walk's closure picks the terminal CA on its
-circle by pseudo-angle alone, blind to the folded N; every strained C-side seam is actually closable
-by 15-46% of conformers, and even the "impossible" p300 case closes in 19%. Domain-rotation (root
-cause) is a dead end (interior domains are doubly-anchored → one rotation drags the other IDR's
-anchor 3.5-86 Å, up to 161 clashes, non-convergent). Multi-CA CCD reaches 100% but kinks the
-pseudo-angles (41-79° vs the 91° floor) and rewrites the deterministic endgame — fallback only.
-**Chosen solution: D (seam-aware closure) + C (honest validator reframe).**
+**Outcome: the seam cannot be forced closed without violating a hard invariant. The principled
+solution is C (honest validator reframe), already committed. D (seam-aware closure) was implemented,
+measured to close zero additional seams, and fully reverted.** Decision confirmed with Ryan: finalize
+C, stop trying to force closure, move to BB-3/4/5.
 
 - ✅ **C — validator reframe DONE (2026-08-07).** A long C-N across a generated↔input boundary is no
   longer a `chain_break` blamed on `"rebuilt"`; it is `kind="seam"`/`provenance="seam"` (validate/
@@ -143,11 +150,30 @@ pseudo-angles (41-79° vs the 91° floor) and rewrites the deterministic endgame
   same differential-clean bar the CA path meets). +safety test: the identical geometry read back
   without region info is a `chain_break`, so a real break in non-DODO input is never masked. Zero
   engine risk; full suite 1548 passed.
-- ⏳ **D — seam-aware closure (next).** Make `_close` prefer the closure-circle azimuth nearest the
-  folded N, under the existing hard angle filter (thread the folded N through `IDRRequest`), so most
-  of the ~73% reachable seams become real short bonds instead of "seam" long bonds. Bit-identical
-  when no seam target is supplied. Combined with multi-conformer generation, closure is a
-  high-probability event. Residual unreachable seams keep the honest "seam" label from C.
+- ❌ **D — seam-aware closure: IMPLEMENTED, MEASURED USELESS, REVERTED (2026-08-07).** Threaded the
+  folded N through `IDRRequest.c_anchor_n_xyz` → `_WalkPlan.end_seam_target` and biased `_close`'s
+  candidate selection toward it under the existing hard angle filter. **Closes 0 additional seams.**
+  The earlier "73% reachable" estimate was measured over the full closure circle (`circle_min`) at a
+  single seed; the *definitive* measurement (corpus × 3 seeds, 83 C-side closures, accounting for the
+  angle filter) shows why single-step biasing can't work:
+  - **CLOSE (22/83):** the near-N arc is *also* angle-valid → these already close in the seam-blind
+    walk. Biasing them is a no-op.
+  - **FAR (40/83):** the whole arrived circle is >2.854 Å from N (`circle_min > 2.854`). The last CA
+    sits on a circle fixed by where the walk *arrived* (CA(n-2)); no last-step choice reaches N.
+  - **ANGLE (21/83):** the circle reaches N but the [91,161]° pseudo-angle window forbids the near-N
+    arc (`circle_min ≤ 2.854 < valid_min`, `n_valid_reach=0`). Using it would kink the invariant.
+  So 59/83 are unfixable by closure-step selection and the fixable 22 already close. Empirically: a
+  soft-Gaussian weight left rebuilt CA coords **bit-identical** (the racing draw `argmin(-log U/eff)`
+  swamps modest weight ratios — near candidate wins only `1/(1+Σ eff_far)`); a hard reach-threshold
+  weight moved one p300 CA but closed 0 seams and made one 0.026 Å *worse*. Reverted to the committed
+  C-only state (`git diff` empty, 241 tests green, mypy clean).
+
+**Why no bounded fix exists:** the folded N points where AlphaFold's *original* chain ran; step-3
+rigid repositioning places the domain for the region's anchors/end-to-end, blind to its own boundary
+N. Closing the seam short needs either kinking the CA-CA-CA pseudo-angle (approach B / CCD: 100% but
+41-79° vs the 91° floor) or moving a folded domain non-rigidly — both hard-invariant violations. The
+strained seam is an honest, irreducible artifact of independent rigid-repositioning + chain rebuild;
+C surfaces it truthfully. Seam counts are frozen ratchets in `_BACKBONE_BASELINE` (down-only).
 
 Evidence trail for the rejected/earlier roads:
 
@@ -180,25 +206,44 @@ Evidence trail for the rejected/earlier roads:
   unreachable seams keep the reported long-bond fallback.
 - Rejected: (b) relaxing the boundary CA needs a median 0.71 Å / max 2.32 Å CA move → breaks the
   exact-CA invariant; (c) folding the boundary residue in is documented to fail (guide:171-184).
-- **Recommendation:** BB-2 is genuinely hard — neither easy road reaches first-class, and the real
-  fix touches either the closure or step 3, both risky changes to the just-stabilized CA engine, for
-  a ~73%-or-needs-more payoff. It warrants its own careful, measured session rather than being
-  crammed in. BB-0 + BB-1 stand on their own and are committable now.
-- Effort: **L**, risk: **high**.
+- **Resolution (2026-08-07):** BB-2 is closed. The measured conclusion is that no closure-side fix
+  can force the seam short without kinking the pseudo-angle (approach B/D) or moving a folded domain
+  non-rigidly (domain repositioning) — both hard-invariant violations. C is the principled answer and
+  is committed. If a *complete* seam fix is ever revisited, the only remaining route is seam-aware
+  step-3 domain placement (orient the folded domain so its boundary N/C faces the IDR's approach),
+  which fights the end-to-end target and is out of scope for v2.0.
+- Effort spent: **L**; outcome: C (low-risk, committed), D (reverted).
 
-## Phase BB-3 — Accuracy: the 2D peptide-plane table  ⬜
-The single measured win over the shipped table.
-- **2D table indexed on (τ_i, τ_{i+1})** — effectively a 5-CA predictor. Measured (5-fold CV,
-  19,302 units): C 0.2286→0.2168 Å, N 0.1565→0.1499 Å; paired improvement CI excludes 0; a
-  continuous-kNN ceiling (0.215) shows a plain 2D bin table captures nearly all the signal, so
-  no fancy regression is needed. Keep the current 1D row as the fallback for the last interior
-  unit (no CA[i+3]). Bonds stay exact by construction; O improves ~5 % by inheritance.
+## Phase BB-3 — Accuracy: the 2D peptide-plane table  ⏸️ BUILT & MEASURED, HELD (2026-08-07)
+The one measured accuracy win over the shipped table — implemented in full, then held because the
+win is too modest to justify its cost. **All BB-3 code reverted; the 1D table stands.**
+
+- **The win is real but modest and could not be reproduced at the plan's headline size.** Built the
+  2D table indexed on (τ_i, τ_{i+1}) — a 5-CA predictor — deriving it from the committed 19,302
+  units, baking it in, and wiring placement (2D where a fifth CA exists, 1D row for the last
+  interior unit and for backfilled cells). Independent 5-fold CV on **placed-atom** error (the
+  number that matters): **C 0.3139→0.2978 Å (−5.1 %), N 0.1941→0.1868 Å (−3.8 %), paired 95 % CI
+  excludes 0 for both.** The direction/significance match the plan, but the plan's absolute figures
+  (0.2286→0.2168) are a different projection; the honest placed-atom gain is ~0.016 Å on C. A
+  min-count threshold on sparse 2D cells only *hurt* held-out accuracy (monotonically), so the full
+  table is the best 2D variant — the sparse cells are signal, not overfit.
+- **Blocker: it trips the p300 clash ratchet 4→5.** The (more accurate) 2D placement shifts the
+  2191-2197 backbone cluster so one more *borderline* contact crosses the vdW cutoff — the new one
+  is `GLN2192 CA / ALA2197 N` at **2.648 Å vs a 2.65 Å minimum, 0.002 Å over**. All five introduced
+  clashes are 0.002-0.086 Å borderline; four are in the same coupled cluster that is the documented
+  **3-way-clash-move follow-up** (the 2-unit polish can't escape a 3+-body cluster). Noise-level, but
+  a regression by the down-only gate's definition.
+- **Decision (Ryan, 2026-08-07): HOLD.** The ~0.016 Å placed-C win does not justify (a) a 324-entry
+  (~292-line) table during the v2 de-bloat refactor [[dodo-v2-refactor-not-restart]], nor (b) a
+  clash-ratchet regression that would itself require the separate 3-way-polish work to avoid —
+  especially as the real path to backbone/all-atom quality is Ryan's external CA→all-atom model
+  [[dodo-external-all-atom-model]], which makes DODO's analytical backbone a stopgap. If revisited,
+  the clean order is: 3-way clash polish first (clears the cluster, ratchet stays at 4), then BB-3.
 - **Do NOT** pursue finer bins, bin interpolation, or a separate O predictor — all measured to
   give nothing (the 1-dihedral residual is the plane's intrinsic spread; O is geometrically
-  determined by C/N).
-- **Dependency:** re-deriving the table needs the external sim data + a committed derivation
-  script → do this *with* BB-0's reproducibility work, not before it.
-- Effort: **M**, risk: **low** (accuracy-only, no invariant touched).
+  determined by C/N). The derivation script + `--verify`/CV harness for the 2D table are in this
+  session's scratchpad if the work is picked up again.
+- Effort spent: **M**; outcome: reverted, 1D table retained.
 
 ## Phase BB-4 — Vectorize the refinement  ⬜
 Bring the backbone path up to the CA path's batching philosophy.
@@ -221,7 +266,8 @@ Bring the backbone path up to the CA path's batching philosophy.
 ---
 
 ## Suggested order & rationale
-BB-0 (foundation) → **BB-1 + BB-2a** (fastest route to *valid* output: clashes down, seams
-omitted-not-lied-about) → **BB-2b** (the real seam fix, the hard/ambitious part) → BB-3
-(accuracy) and BB-4 (speed) in parallel once validity holds → BB-5 (promote). BB-2b is the one
-item that reaches back into the CA engine; everything else is contained to the backbone modules.
+BB-0 (foundation ✅) → **BB-1** (clashes down ✅) → **BB-2** (seam: solved by C, honest labeling;
+closure-forcing proven infeasible ✅) → **BB-3** (accuracy: built, measured, HELD ⏸️ — modest win not
+worth the table bloat + clash-ratchet friction) → **BB-4** (speed) and/or the 3-way clash polish next,
+then **BB-5** (promote). Nothing remaining reaches back into the CA engine — all contained to the
+backbone modules.

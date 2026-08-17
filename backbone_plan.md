@@ -214,35 +214,37 @@ Evidence trail for the rejected/earlier roads:
   which fights the end-to-end target and is out of scope for v2.0.
 - Effort spent: **L**; outcome: C (low-risk, committed), D (reverted).
 
-## Phase BB-3 — Accuracy: the 2D peptide-plane table  ⏸️ BUILT & MEASURED, HELD (2026-08-07)
-The one measured accuracy win over the shipped table — implemented in full, then held because the
-win is too modest to justify its cost. **All BB-3 code reverted; the 1D table stands.**
+## Phase BB-3 — Accuracy: the 2D peptide-plane table  ✅ SHIPPED (2026-08-13)
+Held on 2026-08-07, **re-measured and shipped on 2026-08-13** once its only blocker was gone. The
+2D table is now the predictor for every interior unit with a fifth alpha carbon.
 
-- **The win is real but modest and could not be reproduced at the plan's headline size.** Built the
-  2D table indexed on (τ_i, τ_{i+1}) — a 5-CA predictor — deriving it from the committed 19,302
-  units, baking it in, and wiring placement (2D where a fifth CA exists, 1D row for the last
-  interior unit and for backfilled cells). Independent 5-fold CV on **placed-atom** error (the
-  number that matters): **C 0.3139→0.2978 Å (−5.1 %), N 0.1941→0.1868 Å (−3.8 %), paired 95 % CI
-  excludes 0 for both.** The direction/significance match the plan, but the plan's absolute figures
-  (0.2286→0.2168) are a different projection; the honest placed-atom gain is ~0.016 Å on C. A
-  min-count threshold on sparse 2D cells only *hurt* held-out accuracy (monotonically), so the full
-  table is the best 2D variant — the sparse cells are signal, not overfit.
-- **Blocker: it trips the p300 clash ratchet 4→5.** The (more accurate) 2D placement shifts the
-  2191-2197 backbone cluster so one more *borderline* contact crosses the vdW cutoff — the new one
-  is `GLN2192 CA / ALA2197 N` at **2.648 Å vs a 2.65 Å minimum, 0.002 Å over**. All five introduced
-  clashes are 0.002-0.086 Å borderline; four are in the same coupled cluster that is the documented
-  **3-way-clash-move follow-up** (the 2-unit polish can't escape a 3+-body cluster). Noise-level, but
-  a regression by the down-only gate's definition.
-- **Decision (Ryan, 2026-08-07): HOLD.** The ~0.016 Å placed-C win does not justify (a) a 324-entry
-  (~292-line) table during the v2 de-bloat refactor [[dodo-v2-refactor-not-restart]], nor (b) a
-  clash-ratchet regression that would itself require the separate 3-way-polish work to avoid —
-  especially as the real path to backbone/all-atom quality is Ryan's external CA→all-atom model
-  [[dodo-external-all-atom-model]], which makes DODO's analytical backbone a stopgap. If revisited,
-  the clean order is: 3-way clash polish first (clears the cluster, ratchet stays at 4), then BB-3.
-- **Do NOT** pursue finer bins, bin interpolation, or a separate O predictor — all measured to
-  give nothing (the 1-dihedral residual is the plane's intrinsic spread; O is geometrically
-  determined by C/N). The derivation script + `--verify`/CV harness for the 2D table are in this
-  session's scratchpad if the work is picked up again.
+- **The win, measured twice and identical both times.** The table is indexed on (τ_i, τ_{i+1}) — a
+  5-CA predictor. Independent 5-fold CV on **placed-atom** error (after the exact bond projections,
+  which is the number that reaches the output): **C 0.3139→0.2978 Å (−5.1 %), N 0.1941→0.1868 Å
+  (−3.8 %), paired 95 % CI excludes 0 for both.** (The plan's original 0.2286→0.2168 headline is a
+  different, in-plane projection; the placed-atom figure is the honest one.) In-sample on the
+  training frames, N tightens further to 0.146 Å while C holds at 0.211 — C's residual is the
+  peptide plane's intrinsic spread, which no second dihedral can remove.
+- **Why it was held, and why that no longer applies.** The blocker was the p300 clash ratchet: the
+  more accurate placement shifted the 2191-2197 cluster and pushed introduced clashes 4→5 over a
+  ceiling of 4, by a `GLN2192 CA / ALA2197 N` contact **0.002 Å** inside the vdW cutoff. Two things
+  changed since. BB-2.5's finer azimuth grid (15°→5°) took p300's baseline 4→3, and BB-5 defended
+  the whole corpus with impossible-contact guards and a hard N-CA-C window. **Re-measured with the
+  2D table in place: dnmt3a 2, arf19 0, p300 3 — every fixture exactly at its (tightened) ratchet,
+  seams unchanged at 4/6/10, zero impossible contacts, zero rebuilt-provenance bond defects, across
+  seeds 0-2.** Full suite 1914 passed / 0 failed, including the 117-structure corpus and the
+  9-structure historical suite. The 3-way clash polish it was supposed to need first turned out not
+  to exist as a problem (no three-unit clusters — see BB-1's resolved follow-up).
+- **Cost, stated plainly.** ~292 lines of machine-generated literals (324 cells), and **+16 %**
+  single-model / **+13 %** multi-model backbone time (p300: 1.42→1.65 s, 4.59→5.19 s) — still 2.7×
+  faster than before BB-4. The bloat argument that helped hold it is weaker than it looked: the
+  table is derived and CI-verified by `scripts/derive_peptide_table.py --verify`, so it is not
+  hand-maintained magic numbers, and accuracy is the headline claim of a backbone-only release
+  [[dodo-v2-release-plan]].
+- **Do NOT** add a min-count threshold on sparse 2D cells: held-out error rises monotonically with
+  it (C 0.2978 at none, 0.2988 at 10, 0.3015 at 20, 0.3105 at 75), so the sparse cells carry signal.
+  Likewise **do not** pursue finer bins, bin interpolation, or a separate O predictor — all measured
+  to give nothing (O is geometrically determined by C/N).
 - Effort spent: **M**; outcome: reverted, 1D table retained.
 
 ## Phase BB-4 — Speed  ✅ DONE (2026-08-13) — but the plan's target was wrong
@@ -317,11 +319,12 @@ been hiding** — the corpus harnesses had only ever run the CA-only path.
 
 ## Suggested order & rationale
 BB-0 (foundation ✅) → **BB-1** (clashes down ✅) → **BB-2** (seam: solved by C, honest labeling;
-closure-forcing proven infeasible ✅) → **BB-3** (accuracy: built, measured, HELD ⏸️ — modest win not
-worth the table bloat + clash-ratchet friction) → **BB-4** (speed ✅ — vectorised the clash polish,
-the real 78 % bottleneck, 3× on multi-model `--backbone`, bit-identical) → **BB-5** (promoted to
-first-class ✅ — default-on, corpus-wide gate, three latent defects fixed). **All phases are now
-resolved.** The release is backbone-only and first-in-class (all-atom deferred), so the open
-question worth revisiting is **BB-3**: with the clash ratchet now defended corpus-wide and the
-polish 15× faster, the 2D table's accuracy win may be worth its cost after all — re-measure before
-deciding.
+closure-forcing proven infeasible ✅) → **BB-4** (speed ✅ — vectorised the clash polish, the real
+78 % bottleneck, 3× on multi-model `--backbone`, bit-identical) → **BB-5** (promoted to first-class
+✅ — default-on, corpus-wide gate, three latent defects fixed) → **BB-3** (accuracy ✅ — held on
+2026-08-07, then re-measured and SHIPPED on 08-13 once BB-2.5 and BB-5 removed its clash blocker).
+
+**Every phase is resolved.** Note the ordering lesson: BB-3 was correctly held when its cost
+outweighed its benefit, and correctly shipped later when unrelated work (a finer polish grid, then
+corpus-wide clash defences) removed the blocker without anyone targeting it. A held phase is worth
+re-measuring after the ground moves, not treating as permanently closed.

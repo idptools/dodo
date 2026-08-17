@@ -125,6 +125,12 @@ that every bond inside a peptide unit is exact by construction. A second pass ro
 about its CA–CA axis — the single degree of freedom it has left — to improve bond angles, steric
 clashes and φ/ψ plausibility together.
 
+One angle is not the most a CA trace will tell you, though. Conditioning a unit on **both** the
+pseudo-dihedrals that flank it — a five-carbon window rather than four — is measurably better, so
+that is what ships: held out over 19,302 units, placed-atom error falls from 0.314 to 0.298 Å for C
+(−5.1%) and 0.194 to 0.187 Å for N (−3.8%), each with a paired 95% confidence interval excluding
+zero. Units at the end of a region have no fifth carbon and fall back to the four-carbon table.
+
 Accuracy, measured properly: the lookup table was rebuilt from 80 simulation frames and tested on
 the 20 it had never seen, over 3,643 residues whose alpha carbons were the only input.
 

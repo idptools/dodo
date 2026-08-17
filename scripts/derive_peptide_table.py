@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -129,12 +130,21 @@ class _Accumulator:
 
 
 def derive(frames: list[Path]) -> dict[str, object]:
-    """Derive the binned table and both marginals from ``frames``.
+    """Derive the 1D and 2D binned tables and both marginals from ``frames``.
 
-    Returns a dict with ``c_by_bin`` / ``n_by_bin`` ``(N_BINS, 3)`` arrays, per-bin counts, and the
-    trailing and forward marginals.
+    Returns a dict with the 1D ``c_by_bin`` / ``n_by_bin`` ``(N_BINS, 3)`` arrays and per-bin
+    counts, the 2D ``c_by_bin_2d`` / ``n_by_bin_2d`` ``(N_BINS, N_BINS, 3)`` arrays with their
+    counts, and the trailing and forward marginals.
+
+    The 2D table keys a unit on the pseudo-dihedral of its own virtual bond (``tau_i``, over
+    ``CA[i-1..i+2]``) *and* the next one (``tau_{i+1}``, over ``CA[i..i+3]``) -- effectively a 5-CA
+    predictor for the peptide plane. A unit needs a fifth alpha carbon to have ``tau_{i+1}``, so the
+    last interior unit of a chain contributes to the 1D table only. Every 2D cell no unit populated
+    is backfilled from the 1D row for ``tau_i``, so the committed table is fully defined and the
+    placement path never has to branch on an empty cell.
     """
     bins = [_Accumulator() for _ in range(N_BINS)]
+    bins2d: dict[tuple[int, int], _Accumulator] = defaultdict(_Accumulator)
     trailing = _Accumulator()
     forward = _Accumulator()
     for path in frames:
@@ -158,20 +168,40 @@ def derive(frames: list[Path]) -> dict[str, object]:
                 local_c = _local(cas[i], back_ref, along, c_true)
                 local_n = _local(cas[i], back_ref, along, n_true)
                 trailing.add(local_c, local_n)
-                if i <= m - 3:  # has a fourth CA -> binnable
-                    tau = _pseudo_dihedral(cas[i - 1], cas[i], cas[i + 1], cas[i + 2])
-                    index = min(int((tau + 180.0) // BIN_WIDTH_DEGREES), N_BINS - 1)
-                    bins[index].add(local_c, local_n)
+                if i <= m - 3:  # has a fourth CA -> 1D-binnable on tau_i
+                    tau_i = _pseudo_dihedral(cas[i - 1], cas[i], cas[i + 1], cas[i + 2])
+                    a = min(int((tau_i + 180.0) // BIN_WIDTH_DEGREES), N_BINS - 1)
+                    bins[a].add(local_c, local_n)
+                    if i <= m - 4:  # has a fifth CA too -> 2D-binnable on (tau_i, tau_{i+1})
+                        tau_j = _pseudo_dihedral(cas[i], cas[i + 1], cas[i + 2], cas[i + 3])
+                        b = min(int((tau_j + 180.0) // BIN_WIDTH_DEGREES), N_BINS - 1)
+                        bins2d[(a, b)].add(local_c, local_n)
 
     c_by_bin = np.array([b.mean()[0] for b in bins])
     n_by_bin = np.array([b.mean()[1] for b in bins])
     counts = [b.mean()[2] for b in bins]
+
+    c_by_bin_2d = np.empty((N_BINS, N_BINS, 3))
+    n_by_bin_2d = np.empty((N_BINS, N_BINS, 3))
+    counts_2d = np.zeros((N_BINS, N_BINS), dtype=np.int64)
+    for a in range(N_BINS):
+        for b in range(N_BINS):
+            acc = bins2d.get((a, b))
+            if acc is not None and acc.c:
+                mc, mn, cnt = acc.mean()
+                c_by_bin_2d[a, b], n_by_bin_2d[a, b], counts_2d[a, b] = mc, mn, cnt
+            else:  # unpopulated cell: fall back to the 1D row for tau_i
+                c_by_bin_2d[a, b], n_by_bin_2d[a, b] = c_by_bin[a], n_by_bin[a]
+
     t_c, t_n, _ = trailing.mean()
     f_c, f_n, _ = forward.mean()
     return {
         "c_by_bin": c_by_bin,
         "n_by_bin": n_by_bin,
         "counts": counts,
+        "c_by_bin_2d": c_by_bin_2d,
+        "n_by_bin_2d": n_by_bin_2d,
+        "counts_2d": counts_2d,
         "trailing_c": t_c,
         "trailing_n": t_n,
         "forward_c": f_c,
@@ -182,6 +212,31 @@ def derive(frames: list[Path]) -> dict[str, object]:
 def _fmt_row(row: np.ndarray, count: int | None = None) -> str:
     body = "(" + ", ".join(f"{v:+.4f}" for v in row) + ")"
     return f"    {body},  # n={count}" if count is not None else body
+
+
+def _fmt_triple(row: np.ndarray) -> str:
+    return "(" + ", ".join(f"{v:+.4f}" for v in row) + ")"
+
+
+def _fmt_2d_table(name: str, table: np.ndarray, counts: np.ndarray) -> list[str]:
+    """Format a ``(N_BINS, N_BINS, 3)`` table as a nested tuple, 3 triples per line.
+
+    One outer entry per ``tau_i`` bin. The ``# n=`` comment sums that row's populated units, so a
+    reader can see which rows lean on the 1D backfill.
+    """
+    lines = [f"{name} = ("]
+    for a in range(N_BINS):
+        lo = -180 + a * BIN_WIDTH_DEGREES
+        lines.append(
+            f"    (  # tau_i bin {a} [{lo:+d}, {lo + BIN_WIDTH_DEGREES:+d}) deg, "
+            f"n={int(counts[a].sum())}"
+        )
+        triples = [_fmt_triple(table[a, b]) for b in range(N_BINS)]
+        for start in range(0, N_BINS, 3):
+            lines.append("        " + ", ".join(triples[start : start + 3]) + ",")
+        lines.append("    ),")
+    lines.append(")")
+    return lines
 
 
 def emit(result: dict[str, object]) -> str:
@@ -198,6 +253,9 @@ def emit(result: dict[str, object]) -> str:
     lines.append(f"_N_MARGINAL = {_fmt_row(result['trailing_n'])}")
     lines.append(f"_C_FORWARD_MARGINAL = {_fmt_row(result['forward_c'])}")
     lines.append(f"_N_FORWARD_MARGINAL = {_fmt_row(result['forward_n'])}")
+    counts_2d = result["counts_2d"]
+    lines += _fmt_2d_table("_C_BY_BIN_2D", result["c_by_bin_2d"], counts_2d)  # type: ignore[arg-type]
+    lines += _fmt_2d_table("_N_BY_BIN_2D", result["n_by_bin_2d"], counts_2d)  # type: ignore[arg-type]
     return "\n".join(lines)
 
 
@@ -219,6 +277,8 @@ def verify(result: dict[str, object], tolerance: float) -> list[str]:
     check("_N_MARGINAL", result["trailing_n"], cb._N_MARGINAL)  # type: ignore[arg-type]
     check("_C_FORWARD_MARGINAL", result["forward_c"], cb._C_FORWARD_MARGINAL)  # type: ignore[arg-type]
     check("_N_FORWARD_MARGINAL", result["forward_n"], cb._N_FORWARD_MARGINAL)  # type: ignore[arg-type]
+    check("_C_BY_BIN_2D", result["c_by_bin_2d"], cb._C_TABLE_2D)  # type: ignore[arg-type]
+    check("_N_BY_BIN_2D", result["n_by_bin_2d"], cb._N_TABLE_2D)  # type: ignore[arg-type]
     return problems
 
 

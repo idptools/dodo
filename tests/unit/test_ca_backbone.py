@@ -255,10 +255,12 @@ def test_result_reports_where_each_unit_came_from() -> None:
     ca, *_ = _truth()
     result = backbone_from_ca(ca)
     assert len(result.source) == ca.shape[0] - 1
-    assert set(result.source) <= {"table", "marginal", "forward"}
-    # On a 60-residue chain the interior should overwhelmingly come from the four-CA table.
-    assert result.source.count("table") > 0.9 * len(result.source)
-    assert str(result.source.count("table")) in result.notes[0]
+    assert set(result.source) <= {"table5", "table", "marginal", "forward"}
+    # On a 60-residue chain the interior should overwhelmingly come from the five-CA (2D) table;
+    # exactly one interior unit -- the last, which has no fifth alpha carbon -- uses the 1D table.
+    assert result.source.count("table5") > 0.9 * len(result.source)
+    assert result.source.count("table") == 1
+    assert str(result.source.count("table5")) in result.notes[0]
 
 
 class TestAddBackboneToRebuilt:

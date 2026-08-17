@@ -1,11 +1,12 @@
 """The peptide-plane table is auditable: re-derivable from committed frames, with a pinned accuracy.
 
-``dodo.construct.ca_backbone`` bakes a measured 4-CA lookup table into source. Before this, the
-table's provenance lived outside the repo -- a set of magic numbers nobody could check. These tests
-close that: :mod:`scripts.derive_peptide_table` regenerates the shipped constants exactly from the
+``dodo.construct.ca_backbone`` bakes measured peptide-plane lookup tables into source: a 4-CA 1D
+table keyed on one CA pseudo-dihedral, and a 5-CA 2D table keyed on two. Before this, their
+provenance lived outside the repo -- a set of magic numbers nobody could check. These tests close
+that: :mod:`scripts.derive_peptide_table` regenerates every shipped constant exactly from the
 committed frames in ``tests/data/backbone/frames`` (100 all-atom IDR frames, stripped to backbone
 atoms and gzipped), and the placement's accuracy on those frames is pinned so a regression in either
-the table or the placement math is caught.
+the tables or the placement math is caught.
 
 They also record a confirmed defect: the first peptide unit of every region is placed with the
 forward marginal applied at the wrong reference sign, ~3x worse than it should be. See the xfail at
@@ -47,8 +48,9 @@ class TestPeptideTableIsReproducible:
     def test_committed_frames_regenerate_the_shipped_table(self) -> None:
         """The derivation, run on the committed frames, reproduces every shipped constant.
 
-        This is what makes the table auditable rather than magic numbers: change the derivation
-        method and this fails. Covers ``_C_BY_BIN`` / ``_N_BY_BIN`` and both marginals.
+        This is what makes the tables auditable rather than magic numbers: change the derivation
+        method and this fails. Covers the 1D ``_C_BY_BIN`` / ``_N_BY_BIN``, the 2D
+        ``_C_BY_BIN_2D`` / ``_N_BY_BIN_2D``, and both marginals.
         """
         frames = _frames()
         assert len(frames) == 100, "the committed frame corpus changed size"
@@ -91,10 +93,18 @@ class TestShippedTableAccuracy:
         return float(np.mean(c_err)), float(np.mean(n_err)), float(np.mean(first_c))
 
     def test_interior_accuracy_matches_the_documentation(self) -> None:
-        """Interior units reproduce the cited held-out errors (C 0.210, N 0.164 A) in-sample."""
+        """Interior units reproduce their pinned in-sample errors: C ~0.211, N ~0.146 A.
+
+        These bounds are RATCHETS -- down only. The honest, held-out figure for the 2D table (BB-3)
+        is a placed-atom C 0.3139 -> 0.2978 A and N 0.1941 -> 0.1868 A against the 1D table, both
+        with a paired 95% CI excluding 0; see ``_C_BY_BIN_2D``. What this measures is in-sample, on
+        the frames the table was built from, where the extra bins fit a little tighter still: N
+        drops to ~0.146 while C holds at ~0.211, because C's residual is dominated by the peptide
+        plane's intrinsic spread that no second dihedral can remove.
+        """
         c_err, n_err, _ = self._errors()
-        assert c_err < 0.24, f"interior C error {c_err:.3f} A regressed (documented ~0.21)"
-        assert n_err < 0.18, f"interior N error {n_err:.3f} A regressed (documented ~0.16)"
+        assert c_err < 0.22, f"interior C error {c_err:.3f} A regressed (pinned ~0.211)"
+        assert n_err < 0.15, f"interior N error {n_err:.3f} A regressed (pinned ~0.146)"
 
     def test_first_peptide_unit_is_placed_accurately(self) -> None:
         """The first unit hits the accuracy its forward marginal delivers (BB-1 sign fix).

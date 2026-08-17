@@ -117,14 +117,16 @@ in a viewer shows only the disordered regions moving.
   threshold behind every boundary, without rebuilding anything.
 - **N, C and O are placed on rebuilt regions by default**, from the alpha carbons alone — new in
   2.0. Pass **`--no-backbone`** (or `backbone=False`) for alpha-carbon-only output; rebuilt alpha
-  carbons are bit-identical either way, so the backbone is purely additive. Four consecutive
-  alpha carbons determine a pseudo-dihedral, which largely determines where the intervening peptide
-  unit sits; DODO bins that angle at 20° against a table measured from 100 frames of all-atom IDR
-  simulation, then rotates each unit about its CA–CA axis to settle bond angles, clashes and φ/ψ
-  together. Rebuilding the table on 80 frames and scoring the 20 it had never seen, over 3,643
-  residues: **N 0.16 Å, C 0.22 Å, O 0.63 Å** mean error, with all four bond lengths exact by
-  construction. Folded domains are unaffected and keep every atom either way. Side chains are not
-  built.
+  carbons are bit-identical either way, so the backbone is purely additive. Consecutive alpha
+  carbons determine pseudo-dihedrals, which largely determine where the intervening peptide unit
+  sits; DODO bins those at 20° against a table measured from 100 frames of all-atom IDR simulation,
+  then rotates each unit about its CA–CA axis to settle bond angles, clashes and φ/ψ together.
+  Rebuilding the table on 80 frames and scoring the 20 it had never seen, over 3,643 residues:
+  **N 0.16 Å, C 0.22 Å, O 0.63 Å** mean error, with all four bond lengths exact by construction.
+  The lookup is keyed on **five** consecutive alpha carbons — both pseudo-dihedrals flanking a unit
+  — which beats the four-carbon form by 5.1% on C and 3.8% on N (held out over 19,302 units, paired
+  95% CI excluding zero); units with no fifth carbon fall back to the four-carbon table. Folded
+  domains are unaffected and keep every atom either way. Side chains are not built.
 - **Reports instead of print statements.** `dodo.rebuild()` returns a `RebuildReport` with
   `.ok`, `.models`, `.failures`, `.assignments` and `.outcomes`. In 1.x these functions returned
   `None` and printed, so a script could not tell whether a region had actually been rebuilt.

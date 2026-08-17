@@ -456,10 +456,13 @@ bit-for-bit, and 334 alpha carbons for the 334 residues it rebuilds.
 ### Backbone reconstruction (`--backbone` / `--no-backbone`)
 
 By default DODO places **N, C and O** on the rebuilt regions, inferred from the alpha carbons alone
-— four consecutive alpha carbons largely determine where the peptide unit between the middle two
-sits, and DODO looks that up in a table measured from 100 frames of all-atom IDR simulation, then
-settles each unit's one remaining degree of freedom against bond angles, clashes and φ/ψ together.
-Pass `--no-backbone` (or `backbone=False` in the API) for alpha-carbon-only output.
+— consecutive alpha carbons largely determine where the peptide unit between them sits, and DODO
+looks that up in a table measured from 100 frames of all-atom IDR simulation, then settles each
+unit's one remaining degree of freedom against bond angles, clashes and φ/ψ together. The lookup is
+keyed on **five** alpha carbons (both pseudo-dihedrals flanking the unit), which is measurably
+better than the four-carbon form it replaced: held out, C improves 5.1% and N 3.8%, each with a
+paired 95% confidence interval excluding zero. Pass `--no-backbone` (or `backbone=False` in the
+API) for alpha-carbon-only output.
 
 Held out properly — table rebuilt from 80 frames, scored on the 20 it had never seen, 3,643
 residues:

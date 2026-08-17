@@ -36,7 +36,7 @@ region does.
 | `-n`, `--models` | `1` | Number of conformers |
 | `-s`, `--strategy` | `auto` | Region identification: `auto`, `density`, `contact`, `plddt` |
 | `--seed` | none | Makes output bit-identical |
-| `--backbone` | off | Also place N, C and O on the rebuilt regions — see below |
+| `--backbone` / `--no-backbone` | **on** | Place N, C and O on the rebuilt regions; `--no-backbone` writes alpha carbons only — see below |
 | `--ca-only` | off | Alpha carbons only, folded domains included |
 | `-b`, `--annotate-regions` | off | Encode region type in the B-factor column, for colouring |
 | `--no-conect` | off | Omit CONECT records — **not recommended**, see below |
@@ -110,12 +110,12 @@ name gives a different structure, and short regions come out **larger** than the
 changelog.
 :::
 
-### Backbone reconstruction (`--backbone`)
+### Backbone reconstruction (`--backbone` / `--no-backbone`)
 
-DODO places alpha carbons. `--backbone` additionally infers **N, C and O** for the regions it
-rebuilt, from the alpha carbons alone. It is **opt-in** while it earns confidence; every bond it
-writes inside a rebuilt region is exact; the limits are at the seams and in a handful of marginal
-steric contacts, both described below.
+DODO places alpha carbons, and then — **by default** — infers **N, C and O** for the regions it
+rebuilt, from those alpha carbons alone. Pass `--no-backbone` (or `backbone=False`) for
+alpha-carbon-only output. Every bond it writes inside a rebuilt region is exact; the limits are at
+the seams and in a handful of marginal steric contacts, both described below.
 
 The idea is that a CA-only trace is far more informative than it looks. Four consecutive alpha
 carbons define a pseudo-dihedral, and that angle largely determines where the intervening peptide
@@ -184,10 +184,13 @@ driven into the residue's own CB (measured 1.405 Å against a correct 2.45) and,
 the ring bond to CD (3.444 Å against 1.47). Trading a strained backbone bond for a broken proline
 ring is not a trade worth making, so DODO does not.
 
-Doing this properly means constraining the walk so its closing alpha carbon lands within peptide
-reach of the anchor's nitrogen. Measured on ten seams, 5 have 20–43% of the closure circle in
-reach and 5 have none, so it needs constraints reaching further back than the closing step. That is
-future work, and it is what would make this the default.
+Constraining the walk so its closing alpha carbon lands within peptide reach of the anchor's
+nitrogen was tried too, and measured not to work. Over 83 closures across three structures and
+three seeds, only 22 have an in-reach point that also satisfies the CA–CA–CA pseudo-angle window —
+and those already close. 40 never bring the closure circle within reach at all, and 21 can only
+reach the nitrogen by kinking that angle. So the strained seam is not a missing feature; it is what
+independent rigid-body repositioning and chain rebuilding cost, and DODO labels it rather than
+hiding it.
 :::
 
 **It can introduce marginal steric contacts.** Alpha carbons are placed 3.20 Å apart and the trace

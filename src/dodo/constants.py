@@ -169,6 +169,21 @@ CA_C_N_ANGLE: Final[float] = 116.2  # MEASURED, degrees
 C_N_CA_ANGLE: Final[float] = 121.7  # MEASURED, degrees
 CA_C_O_ANGLE: Final[float] = 120.8  # MEASURED, degrees
 
+#: Hard window on the N-CA-C bond angle of a placed backbone residue, in degrees.
+#:
+#: DERIVED from the bond validator's intra-residue floor, not tuned. The validator flags any
+#: unexpected intra-residue pair under 1.90 A (``validate/bonds.py``: covalent bonds end at 1.85,
+#: 1-3 contacts begin at 2.15). With N-CA and CA-C fixed at their exact lengths, the residue's own
+#: N-to-C distance is set by this angle alone: 1.90 A corresponds to 78.96 degrees, and the 80.0
+#: floor keeps N-C at >= 1.918 A -- above the validator's floor with margin. Measured on the
+#: 117-structure corpus with the backbone on (2026-08-13), the refinement's soft angle term was
+#: twice observed trading the angle down to ~79 degrees under clash pressure (weight 40 vs 0.124),
+#: which is exactly the two-atoms-nearly-on-top-of-each-other geometry the validator exists to
+#: catch. The ceiling mirrors the floor's margin below the 180-degree degenerate line; both match
+#: the window the coupled-clash polish already enforces on the atoms it moves.
+N_CA_C_WINDOW_MIN: Final[float] = 80.0
+N_CA_C_WINDOW_MAX: Final[float] = 160.0
+
 #: Backbone omega dihedral for a trans peptide, in degrees. MEASURED.
 OMEGA_TRANS: Final[float] = 180.0
 

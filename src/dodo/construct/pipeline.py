@@ -237,9 +237,10 @@ def _drop_non_ca_from_rebuilt(structure: Structure) -> Structure:
     the orphaned atoms trail along the old path as disconnected dots. Both artefacts are visible
     in a viewer and neither is a rendering problem.
 
-    This is also simply what DODO produces and always has: all atoms in folded domains, alpha
-    carbons only in rebuilt regions. Placing real backbone atoms for those residues is the next
-    priority, not this one.
+    This is what DODO produces at this stage: all atoms in folded domains, alpha carbons only in
+    rebuilt regions. When ``backbone`` is on (the default) the next step places N, C and O back onto
+    those residues; this strip has to run first so that placement is the only source of their
+    backbone atoms.
 
     Loops inside folded domains count as rebuilt too, so they are stripped as well.
     """
@@ -711,7 +712,7 @@ def rebuild(
     n_models: int = 1,
     strategy: Strategy | str = Strategy.AUTO,
     engine: str = "walk",
-    backbone: bool = False,
+    backbone: bool = True,
     min_length: int = MIN_IDR_LENGTH,
     seed: int | None = None,
     progress: bool | None = None,
@@ -736,18 +737,20 @@ def rebuild(
         ``"walk"``. Only the walk engine ships in this release.
     backbone
         Place N, C and O on the rebuilt regions, from four consecutive alpha carbons, then refine.
-        **Opt-in and off by default.** Folded domains are untouched either way: they keep every
-        atom they arrived with, and only regions DODO generated gain a backbone.
+        **On by default; pass ``backbone=False`` for alpha-carbon-only output.** Folded domains are
+        untouched either way: they keep every atom they arrived with, and only regions DODO
+        generated gain a backbone.
 
-        Held out against all-atom simulation: N 0.16 A, C 0.22 A, O 0.63 A, with every bond
-        length exact by construction.
+        Held out against all-atom simulation: N 0.16 A, C 0.22 A, O 0.63 A, with every bond length
+        exact by construction.
 
-        What keeps it opt-in is the seams. Where a rebuilt region meets a folded domain, an exact
-        peptide bond is not merely hard but geometrically impossible: a peptide unit reaches
-        2.854 A from an alpha carbon to the nitrogen it bonds to, and a rebuilt alpha carbon sits
-        3.2-4.5 A from that fixed nitrogen. DODO aims the carbon at it, leaving the bond long --
-        about 2.2 A against an ideal 1.329 -- rather than writing two atoms on top of each other,
-        and reports every seam it does this at.
+        The one thing it cannot make exact is the seams. Where a rebuilt region meets a folded
+        domain, an exact peptide bond is geometrically impossible: a peptide unit reaches 2.854 A
+        from an alpha carbon to the nitrogen it bonds to, and a rebuilt alpha carbon sits 3.2-4.5 A
+        from that fixed (rigidly repositioned) nitrogen. DODO aims the carbon at it, leaving the
+        bond long -- about 2.2 A against an ideal 1.329 -- rather than writing two atoms on top of
+        each other, and labels and reports every such seam on
+        :attr:`RebuildReport.backbone_seams`. Nothing physically impossible is ever written.
     min_length
         Shortest region worth rebuilding. Shorter ones keep their input coordinates.
     seed
@@ -935,7 +938,7 @@ def build_from_sequence(
     mode: str = DEFAULT_MODE,
     n_models: int = 1,
     engine: str = "walk",
-    backbone: bool = False,
+    backbone: bool = True,
     seed: int | None = None,
 ) -> RebuildReport:
     """Build coordinates for a disordered sequence with no input structure.
@@ -948,9 +951,10 @@ def build_from_sequence(
     sequence
         One-letter amino acid sequence.
     mode, n_models, engine, backbone, seed
-        As for :func:`rebuild`. Note that ``backbone`` is cleaner here than on
+        As for :func:`rebuild` (``backbone`` is on by default). It is even cleaner here than on
         :func:`rebuild`: with no input structure there are no folded domains and so no seams,
-        which is where the strained bonds in a rebuild come from.
+        which is where the strained bonds in a rebuild come from -- a from-sequence build comes out
+        completely clean.
 
     Returns
     -------

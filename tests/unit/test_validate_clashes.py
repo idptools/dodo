@@ -1108,6 +1108,9 @@ class TestRebuiltOutput:
     def rebuilt(name: str, **kwargs: object) -> Structure:
         import dodo
 
+        # These pin the CA-only rebuild's clash regime; opt out of the now-default backbone unless
+        # a test asks for it.
+        kwargs.setdefault("backbone", False)
         report = dodo.rebuild(DATA / name, seed=7, **kwargs)
         model: Structure = report.models[0]
         return model

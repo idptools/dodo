@@ -95,11 +95,14 @@ def _add_common_build_arguments(parser: argparse.ArgumentParser) -> None:
     # would have forced anyone with a shell script using them to rewrite it in Python.
     parser.add_argument(
         "--backbone",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            "also place N, C and O on the rebuilt regions, inferred from four consecutive alpha "
-            "carbons. Opt-in for now: the geometry inside a rebuilt region is exact, but the "
-            "peptide bond where a region meets a folded domain is unsatisfiable and is left long"
+            "place N, C and O on the rebuilt regions, inferred from four consecutive alpha carbons "
+            "(default: on; pass --no-backbone for alpha-carbon-only output). The geometry inside a "
+            "rebuilt region is exact; the peptide bond where a region meets a folded domain is "
+            "geometrically unsatisfiable, so it is drawn as close as possible, left long, and "
+            "reported"
         ),
     )
     parser.add_argument(

@@ -306,6 +306,22 @@ def test_the_ideal_angle_is_the_one_the_kernel_targets() -> None:
     assert kernel.NCAC == N_CA_C_ANGLE
 
 
+def test_the_angle_window_is_the_same_in_both_backends() -> None:
+    """Guards the hard N-CA-C window's kernel-local copies, exactly as for ``NCAC`` above.
+
+    The window and its step penalty exist so the refinement cannot trade a residue's own angle
+    below the bond validator's 1.90 A intra-residue floor under clash pressure (measured twice on
+    the corpus). The kernel and the numpy scorer each hold a copy; if they drift, the backends
+    optimise different objectives and the equivalence tests only catch it where the window binds.
+    """
+    from dodo.constants import N_CA_C_WINDOW_MAX, N_CA_C_WINDOW_MIN
+    from dodo.construct.backbone_refine import _ANGLE_WINDOW_PENALTY
+
+    assert kernel.ANGLE_LO == N_CA_C_WINDOW_MIN
+    assert kernel.ANGLE_HI == N_CA_C_WINDOW_MAX
+    assert kernel.ANGLE_PENALTY == _ANGLE_WINDOW_PENALTY
+
+
 class TestCompiledNeighbourSearch:
     """The compiled cell list replaced a ``cKDTree`` that sat in the middle of a compiled path.
 

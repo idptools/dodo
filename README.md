@@ -88,7 +88,7 @@ dodo regions AF-P04637-F1-model_v6.pdb
 | `-n`, `--models` | `1` | Number of conformers. Folded domains are positioned once and held fixed across all models; only the disordered regions differ |
 | `-s`, `--strategy` | `auto` | How to identify regions: `auto`, `density`, `contact`, `plddt` |
 | `--seed` | none | Makes output reproducible |
-| `--backbone` | off | Also place N, C and O on the rebuilt regions, inferred from the alpha carbons |
+| `--backbone` / `--no-backbone` | **on** | Place N, C and O on the rebuilt regions, inferred from the alpha carbons; `--no-backbone` writes alpha carbons only |
 | `--ca-only` | off | Alpha carbons only, folded domains included |
 | `-b`, `--annotate-regions` | off | Encode region type in the B-factor column, for colouring |
 | `--no-conect` | off | Omit CONECT records — **not recommended**, see [below](#why-conect-records-matter) |
@@ -453,13 +453,13 @@ actually rebuilds are reduced to one alpha carbon per residue.
 On dnmt3a, for example: 4,636 atoms across the 578 residues DODO leaves alone, preserved
 bit-for-bit, and 334 alpha carbons for the 334 residues it rebuilds.
 
-### Backbone reconstruction (`--backbone`)
+### Backbone reconstruction (`--backbone` / `--no-backbone`)
 
-Rebuilt regions are alpha-carbon only by default. `--backbone` additionally places **N, C and O**
-on them, inferred from the alpha carbons alone — four consecutive alpha carbons largely determine
-where the peptide unit between the middle two sits, and DODO looks that up in a table measured from
-100 frames of all-atom IDR simulation, then settles each unit's one remaining degree of freedom
-against bond angles, clashes and φ/ψ together.
+By default DODO places **N, C and O** on the rebuilt regions, inferred from the alpha carbons alone
+— four consecutive alpha carbons largely determine where the peptide unit between the middle two
+sits, and DODO looks that up in a table measured from 100 frames of all-atom IDR simulation, then
+settles each unit's one remaining degree of freedom against bond angles, clashes and φ/ψ together.
+Pass `--no-backbone` (or `backbone=False` in the API) for alpha-carbon-only output.
 
 Held out properly — table rebuilt from 80 frames, scored on the 20 it had never seen, 3,643
 residues:
@@ -476,14 +476,15 @@ pins that regeneration and the placement accuracy in CI.
 
 Every bond length inside a rebuilt region is exact by construction. Side chains are still not built.
 
-It is opt-in because of the **seams**. Where a rebuilt region meets a folded domain, that domain's
-nitrogen still points toward where the region ran in AlphaFold's model, and folded-domain atoms are
-not DODO's to move. A peptide unit reaches at most 2.854 Å from an alpha carbon to the nitrogen it
-bonds to; a rebuilt alpha carbon measures well beyond that from it. The bond is unsatisfiable, so
-DODO aims the atom as close as the residue's own N–CA–C angle allows and leaves the bond long —
-measured 2.6–3.7 Å against an ideal 1.33 (mean ~3.0) — and reports it.
-Nothing impossible is written: measured over three structures at three seeds, `--backbone`
-introduces zero atom pairs closer than the 1.00 Å floor below which no real bond exists.
+The one place it cannot be exact is the **seams**. Where a rebuilt region meets a folded domain,
+that domain's nitrogen still points toward where the region ran in AlphaFold's model, and
+folded-domain atoms are not DODO's to move. A peptide unit reaches at most 2.854 Å from an alpha
+carbon to the nitrogen it bonds to; a rebuilt alpha carbon measures well beyond that from it. The
+bond is unsatisfiable, so DODO aims the atom as close as the residue's own N–CA–C angle allows,
+leaves the bond long — measured 2.6–3.7 Å against an ideal 1.33 (mean ~3.0) — and labels and
+reports it (on `RebuildReport.backbone_seams` and in the run summary). Nothing impossible is
+written: measured over three structures at three seeds, backbone placement introduces zero atom
+pairs closer than the 1.00 Å floor below which no real bond exists.
 
 Building from sequence has no seams and comes out completely clean. See the
 [user guide](https://dodo.readthedocs.io) for the full accounting, including why leaving the seam

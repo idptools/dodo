@@ -2,50 +2,9 @@
 
 Why the alpha carbons do not move
 ---------------------------------
-They are the part DODO is confident about. The walk engine placed them at exactly 3.81 A with the
-pseudo-angle inside its measured window, self-avoiding, and steered to the ALBATROSS-predicted
-end-to-end distance -- which is the scientific claim the whole package makes. Letting a refinement
-nudge them would trade that claim for backbone cosmetics. So they are fixed, and only N, C and O
-move.
-
-The parameterization, and why it makes this small
--------------------------------------------------
-With both flanking alpha carbons fixed and ideal internal geometry, the peptide unit between them
-has exactly **one** degree of freedom: an azimuth about the CA-CA axis. Derived from DODO's ideal
-bond lengths and angles:
-
-* C sits :data:`~dodo.constants.CA_C_BOND_LENGTH` from CA(i), at :data:`_POLAR_C` degrees off the
-  CA(i)->CA(i+1) direction, at azimuth ``psi``;
-* N sits :data:`~dodo.constants.N_CA_BOND_LENGTH` from CA(i+1), at :data:`_POLAR_N` degrees off the
-  CA(i+1)->CA(i) direction, at azimuth ``psi + 180``.
-
-So the whole backbone of an ``n``-residue region is described by ``n - 1`` angles, and all three
-bonds are exact for *any* azimuth. Bond lengths therefore need no refinement at all, which is what
-makes this a well-posed problem in one parameter per unit rather than a 3N-dimensional minimization
-that can drift anywhere.
-
-The two polar angles are solved *for DODO's* :data:`~dodo.constants.CA_CA_BOND_LENGTH`, not taken
-from a table of ideal internal coordinates. That distinction cost 0.004 A: textbook peptide geometry
-determines a CA-CA distance of 3.8040 A, so a unit built from it and then stretched onto a 3.81 A
-trace put the discrepancy in the peptide bond, giving 1.3334 A instead of 1.329. Solving the other
-way round -- fixing all three bonds and the 3.81 A span, and letting the two *bond angles* absorb
-the difference -- costs 0.37 and 0.39 degrees on CA-C-N and C-N-CA, which is nothing next to the 2-3
-degrees those angles vary by in real backbone, and buys exact bonds. 3.81 A is itself well founded:
-19,500 consecutive alpha carbons in all-atom IDR simulation give a mean of 3.8129 and a median of
-3.8112 A.
-
-**That exactness is inherited from the input spacing, and it is worth being precise about why.**
-C is placed off CA(i) and N off CA(i+1), so the gap between them -- the peptide bond -- absorbs any
-deviation of ``|CA(i) - CA(i+1)|`` from the canonical value, one for one. Measured on a real
-simulation frame whose alpha carbons span 3.747-3.877 A, the resulting C-N bond spans 1.288-1.383 A,
-correlating with the input spacing at r = 1.0000. This is not a defect in the refinement: a rigid
-peptide unit *determines* the CA-CA distance, so a trace that disagrees with it cannot be fitted by
-one without something giving, and the peptide bond is the least bad place to put the discrepancy.
-
-In DODO it does not arise. The walk engine emits exactly 3.81 A by construction, and STARLING
-output is projected onto exactly 3.81 A before use. It arises for a caller passing an experimental
-or unregularized trace straight in, so :func:`refine_backbone` measures the input spacing and says
-so in its notes rather than quietly returning stretched bonds. Regularize first if you see it.
+The original thought was that because we build the alpha carbons as realistically as possible, it
+doesn't make sense to allow them to move during refinement. After a lot of work to get this to
+work, I kind of disagree with that. Anyways, that is how this currently works.
 
 What is actually refined
 ------------------------
@@ -68,8 +27,7 @@ avoid because it was only placing alpha carbons.
 
 Refinement is a bounded coordinate descent over the azimuths: deterministic, no random restarts, and
 no azimuth can change a bond length -- the three bonds inside a unit are fixed by the unit's own
-geometry, whatever it is rotated to. The one thing that does move them is the canonicalization on
-entry, and only when the input alpha carbons are not uniformly spaced, as described above.
+geometry, whatever it is rotated to.
 """
 
 from __future__ import annotations
@@ -100,11 +58,6 @@ __all__ = [
 ]
 
 #: Polar angle of C off the CA(i)->CA(i+1) direction, in degrees.
-#:
-#: DERIVED from DODO's ideal peptide geometry, not fitted: build CA-C, C-N and N-CA at their ideal
-#: lengths with the ideal CA-C-N and C-N-CA angles, planar and trans, and this angle falls out --
-#: along with a CA-CA separation of 3.8040 A, which is DODO's 3.81 to within 0.006 A. That agreement
-#: is a check on the constants rather than a coincidence.
 _POLAR_C: Final[float] = 20.4118
 
 #: Polar angle of N off the CA(i+1)->CA(i) direction, in degrees. DERIVED with :data:`_POLAR_C` by

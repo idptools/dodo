@@ -17,12 +17,7 @@ import numpy as np
 import pytest
 
 from dodo.cli import main
-from dodo.constants import (
-    C_O_BOND_LENGTH,
-    CA_C_BOND_LENGTH,
-    CA_CA_BOND_LENGTH,
-    N_CA_BOND_LENGTH,
-)
+from dodo.constants import C_O_BOND_LENGTH, CA_C_BOND_LENGTH, N_CA_BOND_LENGTH
 from dodo.construct.pipeline import build_from_sequence, rebuild
 from dodo.geometry.metrics import end_to_end, validate_ca_trace
 from dodo.io import read_structure
@@ -481,9 +476,9 @@ class TestBuildFromSequence:
         with pytest.raises(ValueError):
             build_from_sequence(bad)
 
-    def test_starling_is_refused_for_now(self) -> None:
-        with pytest.raises(ValueError, match="engine='walk'"):
-            build_from_sequence(IDR_SEQUENCE, engine="starling")
+    def test_an_unknown_engine_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="Use 'walk'"):
+            build_from_sequence(IDR_SEQUENCE, engine="nonesuch")
 
 
 class TestCli:
@@ -941,32 +936,6 @@ class TestBackboneDoesNotDamageInputGeometry:
         assert np.array_equal(plain.ca_xyz, fancy.ca_xyz)
 
 
-class TestBatchEngine:
-    """The vectorized batch engine, wired in as ``engine='batch'``, rebuilds valid structures."""
-
-    def test_rebuild_with_the_batch_engine_builds_every_region_with_exact_bonds(self) -> None:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            report = rebuild(DNMT3A, engine="batch", seed=0, progress=False)
-        assert report.ok
-        assert not report.blocking_failures
-        # The batch engine (with its walk fallback) builds every region the walk does, and the
-        # rebuilt alpha-carbon bonds are exact -- so it introduces no impossible separations.
-        model = report.models[0]
-        for domain in model.domains:
-            for span in domain.generated_spans():
-                ca = model.ca_xyz[span.start : span.stop]
-                if ca.shape[0] >= 2:
-                    bonds = np.linalg.norm(np.diff(ca, axis=0), axis=1)
-                    assert np.max(np.abs(bonds - CA_CA_BOND_LENGTH)) < 1e-6
-
-    def test_unknown_engine_is_refused(self) -> None:
-        with pytest.raises(ValueError, match="Unknown engine"):
-            rebuild(DNMT3A, engine="nonsense", seed=0, progress=False)
-
-
-#: (introduced-clash ceiling, strained-seam ceiling) per fixture, engine=walk, seed 0. A ratchet
-#: for :class:`TestBackboneBaseline` -- these only ever move DOWN as the backbone redo improves.
 _BACKBONE_BASELINE: dict[str, tuple[int, int]] = {
     "dnmt3a": (2, 4),
     "arf19": (0, 6),

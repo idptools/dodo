@@ -33,7 +33,7 @@ _MODE_CHOICES = (
     "max_expansion",
 )
 _STRATEGY_CHOICES = ("auto", "density", "contact", "plddt")
-_ENGINE_CHOICES = ("walk", "batch")
+_ENGINE_CHOICES = ("walk",)
 
 
 def _add_common_build_arguments(parser: argparse.ArgumentParser) -> None:
@@ -98,7 +98,7 @@ def _add_common_build_arguments(parser: argparse.ArgumentParser) -> None:
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "place N, C and O on the rebuilt regions, inferred from four consecutive alpha carbons "
+            "place N, C and O on the rebuilt regions, inferred from the alpha carbons alone "
             "(default: on; pass --no-backbone for alpha-carbon-only output). The geometry inside a "
             "rebuilt region is exact; the peptide bond where a region meets a folded domain is "
             "geometrically unsatisfiable, so it is drawn as close as possible, left long, and "

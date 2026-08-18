@@ -9,7 +9,7 @@ not listed, however large, unless you can see it from outside.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0] — 2026-08-04
+## [Unreleased] — 2.0.0
 
 DODO 2.0 is a rewrite. **It breaks the 1.x API deliberately**, so read the migration notes below
 before upgrading a script.
@@ -17,11 +17,10 @@ before upgrading a script.
 The scientific behaviour changed too, in ways you can see in your output. The two that matter
 most: build modes now mean something different, and a multi-model run is now a real ensemble.
 
-### Installing is simpler: one package, one extra
+### Installing is simpler: one package, no extras
 
 ```bash
 pip install idptools-dodo                 # everything you need
-pip install "idptools-dodo[starling]"     # adds STARLING ensembles (~2.4 GB of weights)
 ```
 
 `import dodo` is unchanged and always will be. Only the distribution name moved, because PyPI's
@@ -40,7 +39,7 @@ not read the README.
 
 **`[viz]` is gone.** It installed matplotlib for a debug plotter that did not exist.
 
-**`[all]` is gone.** With one extra left there is nothing to union.
+**`[all]` is gone.** With no extras left there is nothing to union.
 
 There is no `[albatross]` extra either, and there never should be. It pointed at a PyPI package
 called `sparrow` that is **not** the sparrow DODO needs — PyPI's `sparrow` is an RDF/SPARQL library,
@@ -127,6 +126,13 @@ in a viewer shows only the disordered regions moving.
   — which beats the four-carbon form by 5.1% on C and 3.8% on N (held out over 19,302 units, paired
   95% CI excluding zero); units with no fifth carbon fall back to the four-carbon table. Folded
   domains are unaffected and keep every atom either way. Side chains are not built.
+- **`dodo validate` still tells you which findings are the input's**, on backbone output as well as
+  alpha-carbon-only output. Validating a *file* has no region metadata to read, so provenance is
+  inferred from the structural signature DODO leaves — a residue carrying fewer atoms than its own
+  type requires is one DODO built, and a finding touching none of those is inherited. Validating
+  rebuilt dnmt3a reports `7 bond (3 inherited from the input)`: the three are AlphaFold's own
+  distorted HIS613 ring, present in the input at identical values, and the other four are the
+  seams, which DODO owns rather than blames on the input.
 - **Reports instead of print statements.** `dodo.rebuild()` returns a `RebuildReport` with
   `.ok`, `.models`, `.failures`, `.assignments` and `.outcomes`. In 1.x these functions returned
   `None` and printed, so a script could not tell whether a region had actually been rebuilt.
@@ -152,6 +158,22 @@ in a viewer shows only the disordered regions moving.
 
 ### Fixed
 
+- **Backbone placement could put two atoms on top of each other at a region/domain seam.** The exact
+  seam placement satisfies both bond lengths and was blind to everything else nearby, so it could
+  land the placed atom on a folded one: measured on PTBP2 (Q9UKA9), a rebuilt N **0.797 Å** from a
+  folded carbonyl oxygen, and on Q15642 an induced carbonyl oxygen on a folded atom 56 residues away
+  in sequence — too far apart to be caught by a neighbouring-residue check. The exact placement is
+  now verified before it is accepted (against every atom nearby, against the oxygen it induces, and
+  against the residue's own N–CA–C angle) and falls back to the obstacle-avoiding placement when it
+  fails. Across all 117 corpus structures, backbone placement now introduces **zero** separations
+  below the 1.00 Å floor.
+- **Refinement could collapse a residue's own N–CA–C angle under clash pressure**, putting that
+  residue's N and C 1.90 Å apart — which the validator correctly reports as two atoms on top of each
+  other. Measured on Q8N8A8 and O60271 at ~79°. The soft angle term is deliberately weak (tightening
+  it was measured to make placement worse), so it could lose to the much stronger clash term. Both
+  the compiled and NumPy refinement paths now hold a hard 80–160° window on that angle.
+- **A crowded region could fail a rebuild outright** with `GeometryError` from the compiled
+  refinement kernel's neighbour cap. See the `MAX_NEIGHBOURS` note under performance below.
 - **`--backbone` was more than twice as slow as it needed to be, for two separate reasons.** On p300
   it went from **23.6 s to 11.0 s** (the backbone pass itself from 21.6 s to 9.0 s), with placement
   accuracy unchanged — N 0.147 to 0.148 Å, C 0.150 to 0.152, O 0.448 to 0.451, N–CA–C spread 3.06 to
@@ -212,96 +234,15 @@ in a viewer shows only the disordered regions moving.
   including every folded-domain one. Untouched residues now come through byte-identical, which is
   what "folded domains are returned exactly as they arrived" has to mean.
 
-- **The STARLING engine did not work at all**, and the error blamed the wrong thing. Every region
-  failed with "could not find coordinates on the object STARLING returned (Ensemble) ... this is an
-  API mismatch". The real cause was a missing argument: `starling.generate()` defaults to
-  `return_structures=False`, which returns an ensemble carrying only **distance maps**. Four
-  separate problems, each of which would have been worse had it silently "worked":
-
-  - `return_structures=True` is now passed.
-  - Coordinates are read from `ensemble.trajectory.traj.xyz`. `trajectory` is a soursop `SSProtein`
-    and has no `.xyz` of its own, which is what the old probe looked for.
-  - **They are in nanometres.** Had extraction succeeded without conversion, DODO would have
-    written structures ten times too small.
-  - STARLING keys its return dict `sequence_1`, not by the sequence string.
-
-- **Regions longer than STARLING's 380-residue cap no longer fail.** `--engine starling` now wraps
-  `HierarchicalEngine` automatically. Previously a 401-residue linker errored with advice to wrap
-  the engine yourself, which is not something a user of `dodo rebuild` can act on.
-
-- **STARLING's output is now repaired before it is judged.** Its coordinates come from MDS on a
-  predicted distance map and are not a physically valid backbone: measured, virtual CA-CA bonds
-  span 1.81-4.86 A with a median of 3.36, **47.6% of them more than 0.5 A off ideal**, and
-  pseudo-angles reach 5.2 degrees — a vertex where the chain doubles back within one step. Applying
-  the physical screen to raw output rejected **100 of 100** conformers.
-
-  Bond and pseudo-angle repair now run before the physical screen, and the reordering is safe
-  because repair barely moves the ensemble: end-to-end distance changes by +0.1-0.25% and radius of
-  gyration by +0.25-1.14%. Gross breakage is still caught on raw coordinates first, so a chain the
-  model genuinely lost cannot be quietly repaired into looking fine. Measured acceptance went from
-  0/20 to **20/20** at 38 residues, and a 200-residue region went from raising outright to building
-  every requested conformer.
-
-  Remaining honest limitation: at ~200 residues only about 5 of 20 conformers survive, and the
-  cause is **internal clashes already present in STARLING's raw output** — 18 of 28 raw conformers
-  clash before DODO touches them. Repair does not introduce them; no conformer went from clash-free
-  to clashing.
-
-- **The STARLING isolation warning is emitted once per run, not once per model**, and is 392
-  characters instead of about 800. A ten-model run printed it ten times, which is how a warning
-  worth reading becomes one nobody reads.
-
-### Added
-
-- **`--domain-placement conformer`** (`domain_placement="conformer"`), opt-in and requiring
-  `--engine starling`. Positions the folded domains to match each generated conformer instead of
-  generating conformers to match a predicted domain separation.
-
-  The default path predicts a linker's end-to-end distance, moves the domains to it, and selects
-  conformers that match — which is right for the walk engine, because it builds *to* a dimension.
-  STARLING does not: it samples a distribution. Measured on dnmt3a, its end-to-end distances scatter
-  with a standard deviation of 41% of the mean against a 5% selection tolerance, so about a tenth of
-  conformers survive and they form a narrow band at the mean. The two models agree on the mean
-  (133.0 Å against 136.6 Å on one region); what selection throws away is the spread.
-
-  Measured on dnmt3a over three models: regions built went from 6/9 to **9/9**, and the achieved
-  end-to-end spread from **sd 10.8 Å to sd 44.9 Å**. A conformer is now rejected only if the domain
-  placement it implies collides with something already placed.
-
-  Two consequences: the domains differ between models rather than sharing one arrangement, and
-  `--mode` has nothing to multiply for the affected regions. Loops are unaffected — they are pinned
-  inside a single domain, so nothing can be repositioned for them.
-
 ### Changed
 
-- **Fixed: a single non-finite STARLING conformer no longer fails the whole region.** The check
-  rejected an entire ensemble if *any* conformer contained a NaN, on the reasoning that "NaN must not
-  reach a structure file, so this is fatal rather than filtered". The premise is right and the
-  inference is not: the way to keep a NaN out of a file is to discard the conformer carrying it.
-  Non-finite conformers are now dropped with a warning, and only an ensemble with *no* finite
-  conformer left is fatal.
-
-  This was severe in practice. On a 10-model p300 rebuild it failed all six regions in every model --
-  60 failures -- while the bad fraction was only **2-21% per region**, so 79-98% of each ensemble was
-  usable and was being thrown away.
-
-  The symptom was much worse than an error message, and the mechanism is general rather than
-  STARLING-specific: **a region whose build fails keeps its input coordinates, while the folded
-  domains are repositioned regardless.** When every region fails, the output is the original IDR
-  geometry connected to domains that have moved out from under it. The run is correctly reported as
-  failed and the CLI exits 2, but the file is still written.
-  `tests/data/structures/testing_translation.pdb` reproduces that on the default walk engine -- two
-  domains moved, a 280-residue terminal IDR left unbuilt, a written model with a 31.6 A gap. So check
-  the exit status, not just the file. Whether a declared-failed rebuild should write at all is
-  unresolved.
-
-- **The STARLING engine is undocumented in 2.0, pending verification.** `--engine starling` and
-  `--domain-placement conformer` still work and are still tested, but they are removed from the README
-  and the guide, marked UNSUPPORTED in `--help`, and warn when used. The failure above is fixed and
-  covered by 13 tests that run without STARLING installed, but the full path has not been re-run
-  against a real STARLING install, so it stays undocumented until it has been.
-
-
+- **A region whose build fails keeps its input coordinates, while the folded domains are
+  repositioned regardless.** So when regions fail, the output is the original IDR geometry connected
+  to domains that have moved out from under it. The run is correctly reported as failed and the CLI
+  exits 2, but the file is still written.
+  `tests/data/structures/testing_translation.pdb` reproduces this -- two domains moved, a
+  280-residue terminal IDR left unbuilt, a written model with a 31.6 A gap. So check the exit
+  status, not just the file. Whether a declared-failed rebuild should write at all is unresolved.
 - **Backbone refinement now runs a compiled kernel by default**, `dodo.construct.backbone_kernel`,
   with `refine_backbone(backend="numpy")` keeping the pure-numpy path reachable. This adds `numba` as
   a base dependency; an import failure falls back to numpy silently rather than failing a rebuild.
@@ -327,23 +268,32 @@ in a viewer shows only the disordered regions moving.
     unchanged across that change (68 calls, 0.219 vs 0.221 s), which is what shows only the search
     moved.
 
-  End to end, `rebuild --backbone` now takes **0.92 s on dnmt3a, 1.45 s on arf19 and 3.18 s on p300**,
-  against 23.6 s for p300 before any of this work. Seam counts, intra-residue damage and impossible
-  pairs are unchanged across three seeds on all three structures.
+  End to end, a backbone rebuild now takes about **0.3 s on dnmt3a and 1.7 s on p300** (4 models of
+  p300: 5.2 s), against 23.6 s for p300 before any of this work. Seam counts, intra-residue damage
+  and impossible pairs are unchanged across three seeds on all three structures.
+
+  Most of what remained after the compiled kernel landed was not the kernel at all. Profiling put
+  **78%** of backbone wall time in the coupled-clash polish, which was still pure Python: a KD-tree
+  query per atom per candidate, and a per-candidate Python placement-and-score loop. Precomputing
+  each moved atom's neighbours once per group (the static cloud is fixed during a group's search,
+  and each atom rides a bounded circle, so the shell is a provable superset) and evaluating a whole
+  azimuth grid as array operations took that polish from **6.16 s to 0.40 s, 15x**, for
+  **bit-identical** output — worst coordinate difference 0.0 over the corpus at four seeds.
 
   The compiled neighbour search is also *better*, not merely faster, in two ways. It is a true radius
-  search, where `cKDTree.query(k=48)` can only ever examine the 48 nearest; and it counts qualifying
-  neighbours without a ceiling, so the cap is checked rather than trusted. That found a real latent
-  bug in the guard it replaced: the old one raised only if the 48th *nearest* point survived the
-  covalent-separation filter, so a constructed case kept 47 of 59 qualifying neighbours and **silently
-  dropped 12** without raising. **A crowded region that previously completed with a quietly truncated
-  objective will now raise `GeometryError` instead.** Measured headroom is comfortable -- the worst
-  uncapped count is 41 on p300, 38 on dnmt3a and 23 on arf19, against a cap of 48 -- so this is not
-  expected to fire on real input, but it is a behaviour change rather than a pure fix.
+  search, where `cKDTree.query(k=MAX_NEIGHBOURS)` can only ever examine that many nearest points; and
+  it counts qualifying neighbours without a ceiling, so the cap is checked rather than trusted. That
+  found a real latent bug in the guard it replaced: the old one raised only if the *last* nearest
+  point survived the covalent-separation filter, so a constructed case kept 47 of 59 qualifying
+  neighbours and **silently dropped 12** without raising. A crowded region that previously completed
+  with a quietly truncated objective is now detected rather than ignored.
 
-  Note also that `MAX_NEIGHBOURS = 48` has less headroom than an earlier note claimed. Measured over
-  *every* clash call of a full p300 rebuild rather than one region, the kept sets peak at **41** and
-  the pre-filter count at **43**, not the maximum of 15 a single region suggested. Do not lower it.
+  `MAX_NEIGHBOURS` is **96**, and the cap is a checked property rather than an assumption. It was
+  48, chosen against a worst measured count of 43 over a full p300 rebuild — which looked like
+  headroom until the 117-structure corpus ran with the backbone on and a crowded region of Q9C000
+  put **54** atoms in one unit's shell. Rather than trade one arbitrary number for another, a region
+  that exceeds even 96 now falls back to the uncapped NumPy path instead of failing the rebuild;
+  an explicit `backend="numba"` still raises, because the caller asked for the kernel by name.
 
   Two levers were measured and rejected, recorded so they are not re-litigated. `fastmath=True` is
   worth 1.14x on the sweep loop but only **1.2%** on a whole rebuild, and its `nnan` licence lets the
@@ -371,33 +321,6 @@ in a viewer shows only the disordered regions moving.
   that does it is in `tests/unit/test_backbone_kernel.py`.
 
 
-
-- **STARLING conformers are now filtered before they are repaired, and generated in rounds.** Repair
-  is the expensive step — 3.8 s for 100 conformers of 380 residues — and two defects survive it: a
-  chain the model lost, and one that already collides with itself. Both are now detected by checks
-  that cost nothing, so hopeless conformers are dropped before any repair is paid for. The clash
-  threshold is calibrated never to discard a conformer repair would have saved: measured over 60
-  conformers, every one that ultimately passed the physical screen had a raw worst contact of at
-  least 3.536 Å, against a 2.90 Å cutoff.
-
-  Survivors are repaired best-first, and a repair that moves any alpha carbon more than 4.0 Å is
-  rejected rather than accepted — repair is meant to keep a conformer recognisably STARLING's
-  (displacement is 0.84 Å median, 2.10 Å at the 99th percentile), but a severe angle violation beside
-  a free terminus has nothing to anchor it and one conformer in twelve had an atom travel 21.8 Å.
-  If a round does not yield enough usable conformers, another is generated, up to three.
-
-  One thing that looked like the obvious saving and was **wrong**: stopping repair as soon as enough
-  conformers were in hand. Selection downstream needs *spread* in end-to-end distance, not a count —
-  truncating the pool at 2 left both survivors the wrong size and a region failed on dimension by
-  12.7 Å having repaired only 2 of 16 candidates. All survivors are repaired; the saving comes from
-  the free elimination step instead.
-
-
-
-- **STARLING ensembles are generated once per sequence and reused across models.** STARLING
-  conditions on sequence alone, so the ensemble it returns for a region is identical every time;
-  what differs per model is which conformer is selected and where it is placed. A 2-model dnmt3a
-  rebuild ran 6 diffusion-plus-MDS generations for 3 regions before this.
 
 - **ALBATROSS predictions are cached on disk**, keyed by sequence hash and sparrow version. The
   first prediction in a process imports sparrow, parrot and torch, which measured **1.57 s against
@@ -471,7 +394,8 @@ in a viewer shows only the disordered regions moving.
   read by MDTraj as *calcium* atoms.
 - **Failures are explicit.** A region that cannot be built is reported with a reason and keeps its
   input coordinates. 1.x could return coordinate arrays of exact `(0, 0, 0)` rows, or NaN.
-- **Requires Python 3.10+, numpy 2.0+ and scipy 1.13+.**
+- **Requires Python 3.10+, numpy 2.0+, scipy 1.13+ and numba.** numba is a base dependency, not an
+  extra: it compiles the backbone refinement kernel, which is on by default.
 - Exceptions all derive from `DodoError`. Bad arguments raise `InvalidParameterError`, which is
   both a `DodoError` and a `ValueError`, so either `except` clause works.
 

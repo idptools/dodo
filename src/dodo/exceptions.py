@@ -164,8 +164,8 @@ class ExhaustedAttemptsError(BuildError):
 class MissingDependencyError(DodoError):
     """An optional dependency is required for the requested operation.
 
-    The message always names the install command, because "ModuleNotFoundError:
-    starling" tells a user nothing about which extra to install.
+    The message always names the install command, because a bare "ModuleNotFoundError"
+    tells a user nothing about how to resolve it.
     """
 
     def __init__(self, package: str, purpose: str, extra: str | None = None):

@@ -1,8 +1,9 @@
 """The conformation engine interface: what a builder asks for, and what it gets back.
 
-One request type, one result type, one protocol. Every engine -- the self-avoiding walk
-here, STARLING, the hierarchical splicer -- speaks exactly this, so the orchestrator can
-choose an engine at runtime without knowing anything about how it works.
+One request type, one result type, one protocol. Every engine speaks exactly this, so the
+orchestrator can choose one at runtime without knowing anything about how it works. One ships
+today -- the self-avoiding walk -- and the protocol is what lets another be added later without
+the orchestrator changing.
 
 Why the result carries an explicit success mask
 -----------------------------------------------
@@ -465,9 +466,8 @@ class IDRResult:
 class ConformationEngine(Protocol):
     """What every conformation engine must provide.
 
-    A protocol rather than a base class: STARLING wraps a neural network, the walk is
-    pure geometry, and the hierarchical engine composes other engines. They share no
-    implementation, only this surface.
+    A protocol rather than a base class: the walk is pure geometry and a generative engine
+    would wrap a neural network, so implementations need share no code -- only this surface.
     """
 
     #: Short, stable identifier, recorded in :attr:`IDRResult.engine`.

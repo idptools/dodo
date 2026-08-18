@@ -337,6 +337,13 @@ class BondReport:
         deviation would hide.
     n_residues, n_ca_only_residues
         Residues seen, and how many were CA-only and so exempt from the all-atom checks.
+    incomplete_residues
+        Indices of residues carrying fewer atoms than their own residue type requires -- CA-only
+        ones, and ones with a backbone but no side chain. This is the *structural signature* of a
+        region DODO built, recoverable from a written file where the region metadata is gone, and
+        it is what :attr:`~dodo.validate.StructureReport.n_inherited_bond_violations` infers
+        provenance from. Glycine with a bare backbone is complete and so is not included; see
+        :data:`_TYPE_REQUIRED_TIER`.
     n_partial_residues
         Residues with a backbone but no side chain past CB, exempt from the side-chain checks.
     n_unknown_residues
@@ -365,6 +372,7 @@ class BondReport:
     ca_ca_deviations: np.ndarray
     n_residues: int
     n_ca_only_residues: int
+    incomplete_residues: frozenset[int]
     n_partial_residues: int
     n_unknown_residues: int
     n_sequence_gaps: int
@@ -1387,6 +1395,7 @@ def validate_bonds(
     # tier their own type requires count -- a GLY with a bare backbone is complete, not partial.
     known = context.type_code >= 0
     required = np.where(known, _TYPE_REQUIRED_TIER[np.where(known, context.type_code, 0)], 0)
+    incomplete = (context.residue_tier < required) | context.ca_only
     n_partial = int(np.count_nonzero((context.residue_tier < required) & ~context.ca_only))
     if n_partial:
         context.notes.append(
@@ -1410,6 +1419,7 @@ def validate_bonds(
         ca_ca_deviations=ca_ca_deviations,
         n_residues=structure.n_residues,
         n_ca_only_residues=n_ca_only,
+        incomplete_residues=frozenset(int(i) for i in np.flatnonzero(incomplete)),
         n_partial_residues=n_partial,
         n_unknown_residues=n_unknown,
         n_sequence_gaps=int(gaps.size),

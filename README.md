@@ -358,10 +358,11 @@ regression-tested at all.
 
 ## Why CONECT records matter
 
-DODO writes CONECT records by default, and you should leave them on. CA–CA spacing is 3.81 Å,
-past the automatic bond-detection cutoff in both VMD and PyMOL — so without CONECT a rebuilt
-region renders as a cloud of disconnected dots. This isn't cosmetic polish; its absence defeats
-the tool.
+DODO writes CONECT records by default, and you should leave them on. They matter most under
+`--no-backbone`: CA–CA spacing is 3.81 Å, past the automatic bond-detection cutoff in both VMD and
+PyMOL, so without CONECT an alpha-carbon-only region renders as a cloud of disconnected dots. With
+the backbone on (the default) a viewer can find the real N–CA and CA–C bonds for itself, but the
+records still declare the chain explicitly rather than leaving it to each viewer's heuristics.
 
 ## Current limitations
 
@@ -373,9 +374,11 @@ Honestly stated, with what's fixed since 1.x marked.
    a geometric sampler, not a force field, so that spread is not a thermodynamic ensemble and is
    not a substitute for a simulation.
 
-2. **Rebuilt IDRs contain only alpha carbons.** Still true in 2.0, and deliberately so — getting
-   the alpha-carbon trace right comes first. Note this has never applied to the regions DODO
-   leaves alone, which keep every atom; see [Atoms in the output](#atoms-in-the-output) below.
+2. **~~Rebuilt IDRs contain only alpha carbons.~~** Addressed: rebuilt regions now get a full
+   N, CA, C, O backbone by default, and `--no-backbone` returns the alpha-carbon-only output if you
+   want it. Side chains are still not built. Note the alpha-carbon-only limitation never applied to
+   the regions DODO leaves alone, which keep every atom; see
+   [Atoms in the output](#atoms-in-the-output) below.
 
 3. **~~Unusual-bond warnings in VMD.~~** Addressed: correct CONECT records, correct atom-name
    columns, and the element column written. (v1 right-justified atom names from column 13 and
@@ -447,11 +450,12 @@ remaining contact is one, not a class.
 
 Regions DODO does **not** rebuild keep every atom they arrived with. Folded domains are moved as
 rigid bodies — translated and rotated, never regenerated — so each one retains its full atomic
-detail exactly as AlphaFold produced it, down to the last decimal place. Only the regions DODO
-actually rebuilds are reduced to one alpha carbon per residue.
+detail exactly as AlphaFold produced it, down to the last decimal place. The regions DODO actually
+rebuilds get a backbone — N, CA, C and O per residue — and no side chain.
 
 On dnmt3a, for example: 4,636 atoms across the 578 residues DODO leaves alone, preserved
-bit-for-bit, and 334 alpha carbons for the 334 residues it rebuilds.
+bit-for-bit, plus 1,336 backbone atoms for the 334 residues it rebuilds — 5,972 in total. Under
+`--no-backbone` those 334 residues are one alpha carbon each instead, for 4,970.
 
 ### Backbone reconstruction (`--backbone` / `--no-backbone`)
 

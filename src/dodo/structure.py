@@ -759,7 +759,8 @@ class Structure:
         writer then dutifully emits a CONECT record bonding N to CA across that gap, which
         renders as a long spurious line, and the orphaned atoms trail along the region's old
         path as disconnected dots. Dropping them is the fix, and it matches what DODO has always
-        produced: all atoms in folded domains, alpha carbons only in rebuilt regions.
+        produced: all atoms in folded domains, and in rebuilt regions a backbone (or, under
+        ``backbone=False``, alpha carbons only).
 
         Parameters
         ----------

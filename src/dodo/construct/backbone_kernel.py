@@ -1,96 +1,4 @@
-"""Compiled inner loop for backbone refinement.
-
-The refinement objective is cheap arithmetic evaluated an enormous number of times: for a
-583-residue region, 397 peptide units x 25 candidate azimuths x 15 sweeps. In numpy that is
-~150,000 array calls whose per-call dispatch cost dwarfs the six multiplies inside, and profiling
-put about 60% of the time there rather than in the arithmetic. Batching can only amortise that
-overhead, never remove it -- measured, batching ten models together recovered 3.6x of a
-theoretical 10x, and batching over peptide units cost more in extra sweeps than it saved.
-
-Compiling the loop removes the overhead outright. Measured over all six of p300's rebuilt regions
-with the real obstacle set: **7.76 s to 0.49 s, 15.9x**.
-
-The objective is compiled twice over, and the second time was not optional
------------------------------------------------------------------------------
-:func:`region_energy` exists because once the sweep was compiled, the *reporting* was the expensive
-part. ``energy_before``/``energy_after`` are read once each per region, and the numpy scorer that
-produced them evaluated every peptide unit through ``score_candidates``: profiled over p300's six
-regions, 12 calls cost 0.562 s against the compiled sweep's 0.204 s of self time. Two readings cost
-2.8x the optimisation they described.
-
-Compiled, those same 12 calls cost 0.026 s -- and because nothing then reads the numpy neighbour
-tables on this path, they are no longer built either. Measured over the six regions, 30 interleaved
-reps each: refinement **971.9 ms to 507.4 ms, 1.92x** -- and 1478.4 to 767.9 ms, 1.93x, on a repeat
-of the same experiment while the machine was busier, which is why the ratio is quoted rather than
-the absolute times. The whole ``rebuild --backbone`` command gains 1.19x, and its 1.19 MB output
-file is byte-identical before and after.
-
-:func:`_unit_value` is why the two entry points cannot disagree: the sweep and the energy are the
-same inlined body, so a term can only be in both or neither. Extracting it was verified to leave
-the sweep bit-identical -- all six regions, every coordinate, azimuth, sweep count and convergence
-flag, max abs difference 0.000e+00.
-
-Equivalence to :mod:`dodo.construct.backbone_refine` is not assumed, it is established. Given
-byte-identical inputs for one peptide unit, this kernel and the numpy scorer agree to:
-
-* C, N and O placement -- 0.000e+00, bit-identical
-* the Ramachandran term -- 0.000e+00
-* the clash term -- 0.000e+00
-* the two N-CA-C angle terms -- 2.8e-13 and 1.1e-13, from ``math.acos`` versus ``np.arccos``
-  rounding in the last bits
-
-and they select the same candidate. Summed over a whole region, :func:`region_energy` against the
-numpy ``total_energy`` on frozen states -- the six real p300 regions, each both canonicalized and
-refined, twelve states -- agrees to a worst absolute difference of 1.5e-11 on the angle term,
-9.1e-13 on the Ramachandran term, 1.1e-13 on the clash term and 2.9e-11 on all three together, the
-last being 2.8e-16 relative. On the 60-residue test fixture each isolated term is bit-identical and
-only their sum differs, by 4.5e-13, because numpy reduces ``20 * square(r)`` where the kernel
-evaluates ``20 * r * r``.
-
-The tests that establish this live in ``tests/unit/test_backbone_kernel.py`` and they work by
-comparing the objective as a PURE FUNCTION on identical inputs. That distinction matters: comparing
-the end states of two independent runs cannot localise a difference, because a greedy search
-amplifies any perturbation chaotically. Four earlier attempts to find a suspected bug that way all
-failed, and there was no bug to find.
-
-The consequence of that 1e-13 is worth stating plainly, because it is visible: across the ~4,800
-decisions in a sweep it eventually flips one that is nearly balanced, after which the two backends
-diverge and produce different -- equally good, measurably equivalent -- coordinates. So output is
-not bit-identical between backends. It was never bit-identical across numpy versions or BLAS
-builds either, for exactly the same reason.
-
-The neighbour search is compiled too, and scipy is off the hot path
--------------------------------------------------------------------
-:func:`_neighbour_indices_grid` replaced a ``cKDTree`` that sat in the middle of an otherwise
-compiled path: built in Python, queried in Python, its index arrays handed to the sweep. Profiled at
-0.199 s cumulative against the compiled sweep's 0.204 s of self time -- the search cost as much as
-the optimisation it fed. A uniform cell list in nopython mode costs 0.011 s, **18x**, and takes
-``refine_region`` 1.80x overall with ``sweep_region`` unchanged (68 calls, 0.219 vs 0.221 s),
-which is what confirms only the search moved.
-
-Two things the compiled version does better, not merely faster. It is a true RADIUS search, where
-``cKDTree.query(k=48)`` can only ever examine the 48 nearest -- so the cap is now a checkable
-property rather than a silent limit (see :func:`_check_neighbour_cap`, which found that the scipy
-guard misses a case it should catch). And all three atom kinds share one scan, because the three
-calls it replaced differed only in the covalent-separation filter and were repeating one identical
-geometric search three times.
-
-Levers that were measured and rejected
---------------------------------------
-``fastmath`` is deliberately OFF, and the reason is not that it is slow. Measured, it is worth 1.14x
-on the sweep loop -- but the loop is a fifth of ``refine_backbone``, so that dilutes to 1.2% on
-a whole rebuild. Against that, its ``nnan`` licence lets the ``acos`` domain clamp swallow a NaN:
-:func:`_angle` returns ``nan`` with it off and ``180.0`` with it on. That path is currently
-unreachable, because ``refine_backbone`` rejects non-finite input, but it makes that guard
-load-bearing for error behaviour -- a NaN that used to surface visibly would become a plausible
-angle. 1.2% does not buy that in a geometry kernel.
-
-Intel SVML is unavailable rather than unhelpful: no ``intel-cmplr-lib-rt`` wheel exists for arm64 on
-any platform, and numba declines to use it here regardless. A faster threading layer is also a dead
-end -- ``omp`` measured 0.86x against the default ``workqueue``, and neither matters while this code
-is serial. ``prange`` over the MODEL axis does scale (16.4x at 18 models), but it needs the pipeline
-to collect every model's CA trace before one batched pass, so it is not wired up here.
-"""
+"""Compiled inner loop for backbone refinement."""
 
 from __future__ import annotations
 
@@ -557,30 +465,14 @@ def sweep_region(  # noqa: D103 - documented at module level; njit rejects a doc
     return swept, largest
 
 
-#: Neighbours retained per movable atom. MEASURED, twice. Over EVERY clash call of a full p300
-#: rebuild (222 calls, 67,791 centres, all six regions, against the real obstacle set) the kept
-#: sets run to a median of 3 and a maximum of 41, with the in-shell count before the covalent
-#: separation filter peaking at 43 -- which made 48 look like 5 points of headroom. Then the
-#: 117-structure corpus ran with the backbone ON (2026-08-13) and a crowded region of Q9C000 put
-#: **54** fixed atoms in one unit's shell, so 48 was an overflow crash on real input, not a margin.
-#: 96 is ~1.8x that new worst. The cost of the size is small and bounded: pad slots point at
-#: :data:`_PAD_COORDINATE`, whose clamped gap is exactly zero, so extra rows cost one distance
-#: computation each in the scan -- and the refinement is a single-digit share of ``--backbone``
-#: wall time. Truncating below the real count would silently change the objective, so the cap is
-#: checked, never trusted (:func:`_check_neighbour_cap`); a region that beats even this cap falls
-#: back to the capless numpy path rather than failing the rebuild (see ``refine_backbone``).
+#: Neighbours retained per movable atom.
 MAX_NEIGHBOURS: int = 96
 
 #: Coordinate for a padded neighbour slot, in Angstroms. Far enough that it can never clash.
 _PAD_COORDINATE: float = 1.0e6
 
 #: Ceiling on cells in the neighbour grid, which is dense over the bounding box and so costs
-#: ``cells * 8`` bytes. MEASURED worst case over a full p300 rebuild: 47x55x67 = 173,195 cells,
-#: 1.39 MB, for 10,022 points -- sparse (0.06 points per cell), because a chain fills little of its
-#: own box, but cheap. The cost grows with bounding-box VOLUME, and DODO generates extended IDRs, so
-#: a conformation spanning several times p300's ~390 A would grow this cubically. Rather than let
-#: it, :func:`_cell_list` enlarges the cell until the count fits. 4,000,000 cells is 32 MB, about
-#: 23x p300's worst case, so nothing real is expected to reach it.
+#: ``cells * 8`` bytes.
 _MAX_GRID_CELLS: int = 4_000_000
 
 
@@ -590,13 +482,6 @@ def _check_neighbour_cap(worst: int) -> None:
     :func:`_neighbour_indices_grid` counts qualifying neighbours WITHOUT a ceiling, so ``worst`` is
     the true requirement even for a row that overflowed. Truncating would change the objective
     rather than merely slow it down, so this is checked, never trusted.
-
-    This is strictly stronger than the guard :func:`_neighbour_indices` can manage. That one raises
-    only when the 48th *nearest* point survives the separation filter, so a case where the 48th
-    nearest is covalently adjacent passes while qualifying points are silently dropped. Constructed
-    and confirmed: 60 points inside reach with the 48th-nearest made adjacent kept 47 of 59 and did
-    not raise. Consequence worth knowing: a crowded region that previously completed with a quietly
-    truncated objective now aborts instead.
     """
     if worst > MAX_NEIGHBOURS:
         raise GeometryError(
@@ -777,11 +662,10 @@ def _neighbour_indices_grid(
 def _neighbour_indices(tree, centres, reach, own_chain, own_oxygen, chain_of, oxygen_of, sentinel):
     """Return padded neighbour indices using ``cKDTree``. NOT on the hot path any more.
 
-    Retained deliberately, as the oracle :func:`_neighbour_indices_grid` is checked against -- see
+    Retained :func:`_neighbour_indices_grid` is checked against this. See
     ``tests/unit/test_backbone_kernel.py::test_the_compiled_neighbour_search_matches_the_kdtree``.
-    Note the fixed ``k``: this can only ever examine the 48 nearest points, so it agrees with a true
-    radius search exactly when at most 48 lie inside the shell. The measured peak over a full p300
-    rebuild is 43, so it agreed there; the compiled version is not limited that way.
+    Note the fixed ``k``: it can only ever examine the ``MAX_NEIGHBOURS`` nearest points, so it
+    agrees with a true radius search exactly when at most that many lie inside the shell.
     """
     count = min(MAX_NEIGHBOURS, tree.n)
     distances, found = tree.query(centres, k=count)

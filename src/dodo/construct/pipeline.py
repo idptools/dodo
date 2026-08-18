@@ -586,13 +586,7 @@ def _make_engine(engine_name: str) -> object:
 
     if engine_name == "walk":
         return SelfAvoidingWalk()
-    if engine_name == "batch":
-        # Vectorized grow-then-filter primary, with the walk as the careful fallback for the hard
-        # tail. Falls back to the same self-avoiding walk this branch would otherwise return.
-        from ..engines.batch_engine import BatchWalkEngine
-
-        return BatchWalkEngine()
-    raise InvalidParameterError(f"Unknown engine {engine_name!r}. Use 'walk' or 'batch'.")
+    raise InvalidParameterError(f"Unknown engine {engine_name!r}. Use 'walk'.")
 
 
 def _rebuild_one_model(
@@ -736,7 +730,7 @@ def rebuild(
     engine
         ``"walk"``. Only the walk engine ships in this release.
     backbone
-        Place N, C and O on the rebuilt regions, from four consecutive alpha carbons, then refine.
+        Place N, C and O on the rebuilt regions, from the alpha carbons alone, then refine.
         **On by default; pass ``backbone=False`` for alpha-carbon-only output.** Folded domains are
         untouched either way: they keep every atom they arrived with, and only regions DODO
         generated gain a backbone.
@@ -981,9 +975,7 @@ def build_from_sequence(
     if n_models < 1:
         raise InvalidParameterError(f"n_models must be at least 1, got {n_models}.")
     if engine != "walk":
-        raise InvalidParameterError(
-            f"build_from_sequence currently supports engine='walk' only, got {engine!r}."
-        )
+        raise InvalidParameterError(f"Unknown engine {engine!r}. Use 'walk'.")
 
     n = len(cleaned)
     rng = np.random.default_rng(seed)

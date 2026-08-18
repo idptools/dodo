@@ -121,25 +121,32 @@ class StructureReport:
         * Validating a :class:`~dodo.structure.Structure` in process, straight from
           :func:`~dodo.rebuild`, the domains know which regions were rebuilt and each violation
           is labelled ``"rebuilt"`` or ``"input"`` exactly.
-        * Validating a **file**, that metadata is gone and every violation is ``"unknown"``. But
-          in 2.0 DODO only ever builds alpha carbons, so its only possible bond contribution is a
-          CA-CA virtual bond. Any other kind of bond violation is inherited by construction, and
-          that inference is sound rather than a guess.
+        * Validating a **file**, that metadata is gone and every violation is ``"unknown"``. It is
+          still recoverable as an inference rather than a guess, from the structural signature DODO
+          leaves: it rebuilds regions with a backbone and never builds side chains, so a residue
+          carrying fewer atoms than its own type requires is one DODO built
+          (:attr:`~dodo.validate.bonds.BondReport.incomplete_residues`). A violation touching none
+          of those residues is on geometry DODO did not build, and so is inherited.
 
         Returns 0 when the structure shows no sign of having been through DODO, so this stays
         quiet on ordinary deposited files where "DODO did not build this" is vacuous.
+
+        Keyed on the residues rather than on the bond class, which is what the CA-only era could
+        get away with. Back then DODO's only possible contribution was a CA-CA virtual bond, so
+        "every violation that is not ``ca_ca``" was sound. With the backbone on by default
+        (:func:`~dodo.rebuild`), rebuilt residues have real peptide and intra-residue bonds too,
+        and that rule silently returned 0 -- reporting AlphaFold's own defects against DODO on its
+        own default output, which is the exact failure this property exists to prevent.
         """
         if self.bonds is None:
             return 0
         exact = self.bonds.of_provenance("input")
         if exact:
             return len(exact)
-        if not self.bonds.n_ca_only_residues:
+        built = self.bonds.incomplete_residues
+        if not built:
             return 0
-        # bond_class, not kind: "ca_ca" is a category of bond, while kind is the sort of defect
-        # ("bond_length", "chain_break", ...). Comparing kind to "ca_ca" is always true, which
-        # would have counted every violation as inherited. mypy caught that.
-        return sum(1 for v in self.bonds.violations if v.bond_class != "ca_ca")
+        return sum(1 for v in self.bonds.violations if not built.intersection(v.residue_indices))
 
     def summary(self) -> str:
         """One-line summary of every check.

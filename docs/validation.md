@@ -65,20 +65,26 @@ DODO moves folded domains as rigid bodies and never regenerates their atoms, so 
 arrives in the input is still there afterwards — faithfully. Reporting that without saying so makes
 DODO look responsible for its input.
 
-Validating a rebuilt dnmt3a prints three bond violations. All three are AlphaFold's own distorted
-HIS613 imidazole ring, whose CE1–ND1 bond measures 2.140 Å against a 1.342 Å reference — 169.7
-standard deviations out. It is 2.547 Å in the input file and 2.548 Å in the output.
+Validating a rebuilt dnmt3a reports seven bond findings. Three of them are AlphaFold's own distorted
+HIS613 imidazole ring, whose CE1–NE2 bond measures 2.547 Å against a 1.341 Å reference — 232
+standard deviations out, and present at that value in the input file. The other four are the seams,
+where a rebuilt region meets a folded domain.
 
-So findings are attributed:
+So findings are attributed rather than merely counted:
 
 ```
-INVALID: 3 bond (3 inherited from the input), 0 clash, 0 CONECT
+INVALID: 7 bond (3 inherited from the input), 2 clash, 0 CONECT
 ```
 
 Provenance is derivable exactly when validating a `Structure` in process, where the domains still
-know which regions were rebuilt. Validating a *file*, that metadata is gone — but in 2.0 DODO only
-ever builds alpha carbons, so a CA–CA virtual bond is its only possible bond contribution and any
-other bond violation is inherited by construction.
+know which regions were rebuilt. Validating a *file*, that metadata is gone — but DODO leaves a
+structural signature: it rebuilds regions with a backbone and never builds side chains, so a residue
+carrying fewer atoms than its own residue type requires is one DODO built. A finding that touches
+none of those residues is on geometry DODO did not build, and is reported as inherited. Glycine,
+which is complete with a bare backbone, is not mistaken for a rebuilt residue.
+
+The seams are deliberately *not* counted as inherited. They touch a residue DODO built, so they are
+DODO's own compromise to report — not something to blame on the input.
 
 This is why DODO's own tests assert a *differential* invariant — that DODO introduces no defect the
 input did not already have — rather than that the output is unconditionally clean. Several real

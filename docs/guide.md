@@ -227,18 +227,22 @@ Building from sequence is the clean case — no folded domains, so no seams at a
 no bond violations and no impossible contacts whatsoever:
 
 ```bash
-dodo sequence GRNQNGGGYQNYNNQGYQGHGGQHQNNYNQYPCNYFGPGYNN --backbone -o my_idr.pdb
+dodo sequence GRNQNGGGYQNYNNQGYQGHGGQHQNNYNQYPCNYFGPGYNN -o my_idr.pdb
 ```
 
 ### Why CONECT records matter, and what to do in VMD
 
-CA–CA spacing is 3.81 Å, well past the distance cutoff either VMD or PyMOL uses to infer bonds. So a
-CA-only region has no bonds a viewer can find for itself, and without CONECT records it renders as a
-cloud of disconnected dots. They are written by default — leave them on.
+This matters most under `--no-backbone`. CA–CA spacing is 3.81 Å, well past the distance cutoff
+either VMD or PyMOL uses to infer bonds, so an alpha-carbon-only region has no bonds a viewer can
+find for itself and renders as a cloud of disconnected dots without CONECT records. With the
+backbone on — the default — the real N–CA and CA–C bonds are short enough for a viewer to find
+unaided, but the records still declare the chain rather than leaving it to each viewer's
+heuristics. They are written by default either way: leave them on.
 
-DODO's CONECT output is complete: measured on p300, all 1,520 consecutive CA–CA pairs inside rebuilt
-regions carry a record, in the fixed columns the format specifies, and `dodo validate` checks this.
-**PyMOL honours them and draws the trace.**
+DODO's CONECT output is complete, and `dodo validate` checks it: every bond it writes gets a record,
+in the fixed columns the format specifies — the backbone bonds within and between rebuilt residues,
+and, under `--no-backbone`, the consecutive CA–CA pairs instead (measured on p300, all 1,520 of
+them). **PyMOL honours them and draws the trace.**
 
 **VMD frequently does not.** VMD infers bonds by distance when it loads a PDB and its handling of
 CONECT is unreliable, so a rebuilt region can still come up as dots however correct the file is. That
@@ -251,8 +255,9 @@ Trace        # connects consecutive alpha carbons directly
 Tube         # same, drawn thicker
 ```
 
-`Trace` and `Tube` follow residue order rather than bonds, which is exactly right for a CA-only
-model. If you need the bonds themselves — for a selection or an analysis rather than a picture —
+`Trace` and `Tube` follow residue order rather than bonds, which sidesteps the problem entirely and
+is exactly right for an alpha-carbon-only model. If you need the bonds themselves — for a selection
+or an analysis rather than a picture —
 `topo readvarxyz` / the `topotools` plugin can add them explicitly, or convert to a format that
 carries topology, such as PSF.
 

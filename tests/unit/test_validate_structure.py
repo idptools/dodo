@@ -94,15 +94,16 @@ class TestInheritedFindings:
         assert result.n_inherited_bond_violations == 0
         assert "inherited" not in result.summary()
 
-    def test_provenance_survives_a_write_read_cycle_via_the_ca_only_signature(
+    def test_provenance_survives_a_write_read_cycle_without_a_backbone(
         self, tmp_path: Path
     ) -> None:
         """A PDB file carries no region metadata, so exact provenance is gone after writing.
 
-        It is still recoverable as an inference rather than a guess: in 2.0 DODO only ever builds
-        alpha carbons, so a CA-CA virtual bond is its only possible bond contribution and any
-        other bond violation is inherited by construction. This is the path ``dodo validate``
-        takes, and it is the one that used to blame DODO for its input.
+        It is still recoverable as an inference rather than a guess, from the structural signature
+        DODO leaves: a residue with fewer atoms than its own type requires is one DODO built. With
+        ``backbone=False`` every rebuilt residue is CA-only, so every finding here is on geometry
+        DODO did not build. This is the path ``dodo validate`` takes, and it is the one that used to
+        blame DODO for its input.
         """
         from dodo.construct.pipeline import rebuild
 
@@ -119,6 +120,49 @@ class TestInheritedFindings:
         assert not from_file.bonds.of_provenance("input")
         # ...and the inference still attributes every finding correctly.
         assert from_file.n_inherited_bond_violations == len(from_file.bonds.violations)
+
+    def test_provenance_survives_a_write_read_cycle_with_the_default_backbone(
+        self, tmp_path: Path
+    ) -> None:
+        """The same inference on DEFAULT output, which carries a backbone rather than bare CAs.
+
+        This is the case the CA-only rule silently got wrong. It keyed on "every violation that is
+        not a CA-CA bond", which was sound only while DODO's sole contribution *was* the CA-CA bond;
+        once the backbone shipped on by default there were no CA-only residues left, the signature
+        check failed, and ``dodo validate`` reported AlphaFold's own HIS613 ring against DODO on
+        DODO's own output. Measured on this fixture: 7 findings, of which 3 are the input's and 4
+        are seams.
+
+        The seams are deliberately NOT counted as inherited. They touch a residue DODO built, so
+        they are DODO's compromise to own and report -- not something blamed on the input.
+        """
+        from dodo.construct.pipeline import rebuild
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            report = rebuild(DNMT3A, seed=0, backbone=True)
+        path = tmp_path / "out.pdb"
+        write_pdb(report.models[0], path)
+
+        from_file = validate_structure(read_structure(path))
+        assert from_file.bonds is not None
+        assert from_file.bonds.n_ca_only_residues == 0, "default output has no CA-only residues"
+        assert from_file.bonds.incomplete_residues, "the backbone-only signature must be present"
+        assert not from_file.bonds.of_provenance("input")
+
+        inherited = from_file.n_inherited_bond_violations
+        assert inherited > 0, "the input's own defects must still be attributed to the input"
+        # Every finding it calls inherited is one that touches no residue DODO built.
+        built = from_file.bonds.incomplete_residues
+        for violation in from_file.bonds.violations:
+            touches_dodo = bool(built.intersection(violation.residue_indices))
+            assert (BROKEN_INPUT_RESIDUE in violation.residue_labels) != touches_dodo
+        assert inherited == sum(
+            1
+            for v in from_file.bonds.violations
+            if BROKEN_INPUT_RESIDUE in v.residue_labels
+        )
+        assert "inherited from the input" in from_file.summary()
 
 
 class TestTheImpossibleCheckCannotBeDisabled:

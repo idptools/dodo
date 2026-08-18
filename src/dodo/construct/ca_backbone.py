@@ -1,4 +1,4 @@
-"""Place backbone N, C and O on a CA-only trace, using four consecutive alpha carbons.
+"""Place backbone N, C and O on a CA-only trace, from the neighbouring alpha carbons.
 
 The advantage DODO has over general backbone prediction is that it already knows *every* alpha
 carbon. That turns backbone placement from a modelling problem into a lookup, because of one fact
@@ -18,7 +18,7 @@ CA(i)-CA(i+1)    3.813 +/- 0.033 A  ``CA_CA_BOND_LENGTH`` 3.81
 
 So given both flanking alpha carbons, the unit between them has exactly **one** degree of freedom:
 a rotation about the CA-CA axis. Everything else is fixed. The whole problem is predicting that one
-angle, and the fourth alpha carbon is what predicts it.
+angle, and the neighbouring alpha carbons are what predict it.
 
 Why four and not three, and why five beats four
 ------------------------------------------------
@@ -775,8 +775,8 @@ def _backbone_atoms(
 
     ``ca`` is ``(..., n_residues, 3)`` -- a single trace as ``(n, 3)`` or a batch of conformers as
     ``(B, n, 3)``. Every step runs over the residue axis (and any leading batch axes) at once: a
-    peptide unit's placement depends only on four alpha carbons that are all known up front, so
-    nothing here is sequential and there is nothing to loop over in Python.
+    peptide unit's placement depends only on the handful of alpha carbons around it, all known up
+    front, so nothing here is sequential and there is nothing to loop over in Python.
 
     Returns the three atom arrays (same leading shape as ``ca``), the per-unit ``degenerate`` mask,
     and the per-unit predictor names. A unit's predictor is fixed by its position in the chain, so

@@ -84,14 +84,6 @@ _DEFAULT_B_FACTOR: float = 0.00
 
 #: Largest CA(i)-CA(i+1) separation that still gets a CONECT record, in Angstroms.
 #:
-#: DERIVED from CA_CA_BOND_LENGTH with 30% slack. Connectivity is decided on distance
-#: rather than on residue numbering because numbering is bookkeeping and distance is
-#: the truth: a rebuilt region may be renumbered, and insertion codes make two bonded
-#: residues share a number, so a numbering test both misses real bonds and is fooled by
-#: renumbering. Two consecutive CAs 3.8 A apart are bonded whatever the file calls them.
-#: The slack covers cis-proline (~2.9 A) and coarse rebuilt geometry while staying below
-#: the separation left by an unmodelled residue, which is the case that must *not* be
-#: bonded -- e.g. the numbering gaps in tests/data/structures/6kn7.pdb.
 _MAX_BONDED_CA_CA_DISTANCE: float = 1.3 * CA_CA_BOND_LENGTH
 
 #: Largest C(i)-N(i+1) separation that counts as a peptide bond, in Angstroms. Used only

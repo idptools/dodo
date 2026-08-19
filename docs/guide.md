@@ -41,18 +41,28 @@ region does.
 | `-b`, `--annotate-regions` | off | Encode region type in the B-factor column, for colouring |
 | `--no-conect` | off | Omit CONECT records — **not recommended**, see below |
 | `-q`, `--quiet` | off | Suppress the per-region report and the progress bar |
+| `--cache-structures` | off | `fetch` only: keep the downloaded model on disk — see [Caching](#caching) |
 
 ### Caching
 
-DODO caches two things per user, both on by default, and `--no-cache` (or `DODO_NO_CACHE=1`) opts
-out of both:
+DODO caches two things per user, and only the first is on by default. `--no-cache` (or
+`DODO_NO_CACHE=1`) turns off both:
 
-- **ALBATROSS predictions**, keyed by sequence hash and sparrow version. About 116 bytes each. This
-  one is worth more than it looks: the first prediction in a process imports sparrow, parrot and
-  torch, which measures **1.57 s against 0.17 s of actual rebuilding** for a 912-residue structure.
-  A cache hit returns before sparrow is imported at all, so a repeat run never loads torch.
-- **Downloaded structures.** Mean 0.25 MB and largest 1.51 MB, measured over 259 cached AlphaFold
-  models. The path is printed on every fetch.
+- **ALBATROSS predictions — on by default**, keyed by sequence hash and sparrow version. About
+  116 bytes each. This one is worth more than it looks: the first prediction in a process imports
+  sparrow, parrot and torch, which measures **1.57 s against 0.17 s of actual rebuilding** for a
+  912-residue structure. A cache hit returns before sparrow is imported at all, so a repeat run
+  never loads torch — measured end to end, 0.36 s against 1.96 s.
+
+  The disk cost is genuinely negligible: rebuilding the entire AlphaFold human proteome (23,587
+  structures) produced 9,172 entries totalling **1.07 MB**. It is nonetheless **capped at 10 MiB**,
+  about ten times that, with the oldest entries dropped first — a backstop against a pathological
+  workload rather than something normal use will meet.
+- **Downloaded structures — off by default, opt in with `dodo fetch --cache-structures`.** Mean
+  0.25 MB and largest 1.51 MB, measured over 259 AlphaFold models. Individually small, but they
+  accumulate on disk unnoticed, so DODO does not keep them unless you say so: without the flag the
+  model is downloaded to a temporary directory and deleted when the command exits. Either way the
+  path it used is printed on every fetch, so you can see which happened.
 
 Neither cache can change a result: predictions are deterministic per sequence, and the key includes
 the sparrow version so an upgrade that changes the network invalidates them rather than serving

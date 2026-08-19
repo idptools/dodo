@@ -1,23 +1,5 @@
 """The core structure representation: a struct-of-arrays molecular structure.
 
-Design rationale
-----------------
-DODO's first two attempts represented a structure as a graph of Python objects --
-``Complex`` holding ``Chain`` holding ``Domain`` holding ``Monomer`` holding ``Atom``,
-with each level caching a numpy copy of its subtree's coordinates. That design was the
-direct cause of six confirmed bugs: four containment links existed but only one
-participated in cache invalidation, two cache slots held different types in different
-methods, and the cache ignored the arguments that determined its contents. It was also
-about 100x slower than numpy on the coordinate path, because reading coordinates meant
-walking 21,000 Python objects, and two "getter" methods invalidated caches on a pure
-read path.
-
-This module inverts that. A :class:`Structure` owns exactly one coordinate array.
-:class:`Domain` and :class:`Chain` are *views* -- a half-open residue index range plus
-metadata -- and their ``xyz`` property returns a zero-copy numpy view into the owner's
-array. A view cannot go stale, because there is nothing to stale: there is one copy of
-every coordinate and every reader sees it.
-
 Two conventions, stated once and enforced everywhere
 ----------------------------------------------------
 1. **Indices are 0-based positional.** ``residue_index`` counts residues from the start
@@ -169,9 +151,7 @@ class Domain:
     #:
     #: That last case is why this field exists. While ``rebuilt`` served both purposes, a failed
     #: region was excluded from the obstacle set for the rest of the run, so a later region
-    #: could be built straight through it. Measured on AF-O14683-F1, whose IDR at 179-190 fails:
-    #: the loop at 47-60 was then built into the same space, leaving A:ILE56 CA 1.27 A from
-    #: A:ARG184 O -- the single worst contact DODO produced anywhere in a 117-structure corpus.
+    #: could be built straight through it.
     placed: bool = False
     #: Indices into :attr:`loops` of the loops that were **successfully** rebuilt. A loop whose
     #: build failed keeps its input coordinates, so it is absent here.
@@ -201,11 +181,7 @@ class Domain:
         * **A region whose build failed.** Its input coordinates are deliberately left in
           place, so it is input geometry too.
 
-        Both used to be reported as DODO's work. Measured on AF-Q9BTC0-F1, whose 1393-1408 loop
-        cannot be closed because its own anchors are 3.04 A apart: DODO left that loop alone,
-        correctly, and the validator then attributed six of AlphaFold's short CA-CA bonds
-        (3.42-3.58 A) and a 0.634 A atom pair to DODO. All seven are present in the input file
-        at identical values, and that input carries 92 impossible pairs of its own.
+        Both used to be reported as DODO's work. 
         """
         spans: list[Span] = []
         if self.kind is DomainKind.IDR and self.rebuilt:
@@ -751,16 +727,6 @@ class Structure:
         A residue that loses every atom would break that invariant, so it is rejected rather
         than silently collapsing the residue numbering.
 
-        Why this exists
-        ---------------
-        A rebuilt region is CA-only. Its side-chain and other backbone atoms cannot simply be
-        left where they were: they belong to residues whose alpha carbon has moved, so each
-        residue ends up split between two locations tens or hundreds of Angstroms apart. The
-        writer then dutifully emits a CONECT record bonding N to CA across that gap, which
-        renders as a long spurious line, and the orphaned atoms trail along the region's old
-        path as disconnected dots. Dropping them is the fix, and it matches what DODO has always
-        produced: all atoms in folded domains, and in rebuilt regions a backbone (or, under
-        ``backbone=False``, alpha carbons only).
 
         Parameters
         ----------

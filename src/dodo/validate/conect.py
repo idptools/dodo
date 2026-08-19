@@ -17,24 +17,6 @@ That is why :func:`validate_conect_lines` also reports the bonds that *should* b
 and are not, and why the report carries a completeness fraction rather than only a list
 of complaints.
 
-What DODO's output actually looks like
---------------------------------------
-A DODO file legitimately mixes all-atom stretches (folded domains, every atom of the
-input) with CA-only stretches (rebuilt IDRs and loops), and the boundary between them is
-a real chain connection. So this module never assumes a residue has a full backbone: a
-junction is bonded ``C``-``N`` where both atoms exist and ``CA``-``CA`` where they do
-not, exactly as the writer decides it, and a residue with no ``N`` is not a finding.
-
-Does DODO's writer emit reciprocal records?
--------------------------------------------
-**No.** :func:`dodo.io.write.structure_to_pdb_lines` records each bond exactly once,
-from the lower serial, because every viewer DODO targets accepts single-direction CONECT.
-Every bond in a DODO file is therefore non-reciprocal by construction, which is why
-``require_reciprocal`` defaults to ``False``: turning it on for DODO output reports one
-violation per bond and drowns everything else. The count is always available as
-:attr:`ConectReport.n_non_reciprocal`, and the flag exists for files from other writers
-(wwPDB depositions are reciprocal -- ``tests/data/structures/6kn7.pdb`` is, for its
-ligands) where a one-directional record may indicate a truncated file.
 
 Multi-model files
 -----------------

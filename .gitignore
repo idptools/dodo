@@ -10,10 +10,16 @@ CLAUDE.md
 .CLAUDE.md
 */CLAUDE.md
 .claude
+AGENTS.md
+./AGENTS.md
 
 .DS_Store
 
+ROADMAP.md
+./ROADMAP.md
 
+./.ruff_cache
+.ruff_cache
 
 # Distribution / packaging
 .Python

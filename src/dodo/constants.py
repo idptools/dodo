@@ -1,13 +1,5 @@
 """Single source of truth for every physical and algorithmic constant in DODO.
 
-Nothing in this package should hardcode a distance, angle, or threshold. v1 and the
-first v2 attempt both accumulated several divergent copies of the same numbers -- at
-one point three different values of ``super_compact`` and three different CA-CA bond
-lengths were live simultaneously -- and reconciling them after the fact was the
-single most expensive part of the rewrite. Everything lands here instead, with its
-provenance recorded, so a future reader can tell a measured value from a tuned knob
-from a guess.
-
 Provenance tags used in comments below:
 
 MEASURED
@@ -34,20 +26,28 @@ import numpy as np
 #: Virtual CA(i)-CA(i+1) distance in Angstroms.
 #:
 #: MEASURED. The trans-peptide CA-CA virtual bond length is 3.80-3.81 A and is
-#: remarkably rigid (cis-proline, at ~2.9 A, is the only common exception and DODO
-#: does not model it).
+#: remarkably rigid. Cis-proline, at ~2.9 A, is the only common exception, and DODO does not
+#: model it -- every bond it builds is trans, so a cis-proline inside a REBUILT region comes out
+#: trans. A folded domain is moved rigidly and never regenerated, so one there is untouched.
 #:
-#: This value was inconsistent across the pre-rewrite code: v1's ``parameters.py``
-#: said 3.8, v2's cone generator used 3.856, and one distance table used 3.89. There is
-#: now exactly one, on Ryan's instruction: 3.81. It applies everywhere.
+#: MEASURED impact, because "does not model it" on its own does not say whether that matters.
+#: Over 1,200 AlphaFold human structures: 17,406 CA-CA bonds are short (< 3.30 A) and 4,482 are
+#: X-Pro, but short bonds average pLDDT 38.8 against 72.2 elsewhere, so most are AlphaFold
+#: compressing geometry it is unsure about rather than real cis-prolines. Of the 831 confident
+#: ones (pLDDT >= 70), **32 -- 3.9% -- lie in a region DODO rebuilds**: about one bond per 38
+#: structures, ~600 across the whole human proteome.
 #:
-#: Do not introduce a second value for any specific consumer. Reconciling the three that
-#: were live at once was among the most expensive parts of this rewrite.
+#: Not planned, and the reason is not only cost. This constant is load-bearing in 65 places
+#: across 12 modules and making it per-bond would touch reachability, closure, the cone sampler,
+#: the clash exclusions and the peptide-plane table (measured on trans units only). But the
+#: deeper problem is that it is ill-posed for de novo generation: DODO invents a conformation and
+#: cannot know which prolines should be cis, and in a real IDR the two states interconvert. See
+#: the limitations section of README.md, where this is stated for users.
 #:
 #: MEASURED confirmation, since a single hard-coded number carrying this much weight deserves
 #: one: 19,500 consecutive alpha-carbon pairs across 100 frames of all-atom IDR simulation give
 #: a mean of 3.8129 A and a median of 3.8112 A, sd 0.033. So 3.81 is within 0.001 A of the
-#: median, and the instruction happens to be the right answer empirically as well.
+#: median.
 #:
 #: One consequence worth knowing, because it looks like a discrepancy and is not. Textbook
 #: peptide internal coordinates (CA-C 1.525, C-N 1.329, N-CA 1.458, with ideal bond angles and
@@ -89,7 +89,7 @@ CLASH_EXCLUDE_WITHIN_RESIDUES: Final[int] = 2
 # CA-CA-CA pseudo-angle model
 # ---------------------------------------------------------------------------
 #
-# MEASURED from AlphaFold2 structures by the original author: the CA(i-1)-CA(i)-CA(i+1)
+# MEASURED from AlphaFold2 structures when V1 was made: the CA(i-1)-CA(i)-CA(i+1)
 # pseudo-angle has mean ~125 deg and standard deviation ~26 deg, with an observed
 # range of 75-179 deg.
 #

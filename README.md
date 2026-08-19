@@ -5,30 +5,30 @@ DODO: re<ins>D</ins>esign c<ins>O</ins>mputationally generate<ins>D pr<ins>O</in
 
 Protien structure predictors have revolutionized biology. However, many predicted 
 structures have low-confidence regions that do not adopt any predicted secondary 
-structure (typically IDRs). DODO takes these regions and rebuilds them under the assumption that they
-are disordered regions.
+structure. DODO takes these regions and rebuilds them under the assumption that they
+are disordered regions. At this time, the rebuilt regions include the backbone of the 
+amino acids but do not include the side chains. This is an improvement over the first
+version of DODO because we now have the backbone instead of just alpha carbons. I'm 
+hoping to implement all atom IDR rebuilds in the future. 
 
 To be clear: the work that the various groups do to make structure predictors is **amazing**, 
 and none of this takes away from it in *any way*. But for figures and presentations it's
 useful for disordered regions *look* like what they are.
 
 By default, DODO identifies each disordered region and predicts its end-to-end distance from sequence
-— with ALBATROSS ([sparrow](https://github.com/idptools/sparrow)) when sparrow is installed, and an
-analytical scaling law otherwise — then repositions the folded domains as needed and rebuilds the IDR
-to the predicted dimensions. 
+— with ALBATROSS ([sparrow](https://github.com/idptools/sparrow)).
 You can also ask for regions more compact or more expanded than predicted. And you
 can generate several conformers into one multi-model PDB, which in VMD looks *like* a
 simulation trajectory — to be very clear, it is **not** equivalent to a simulation, but it's
 nice for visualization.
+
 
 ![DODO_EXAMPLE](https://github.com/idptools/dodo/blob/main/images/DODO_example.png)
 
 > **DODO 2.0 is a rewrite and it breaks the 1.x API.** The `build.pdb_from_name()` /
 > `pdb_from_pdb()` / `pdb_from_sequence()` functions and the three `pdb-from-*` console
 > scripts are gone, replaced by `dodo.rebuild()` / `dodo.build_from_sequence()` and a single
-> `dodo` command. See [What changed, and migrating from 1.x](#what-changed-and-migrating-from-1x). The scientific behaviour also
-> changed in ways worth reading about: build modes are now length-independent, and a
-> multi-model run produces a spread of distinct conformers rather than one conformation repeated.
+> `dodo` command. See [What changed, and migrating from 1.x](#what-changed-and-migrating-from-1x).
 
 ## Installation
 
@@ -38,27 +38,8 @@ Requires Python 3.10 or newer.
 pip install git+https://github.com/idptools/dodo.git
 ```
 
-It is not yet on PyPI, so the git URL is the install for now. When the wheel is published the command
-becomes `pip install idptools-dodo` — one step, no extra sources.
+The base install depends on **numpy, scipy, numba, tqdm, getSequence, and SPARROW**.
 
-The base install depends on **numpy, scipy, numba, tqdm and getSequence** — small, fast, and no torch. It
-gets you structure reading and writing, region identification, IDR rebuilding, protein-name lookup
-for `dodo fetch`, and the validator.
-
-**Most users should also install sparrow**, which provides ALBATROSS:
-
-```bash
-pip install git+https://github.com/idptools/sparrow.git
-```
-
-Without it DODO falls back to an analytical polymer scaling law that is blind to sequence
-composition — for a 100-residue poly-glutamate region ALBATROSS predicts 122.2 Å and the fallback
-estimates 68.8 Å. DODO warns when it has fallen back, but install sparrow. It is a separate step
-rather than an extra because sparrow is not published on PyPI, and PyPI does not permit an extra to
-reference a git URL.
-
-The distribution is named `idptools-dodo` because PyPI's `dodo` belongs to an unrelated 2014
-project. The import name is unaffected — it is always `import dodo`.
 
 ## Command line
 
@@ -93,10 +74,42 @@ dodo regions AF-P04637-F1-model_v6.pdb
 | `-b`, `--annotate-regions` | off | Encode region type in the B-factor column, for colouring |
 | `--no-conect` | off | Omit CONECT records — **not recommended**, see [below](#why-conect-records-matter) |
 | `-q`, `--quiet` | off | Suppress the per-region report and the progress bar |
+| `--cache-structures` (`fetch` only) | off | Keep the downloaded AlphaFold model on disk; otherwise it is deleted when the command exits |
 
-DODO caches ALBATROSS predictions (~116 bytes each; a hit skips importing torch, worth 1.5 s) and
-downloaded structures (mean 0.25 MB, largest 1.51 MB over 259 measured files). Both are on by
-default; `--no-cache` or `DODO_NO_CACHE=1` opts out of both.
+### Caching
+
+**Downloaded structures are not kept.** `dodo fetch` downloads to a temporary directory and
+deletes it on exit. Pass `--cache-structures` if you want repeat fetches of the same accession to
+skip the download. A model averages 0.25 MB and runs to 1.51 MB — small individually, but a
+directory you never chose to grow, so keeping them is your decision rather than DODO's.
+
+**ALBATROSS predictions are cached, and this one is on by default.** The reason is speed, not
+convenience: a cache miss has to import sparrow, which pulls in parrot and torch. Measured on a
+912-residue structure, that import is **1.6 s against 0.17 s of actual rebuilding** — it dominates
+the run. Every CLI invocation is a fresh process, so without the cache you pay it every single
+time:
+
+| | full `dodo rebuild` |
+|---|---|
+| prediction cache warm | **0.36 s** |
+| prediction cache disabled | **1.96 s** |
+
+The disk cost is negligible, and that is measured rather than assumed. An entry is a sequence hash
+and a float — **116 bytes**. Rebuilding *the entire AlphaFold human proteome*, all 23,587
+structures and every disordered region in them, produced **9,172 entries totalling 1.07 MB**. The
+whole human proteome costs about one megabyte.
+
+The cache lives at `~/.cache/dodo/<generation>/` (or the platform equivalent) and is keyed by
+sequence hash *and* sparrow version, so upgrading sparrow invalidates old values rather than
+silently serving predictions from a different network.
+
+**It is capped at 10 MiB**, roughly ten times the whole human proteome, with the oldest entries
+dropped first once it is reached. Nothing you do in normal use will approach that; the cap is
+there so no workload, however unusual, can grow the file without bound.
+
+**To turn it off:** `--no-cache` on any command, or `DODO_NO_CACHE=1` in the environment. Both
+disable prediction caching and structure caching together. DODO still works exactly the same — it
+is only slower.
 
 Exit status is `0` on success, `2` if a region of 10 residues or more could not be rebuilt, `1` on
 error. A shorter region that could not be rebuilt is reported and left as it arrived, and does not
@@ -398,6 +411,30 @@ Honestly stated, with what's fixed since 1.x marked.
    [Anchor exemptions](#anchor-exemptions) for why one remains and why that is the right place to
    stop.
 
+7. **Cis-peptide bonds are not modelled, so a cis-proline inside a rebuilt region comes out
+   trans.** DODO builds every virtual CA–CA bond at 3.81 Å, the trans value. A cis peptide — in
+   practice almost always X–Pro — sits near 2.9 Å, and DODO cannot produce one.
+
+   This only affects regions DODO *rebuilds*. Folded domains are moved as rigid bodies and never
+   regenerated, so a cis-proline in one survives untouched, to the last decimal place.
+
+   Measured on 1,200 AlphaFold human structures, 17,406 CA–CA bonds are short (< 3.30 Å) and 4,482
+   of those are X–Pro. Most are not real cis-prolines: short bonds have a mean pLDDT of 38.8
+   against 72.2 elsewhere, so the bulk of that population is AlphaFold producing compressed
+   geometry where it is unsure. Filtering to confident ones (pLDDT ≥ 70) leaves 831, and **32 of
+   them — 3.9% — fall in a region DODO rebuilds.** That is about one affected bond per 38
+   structures, or roughly 600 across the entire human proteome. Where the short bond is *not*
+   confident, rebuilding it to clean geometry is an improvement rather than a loss.
+
+   It is not planned. Supporting cis would make the bond length per-bond rather than a constant,
+   and that constant is load-bearing in 65 places across 12 modules — reachability schedules,
+   closure geometry, the cone sampler, the clash exclusions and the peptide-plane table, which was
+   measured on trans units only and would need a cis counterpart. The deeper problem is that it is
+   not well-posed for *de novo* generation: DODO invents a new conformation and has no way to know
+   which prolines should be cis, and in a real IDR the two states interconvert rather than one
+   being correct. If you need cis-prolines preserved in a specific region, exclude that region from
+   rebuilding rather than expecting DODO to reproduce it.
+
 7. **Three regions out of 117 structures are left unbuilt, and two are not DODO's doing.**
    Measured:
 
@@ -514,21 +551,109 @@ main matrix and runs them separately so an upstream outage doesn't redden a pull
 
 ## What changed, and migrating from 1.x
 
-**2.0 breaks the 1.x API deliberately.** The full list — every behaviour change, the complete
-old-to-new translation table, and the known limitations with their measurements — lives in
-[CHANGELOG.md](CHANGELOG.md), which is the single copy so the two cannot drift.
+**2.0 breaks the 1.x API deliberately.** This section is enough to port a script. The exhaustive
+list — every behaviour change with its measurements — is in [CHANGELOG.md](CHANGELOG.md).
 
-The three that will bite hardest:
+### The three that bite hardest
 
-1. **Build modes mean something different.** 1.x's were Ångströms per residue; 2.0's are
-   multipliers on the predicted end-to-end distance. Short regions come out **larger** than 1.x
-   made them, long ones smaller, crossing over near 80 residues. Regenerating a 1.x figure will
-   not reproduce it, and 2.0's version is the correct one.
-2. **The entry points are gone.** `build.pdb_from_name()` / `pdb_from_pdb()` /
-   `pdb_from_sequence()` and the three `pdb-from-*` commands are replaced by `dodo.rebuild()` /
-   `dodo.build_from_sequence()` and a single `dodo` command.
+1. **Build modes mean something different, so your figures will change.** 1.x modes were
+   Ångströms *per residue*; 2.0 modes are *multipliers on the predicted end-to-end distance*.
+   Short regions come out **larger** than 1.x made them, long ones smaller, crossing over near 80
+   residues. Regenerating a 1.x figure will not reproduce it — and 2.0's version is the correct
+   one, because real IDR dimensions scale as roughly N^0.55, not linearly.
+
+   | Mode | 1.x (Å per residue) | 2.0 (× predicted) |
+   |---|---|---|
+   | `super_compact` | 0.3 | 0.4× |
+   | `compact` | 0.55 | 0.7× |
+   | `normal` | 0.8 | 1.0× |
+   | `predicted` | *(used the prediction)* | 1.0× |
+   | `expanded` | 1.05 | 1.3× |
+   | `super_expanded` | 1.3 | 1.6× |
+   | `max_expansion` | 1.65 | 2.0× |
+
+   Note `normal` and `predicted` were **different** in 1.x and are exact synonyms in 2.0.
+
+2. **The entry points are gone**, replaced by one command and two functions.
 3. **Functions return a report** instead of returning `None` and printing, so a script can finally
    tell whether a region was actually rebuilt.
+
+### Commands
+
+| 1.x | 2.0 |
+|---|---|
+| `pdb-from-pdb in.pdb -o out.pdb` | `dodo rebuild in.pdb -o out.pdb` |
+| `pdb-from-name "human p53" -o out.pdb` | `dodo fetch "human p53" -o out.pdb` |
+| `pdb-from-sequence SEQ -o out.pdb` | `dodo sequence SEQ -o out.pdb` |
+| *(none)* | `dodo regions in.pdb` — what DODO thinks your structure is, without rebuilding |
+| *(none)* | `dodo validate out.pdb` — bond lengths, clashes and CONECT records |
+
+Multi-word protein names now need quoting: `dodo fetch "human p53"`.
+
+### Flags
+
+| 1.x | 2.0 |
+|---|---|
+| `-o`, `--out_path` | `-o`, `--out` |
+| `-m`, `--mode` | `-m`, `--mode` (same names, **different meaning** — see above) |
+| `-n`, `--num_models` | `-n`, `--models` |
+| `-c`, `--no_CONECT_lines` | `--no-conect` (no short form) |
+| `-f`, `--no_FD_atoms` | `--ca-only` |
+| `-b`, `--beta_for_FD_IDR` | `-b`, `--annotate-regions` |
+| `-s`, `--silent` | `-q`, `--quiet` — **`-s` now means `--strategy`** |
+| `-u`, `--use_metapredict` | removed; `density` is the default and now takes 7 ms |
+| `-apr`, `--attempts_per_region` | removed; fixed at 40 internally |
+| `-apc`, `--attempts_per_coord` | removed |
+| `-apr`/`-api` on `pdb-from-sequence` | removed (note `-apr` meant *per residue* here and *per region* elsewhere) |
+| `-l`, `--linear_placement` | removed |
+| `-j`, `--just_fds` | removed |
+| *(none)* | `--seed`, `--backbone`/`--no-backbone`, `--no-cache`, `--cache-structures` |
+
+### Python API
+
+| 1.x | 2.0 |
+|---|---|
+| `build.pdb_from_pdb(path, out_path=...)` | `dodo.rebuild(path)` then `dodo.write_pdb(...)` |
+| `build.pdb_from_name(name, out_path=...)` | `dodo.fetch_alphafold(acc)` then `dodo.rebuild(...)` |
+| `build.pdb_from_sequence(seq, out_path=...)` | `dodo.build_from_sequence(seq)` |
+| `num_models=N` | `n_models=N` |
+| `CONECT_lines=False` | `write_pdb(..., conect=False)` |
+| `include_FD_atoms=False` | `write_pdb(..., ca_only=True)` |
+| `beta_for_FD_IDR=True` | `write_pdb(..., annotate_regions=True)` |
+| `verbose=False` | `progress=False` (and the report is returned, not printed) |
+| `regions_dict={...}` | `assign_regions_from_spec(...)` with `strategy='preset'` |
+| `use_metapredict=True` | removed; see above |
+| `graph=True` | removed — it plotted with matplotlib, which is no longer a dependency |
+| `end_coord=(x,y,z)` on `pdb_from_sequence` | removed |
+| `just_fds=True` | removed |
+| functions returned `None` and printed | functions return a `RebuildReport` |
+| `except dodoException` | `except DodoError` |
+
+```python
+# 1.x
+import dodo
+dodo.build.pdb_from_pdb("in.pdb", out_path="out.pdb", mode="expanded", num_models=10)
+
+# 2.0
+import dodo
+report = dodo.rebuild("in.pdb", mode="expanded", n_models=10, seed=0)
+print(report.summary())          # what happened, per region
+dodo.write_pdb(report.models, "out.pdb")
+```
+
+### Other behaviour worth knowing
+
+- **A multi-model run is now a real ensemble.** 1.x placed folded domains once outside the model
+  loop, so every model shared one arrangement *and* essentially one end-to-end distance. Each
+  model now draws its own dimensions; folded domains are still positioned once and held fixed, so
+  only the disordered regions move between frames.
+- **`--seed` exists.** 1.x had no seed anywhere, so a stochastic builder was not reproducible.
+- **Rebuilt regions get a backbone by default.** N, C and O are placed on them; `--no-backbone`
+  returns the alpha-carbon-only output 1.x produced. Side chains are still not built.
+- **Exit status means something:** `0` success, `2` a region of 10+ residues could not be rebuilt,
+  `1` error.
+- **Installation is lighter.** metapredict, matplotlib and cython are gone from the dependencies;
+  sparrow is now an explicit separate install rather than a git dependency resolved for you.
 
 ## Copyright
 

@@ -6,6 +6,14 @@ domain. Everything downstream depends on getting this right: a folded domain mis
 IDR gets replaced by a random walk, and an IDR swallowed into a folded domain never gets
 rebuilt at all -- so the output silently presents an AlphaFold artifact as structure.
 
+NOTE: This is ultimately a visualization tool. Therefore, it makes the most sense to
+get these boundaries using the input structures. This isn't perfect in so far as a 
+predicted structure can (and does) get IDRs and folded domains wrong. This module
+tries to do its best to delineate folded domains from likely disordered regions. 
+However, it is NOT a disorder predictor. The default 'DENSITY' strategy is ideal 
+specifically to mazimize how good the output looks for visuzliation but it does
+have drawbacks.
+
 Strategies
 ----------
 ``DENSITY`` (the default)
@@ -83,8 +91,9 @@ class Strategy(str, Enum):
     """How to decide which residues are folded."""
 
     #: DODO's original all-atom density score. The default, and the method the package was
-    #: built and validated on -- the author reports it outperforms sequence-based disorder
-    #: predictors at drawing region boundaries.
+    #: built and validated on -- it is specifically good at capturing the boundaries with
+    #: high accuracy such that you avoid small parts of the IDR not being regenerated at 
+    #: an IDR-folded domain boundary. 
     DENSITY = "density"
     #: Alternative CA-only burial score: composition-free and invariant to whether side chains
     #: are modelled, but not the validated method. Available for comparison.

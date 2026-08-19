@@ -89,14 +89,6 @@ _SOLVENT_NAMES: Final[frozenset[str]] = frozenset({"HOH", "DOD", "WAT", "TIP", "
 
 #: Marker appended to a chain label to keep two runs of the same chain id apart.
 #:
-#: ``Structure.from_atom_records`` starts a new chain wherever the chain id *changes*,
-#: so two chains both labelled "A" and separated only by a TER record would be merged
-#: into one -- and, worse, their residues would be merged too where the numbering
-#: overlaps. Giving the second run a distinct label prevents that; the marker is
-#: stripped off again before the id reaches :attr:`~dodo.structure.Chain.chain_id`.
-#: It must not be NUL, because numpy's fixed-width unicode dtypes strip trailing NULs.
-#: Runs are only ever adjacent in pairs, so alternating between "A" and "A\x01" is
-#: enough to keep every boundary distinct.
 _SEGMENT_MARKER: Final[str] = "\x01"
 
 _GZIP_MAGIC: Final[bytes] = b"\x1f\x8b"

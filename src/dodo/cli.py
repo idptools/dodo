@@ -43,10 +43,10 @@ def _add_common_build_arguments(parser: argparse.ArgumentParser) -> None:
         "--no-cache",
         action="store_true",
         help=(
-            "do not read or write DODO's per-user cache. Two things are cached: ALBATROSS "
-            "predictions (about 116 bytes each, and a hit avoids importing torch, worth 1.5 s) "
-            "and downloaded structures (mean 0.25 MB, largest 1.51 MB over 259 measured files). "
-            "Both are on by default; this opts out of both, as does DODO_NO_CACHE=1"
+            "do not read or write DODO's per-user cache at all. Only ALBATROSS predictions are "
+            "cached by default (about 116 bytes each, and a hit avoids importing torch, worth "
+            "1.5 s); downloaded structures are not kept unless you ask with --cache-structures. "
+            "This disables both, as does DODO_NO_CACHE=1"
         ),
     )
     parser.add_argument(
@@ -177,6 +177,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     fetch_parser.add_argument(
         "-s", "--strategy", default="auto", choices=_STRATEGY_CHOICES, help="(default: auto)"
+    )
+    fetch_parser.add_argument(
+        "--cache-structures",
+        action="store_true",
+        help=(
+            "keep the downloaded structure in DODO's per-user cache so a repeat fetch of the "
+            "same accession skips the download. Off by default: a cached model averages 0.25 MB "
+            "and the largest measured is 1.51 MB, which accumulates silently on disk, so keeping "
+            "them is your choice to make rather than DODO's to make for you"
+        ),
     )
     _add_common_build_arguments(fetch_parser)
     sequence_parser = subparsers.add_parser(
@@ -344,10 +354,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             accession = resolve_uniprot_accession(args.target)
             if accession != args.target:
                 print(f"resolved {args.target!r} to {accession}", file=sys.stderr)
-            if args.no_cache:
-                # A TemporaryDirectory rather than the cache root, so the file is gone when the
-                # command exits. The rebuild has to happen INSIDE the context manager; doing it
-                # after would be reading a path that no longer exists.
+            if not getattr(args, "cache_structures", False) or args.no_cache:
+                # The DEFAULT. A TemporaryDirectory rather than the cache root, so the download is
+                # gone when the command exits and nothing accumulates on disk behind the user's
+                # back. The rebuild has to happen INSIDE the context manager; doing it after would
+                # be reading a path that no longer exists.
                 import tempfile
                 from pathlib import Path
 

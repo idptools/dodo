@@ -4,13 +4,12 @@ Every number here was MEASURED from 23,587 AlphaFold DB structures (UniProt refe
 proteome UP000005640, Homo sapiens, model v6), covering 105,299,823 intra-residue bond
 measurements, 15,065,706 peptide bonds and 15,065,401 CA-CA virtual bonds.
 
-Nothing here is transcribed from a table. v1 shipped a hand-written side-chain template library
-whose own comment read "these might not be accurate TBH"; it was wrong by up to 2.8 A, and one
-residue's coordinates had been copy-pasted from another's. Measuring is cheap -- the full scan
-takes 17 seconds -- so there is no reason to guess.
 
 Why AlphaFold structures are the right reference
 ------------------------------------------------
+The whole purpose of DODO is to rebuild IDRs from predicted structures. Originally this was
+for Alphafold2, but it extends to other structure predictors as well. Nonetheless, AF2 data 
+is available at scale so it's a great source.
 DODO's input is predicted structures, and folded-domain atoms pass through untouched. So the
 question a validator answers is "did DODO preserve the geometry it was given, and is what it
 built consistent with it" -- which makes AlphaFold-derived statistics the correct baseline.

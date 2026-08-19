@@ -12,6 +12,7 @@ of the rewrite is that a mode now means the same thing at every chain length.
 
 from __future__ import annotations
 
+import json
 import warnings
 
 import pytest
@@ -238,3 +239,57 @@ class TestScalingExponent:
 class TestThresholdReporting:
     def test_threshold_is_read_from_sparrow_when_present(self) -> None:
         assert albatross_short_sequence_threshold() == 35
+
+
+class TestPredictionCacheCap:
+    """The prediction cache is persistent, so it needs a ceiling it cannot be argued past.
+
+    A size cap rather than an entry count: disk is the thing being protected, and an entry count
+    only bounds bytes through an assumed cost per entry, which drifted once already (documented at
+    90 bytes, measured at 116). Measuring the serialized payload makes the guarantee hold whatever
+    a key or value costs.
+    """
+
+    def test_cache_is_trimmed_to_stay_under_the_cap(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from dodo.construct import dimensions
+
+        monkeypatch.setattr(dimensions, "_PREDICTION_CACHE_MAX_BYTES", 50_000)
+        cache = {f"v1|end_to_end|{i:064x}": float(i) for i in range(2000)}
+        assert len(json.dumps(cache).encode("utf-8")) > 50_000, "fixture must exceed the cap"
+
+        payload = dimensions._trim_to_cap(cache)
+
+        assert len(payload.encode("utf-8")) <= 50_000
+        assert json.loads(payload) == cache, "what is written must match what is kept in memory"
+
+    def test_it_evicts_oldest_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """FIFO, so the entries a user is actively hitting are the ones that survive."""
+        from dodo.construct import dimensions
+
+        monkeypatch.setattr(dimensions, "_PREDICTION_CACHE_MAX_BYTES", 50_000)
+        cache = {f"v1|end_to_end|{i:064x}": float(i) for i in range(2000)}
+        dimensions._trim_to_cap(cache)
+
+        assert f"v1|end_to_end|{1999:064x}" in cache, "the newest entry must survive"
+        assert f"v1|end_to_end|{0:064x}" not in cache, "the oldest must be the one dropped"
+
+    def test_a_small_cache_is_left_alone(self) -> None:
+        """The common case must not pay for the cap: no eviction, no re-serialization loop."""
+        from dodo.construct import dimensions
+
+        cache = {"v1|end_to_end|abc": 42.0}
+        payload = dimensions._trim_to_cap(cache)
+
+        assert cache == {"v1|end_to_end|abc": 42.0}
+        assert json.loads(payload) == cache
+
+    def test_the_cap_is_far_above_a_real_workload(self) -> None:
+        """Rebuilding the whole human proteome produced 9,172 entries and 1.07 MB, measured.
+
+        The cap must stay comfortably above that or it stops being a backstop and starts evicting
+        during ordinary use.
+        """
+        from dodo.construct import dimensions
+
+        measured_human_proteome_bytes = 1_066_900
+        assert 5 * measured_human_proteome_bytes < dimensions._PREDICTION_CACHE_MAX_BYTES

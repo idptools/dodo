@@ -2,23 +2,8 @@
 requires = ["hatchling>=1.24", "hatch-vcs>=0.4"]
 build-backend = "hatchling.build"
 
-# Moved off setuptools + versioningit. Two concrete reasons:
-#  - The old config used [tool.setuptools.packages.find] with `namespaces = false`,
-#    which silently excluded dodo/backend (it had no __init__.py) from every wheel and
-#    sdist. The result was a 12.7 KB wheel containing none of the engine, while
-#    `pip install .` still exited 0. A src layout with an explicit packages entry
-#    cannot fail that way.
-#  - versioningit emitted local version segments ("0.0.0+36.g45f3738"), and building
-#    from a tarball produced "1+unknown". PyPI rejects local version segments.
 
 [project]
-# DISTRIBUTION name, not the import name. `import dodo` is unchanged and always will be --
-# hatchling's explicit packages = ["src/dodo"] below decouples the two.
-#
-# It is not "dodo" because PyPI's `dodo` is taken by an unrelated project: "DigitalOcean Library
-# and Command Line tools" 0.1.6, last uploaded 2014-07-16. `twine upload` returns 403 against it,
-# and PEP 541 name reclamation takes weeks. So the distribution is namespaced alongside the lab's
-# other packages, which is where a user would look for it anyway.
 name = "idptools-dodo"
 description = "Rebuild the disordered regions of predicted protein structures so they look like IDRs"
 readme = "README.md"
@@ -51,92 +36,21 @@ classifiers = [
     "Typing :: Typed",
 ]
 
-# There are no user-facing extras in this release. Everything else a user needs is installed by
-# `pip install idptools-dodo`, and nothing here pulls in torch.
-#
-# Changes from v1's list:
-#  - scipy ADDED. It was imported (scipy.spatial.cKDTree, scipy.spatial.distance) but
-#    never declared, so a clean install failed at first use.
-#  - getSequence KEPT, as a normal dependency. It was briefly moved to a [lookup] extra on the
-#    belief that it pulls torch transitively. That is not true of getSequence 3.x, whose entire
-#    requirement list is urllib3, requests and protfasta -- so an extra bought nothing and cost
-#    `dodo fetch "human p53"` a confusing failure for anyone who had not read the README.
-#  - metapredict REMOVED entirely, along with the [predictors] extra and the METAPREDICT
-#    strategy. Its only purpose in v1 was faster region identification, and that reason is gone:
-#    the all-atom density metric it was a workaround for now runs in 7 ms on a 1086-residue
-#    model, down from 10.1 s. metapredict requires torch, pytorch-lightning, cython and
-#    matplotlib, so dropping it is most of what makes a light install light.
-#  - cython REMOVED. Declared, but no Cython source exists anywhere in the project.
-#  - setuptools REMOVED. Never a runtime dependency.
-#  - importlib-resources REMOVED. Only needed below Python 3.10, now the floor.
-#  - matplotlib REMOVED. v1 declared it, but nothing in the package plots anything.
-#  - sparrow REMOVED from the dependency list entirely. It was declared as
-#    `sparrow @ git+https://git@github.com/idptools/sparrow.git`, which (a) contains a
-#    stray "git@" and (b) is a PEP 508 direct reference, which makes the distribution
-#    permanently unpublishable to PyPI. It cannot live in an extra either -- see the note
-#    under [project.optional-dependencies]. See [tool.uv.sources] for the dev pin.
+
 dependencies = [
-    # numpy 2 is required, not merely tolerated: one promotion rule and one set of removed
-    # aliases to reason about rather than two, on a package whose entire state is numpy arrays.
-    #
-    # This comment previously justified the pin by NEP 50 scalar promotion "mixing Python floats
-    # with float32/float64 arrays throughout". That was false and worth correcting rather than
-    # quietly deleting, because shipped metadata gets read as fact: there is not one float32,
-    # float16, longdouble or np.single anywhere in src or tests. DODO is float64 and int64
-    # throughout, so NEP 50 cannot change a result here. The pin is still right, for the plainer
-    # reason above.
     "numpy>=2.0",
-    # scipy 1.13.0 is the first release built against numpy 2, so anything older cannot coexist
-    # with the pin above. Raised from >=1.10 for that reason, not for a feature.
     "scipy>=1.13",
-    # Resolves a protein name to a UniProt accession, for `dodo fetch "human p53"`. Small:
-    # urllib3, requests and protfasta, and no torch anywhere in the chain.
     "getSequence>=3.0",
-    # Progress reporting. Pure Python, no dependencies of its own, ~60 kB -- cheap enough to be
-    # unconditional, and a long rebuild without a progress bar reads as a hang.
     "tqdm>=4.66",
-    # The compiled backbone-refinement kernel. MEASURED at 16x the pure-numpy path on a real region,
-    # and 7.76 s to 0.49 s across all six of p300's rebuilt regions, which is why it is a base
-    # dependency rather than an extra. refine_backbone(backend="numpy") keeps the numpy path
-    # reachable, and an import failure -- a platform without a wheel, a numpy numba has not caught up
-    # with -- falls back to it silently rather than failing a rebuild.
     "numba>=0.60",
+    "sparrow @ git+https://github.com/idptools/sparrow.git",
 ]
 
 [project.optional-dependencies]
-# NOTE: there is deliberately no "albatross" extra, and it must not be added back as
-# `albatross = ["sparrow"]`. sparrow is not on PyPI under that name -- PyPI's `sparrow` is an
-# unrelated project, "Sparrow, Common RDF/SPARQL Database API" (1.0b4, 2014). That extra
-# therefore did not fail loudly; it INSTALLED, put a foreign `sparrow` on the import path, and
-# left DODO's availability probe to be fooled by it. PyPI also rejects direct URL dependencies,
-# so a git reference cannot live here either. ALBATROSS is installed as an explicit step:
-#
-#     pip install git+https://github.com/idptools/sparrow.git
-#
-# Developers get it from [tool.uv.sources] below. Without it DODO falls back to an analytical
-# polymer scaling law (constants.flory_end_to_end) that is sequence-blind, warns that it has
-# done so, and is documented as an approximation.
-
-
-# NOTE: there are deliberately no other extras, and the ones that existed are worth recording
-# so they are not recreated:
-#
-#   [predictors]  metapredict, for region identification. Removed with metapredict itself: the
-#                 density metric it accelerated now takes 7 ms.
-#   [lookup]      getSequence. Now a normal dependency -- it is three small packages.
-#   [viz]         matplotlib, for "the debug plotter". No module in src/dodo imports matplotlib
-#                 and there is no plotter, so it installed a large dependency to enable nothing.
-#   [all]         a union of the above. With no extras left, there is nothing for it to union.
 
 test = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
-    # tests/unit/test_packaging.py shells out to `python -m build` to assert that every source
-    # subpackage actually reaches the wheel -- the check that exists because two separate
-    # packaging bugs each silently dropped most of the library. Without this pin the test does
-    # not skip, it FAILS: sys.executable always exists, so the subprocess runs and exits 1
-    # rather than raising FileNotFoundError. It passes locally only because a developer machine
-    # happens to have build installed.
     "build>=1.2",
     "types-tqdm",
 ]
@@ -156,10 +70,6 @@ docs = [
 ]
 
 [project.scripts]
-# One CLI with subcommands, replacing v1's three separate console scripts
-# (pdb-from-name, pdb-from-pdb, pdb-from-sequence). Those were near-duplicate argparse
-# files whose shared flags had drifted: -apr meant --attempts_per_region in two of them
-# and --attempts_per_residue in the third.
 dodo = "dodo.cli:main"
 
 [project.urls]
@@ -258,37 +168,12 @@ ignore = [
 convention = "numpy"
 
 [tool.ruff.lint.per-file-ignores]
-# The TYPE_CHECKING block re-exports names for type checkers and IDEs; they are
-# genuinely unused at runtime because __getattr__ resolves them lazily.
 "src/dodo/__init__.py" = ["F401"]
-# Tests: docstrings on every test function are noise, and `constants as C` is a
-# deliberate, readable abbreviation in a module that references dozens of them.
 "tests/**" = ["D100", "D101", "D102", "D103", "D104", "N812"]
 
-# E702: the kernel is scalar arithmetic on unpacked components; splitting each grouped assignment
-#   across three lines turns a six-line rotation into twenty and hides the structure it exists to show.
-# N803/N806: it names variables after the ATOMS they hold -- Cx, Nx, Ox are the carbon, nitrogen and
-#   oxygen of a peptide unit. Lowercasing them loses the only thing making 200 lines of scalar
-#   arithmetic followable.
 "src/dodo/construct/backbone_kernel.py" = ["E702", "N803", "N806"]
 
 [tool.mypy]
-# NOT the runtime floor, which is 3.10 (requires-python above). This governs the syntax level
-# mypy parses THIRD-PARTY STUBS at, and it has to be >= 3.12 because numpy's own bundled
-# __init__.pyi uses a PEP 695 `type` statement from numpy 2.5 onward:
-#
-#   numpy/__init__.pyi:737: error: Type statement is only supported in Python 3.12 and greater
-#   Found 1 error in 1 file (errors prevented further checking)
-#
-# That is a *syntax* error, so mypy aborts before inspecting anything. With python_version =
-# "3.10" and numpy 2.5.1 installed, the result is exit 2 and ZERO of the 35 source files
-# checked -- so the "mypy --strict clean" guarantee was being verified by a command that
-# examined no code at all. Invisible locally, because a dev machine on numpy 2.4.x has stubs
-# that predate the construct; CI resolves newest and would have gone red on the release commit.
-#
-# What enforces 3.10-compatible SOURCE is ruff's target-version = "py310" above, which is the
-# right tool for it. The residual cost is that mypy will not flag a 3.11/3.12-only stdlib API;
-# the 3.10 leg of the CI test matrix catches those at runtime.
 python_version = "3.12"
 files = ["src/dodo"]
 strict = true

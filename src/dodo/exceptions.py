@@ -1,12 +1,5 @@
 """Exception hierarchy for DODO.
 
-Every failure path in DODO raises one of these. That is a deliberate change from the
-pre-rewrite code, whose dominant failure mode was returning a plausible-looking wrong
-answer: builders returned coordinate arrays full of exact ``(0, 0, 0)`` rows on total
-failure, samplers returned NaN, and the folded-domain placer returned positions it had
-already determined to be clashing. For a tool whose product is a picture, a silent
-wrong answer is worse than a crash -- it becomes a figure in a paper.
-
 The rule this package follows: if a routine cannot do what it was asked, it raises. If
 partial success is meaningful, it returns an explicit success mask alongside the
 results. It never returns degenerate coordinates and hopes.
@@ -24,14 +17,6 @@ class DodoError(Exception):
 
 class InvalidParameterError(DodoError, ValueError):
     """An argument was outside its permitted range or set of values.
-
-    Deliberately inherits from **both** :class:`DodoError` and :exc:`ValueError`. A caller
-    migrating from 1.x writes ``except DodoError`` as the translation of 1.x's
-    ``dodoException``, and the thing they most often wrapped it around was a mistyped mode name
-    -- so bad arguments have to be inside the hierarchy or that translation silently fails to
-    catch the commonest mistake. But a mistyped keyword argument is also exactly what
-    :exc:`ValueError` means in Python, and code already written as ``except ValueError`` should
-    not break to serve the first point.
 
     Inheriting from both costs nothing and makes either instinct correct. It also means the CLI
     catches these through its single ``except DodoError`` and prints one plain line, instead of
@@ -186,4 +171,7 @@ class EngineUnavailableError(EngineError):
 
     Separate from :class:`MissingDependencyError` because an engine can be installed
     and still unavailable -- STARLING with no model weights downloaded, for instance.
+
+    NOTE: STARLING at the time of the initial V2 launch is not implemented. This is 
+    a placeholder until we implement STARLING.
     """

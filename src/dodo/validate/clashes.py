@@ -10,60 +10,6 @@ repository, a naive "flag everything closer than 3.2 A" check reports 210,335 pa
 146 are defects. A validator like that is worse than no validator, because the user learns
 to ignore it.
 
-So this module is mostly a careful account of what is *not* a clash, and every exclusion
-below is justified by a measurement on the six fixture structures rather than by taste.
-
-The two regimes DODO output actually contains
----------------------------------------------
-DODO does not emit a uniform all-atom structure. Folded domains keep every atom of the
-input and are moved only as rigid bodies; rebuilt regions -- IDRs, and loops inside folded
-domains -- are ALPHA CARBON ONLY, because placing real backbone atoms there is the next
-priority and is not done yet. One output file therefore contains all-atom stretches and
-CA-only stretches, joined at a real chain connection.
-
-Both regimes are handled explicitly:
-
-* Between two all-atom residues, contacts are judged against element-aware minima derived
-  from van der Waals radii (see :data:`VDW_RADII`) less a measured allowed overlap.
-* Any pair involving the alpha carbon of a CA-only residue is judged against
-  :data:`dodo.constants.CA_CLASH_DISTANCE` instead. A lone CA stands in for a whole
-  residue's excluded volume, so a carbon van der Waals radius is the wrong yardstick for
-  it, and 3.20 A is the value DODO's own builder enforces while placing those atoms.
-
-Distinguishing a defect DODO introduced from one it preserved
--------------------------------------------------------------
-It cannot be done from the output file alone, and this module does not pretend otherwise:
-it reports what it measures. What it does instead is refuse to flag the things real
-deposited structures legitimately contain, so that a finding on DODO output is worth
-reading. Measured, over the unmodified fixtures:
-
-============================  ==========  ================================================
-fixture                       violations  what they are
-============================  ==========  ================================================
-dnmt3a.pdb (AF2, 7146 atoms)           0  -
-arf19.pdb (AF2, 8467 atoms)            0  -
-p300.pdb (AF2, 18457 atoms)           15  13 from one genuine overlap in the input, where
-                                          AlphaFold superimposed MET121 on PRO659 in a
-                                          pLDDT-30 region; 2 short HIS-TRP contacts
-6kn7.pdb (EM, 61511 atoms)           131  real side-chain overlaps in a 6.60 A model,
-                                          where side chains are not resolved at all; 77
-                                          distinct sequence positions repeated across the
-                                          29 NCS copies
-test.pdb (CA-only)                14,441  a degenerate pre-rewrite trace: CA-CA bonds
-                                          1.23-562 A, 4,259 pseudo-angles below 75 deg
-testing_translation.pdb (v1)       1,301  pre-rewrite output with the orphaned-atom bug
-                                          fixed in commit 026c4f1: atoms at 0.000 A
-============================  ==========  ================================================
-
-Zero on well-formed input, five figures on known-bad input, and the two intermediate cases
-are defects that are genuinely present in the file. Three of these fixtures also ship as
-mmCIF, and the counts agree exactly there (0, 15 and 131), which says the findings are
-properties of the coordinates rather than of the reader. That is the calibration; the tests
-in ``tests/unit/test_validate_clashes.py`` assert it so it cannot silently drift.
-
-Measured cost on the largest fixture: 0.185 s for 61,511 atoms, of which 0.073 s is
-building the covalent bond graph, 0.063 s is expanding it to 1-3 and 1-4 pairs, and 0.019 s
-is the KD-tree and its 183,225 candidate pairs.
 """
 
 from __future__ import annotations

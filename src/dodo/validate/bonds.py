@@ -27,48 +27,6 @@ residue -- 334 on a rebuilt dnmt3a, 1,526 on a rebuilt p300. Every check here th
 first whether a residue is CA-only and, if so, expects nothing from it beyond its virtual CA-CA
 bonds.
 
-Real input contains real oddities, and preserving one is not a bug
-------------------------------------------------------------------
-The distinction that matters is between a defect DODO *introduced* and one it faithfully
-*carried through*. Each exclusion below is on a stated, measured basis:
-
-* **cis and strained peptide bonds.** A cis peptide puts CA(i)-CA(i+1) near 3.19 A rather than
-  3.83 A (:data:`~dodo.validate.reference.CA_CA_SHORT_LENGTH`, 2.44% of the reference
-  population), and a non-planar omega can push it to 4.4 A -- while the actual C-N bond is
-  perfect. Measured on this repository's fixtures, 26% of p300's consecutive pairs deviate from
-  3.81 A by more than 0.15 A while *every one* of its 2,413 peptide bonds measures between 1.317
-  and 1.407 A. The CA-CA virtual bond is a surrogate for connectivity, so where a real peptide
-  bond can be measured it is checked instead and the surrogate is skipped. Pass
-  ``strict_ca_ca=True`` to check both.
-* **preserved CA-only geometry.** Where a CA-CA bond cannot be cross-checked against a peptide
-  bond, what counts as acceptable depends on who built it. Geometry DODO generated is held to
-  the 3.81 A it builds to; geometry DODO merely preserved is flagged only when it falls outside
-  *both* measured reference populations. Measured on the AlphaFold fixtures' CA traces, that is
-  the difference between flagging 6.8-22.8% and flagging 0-0.7%.
-* **chain breaks at unmodelled residues.** Where the deposited numbering jumps, the two residues
-  are not chemically adjacent and neither their peptide bond nor their CA-CA distance means
-  anything. Those pairs are counted and noted, never flagged.
-* **modified residues** (MSE, SEP, ...). DODO keeps them on purpose. They are absent from the
-  reference table, so they are noted with their names and counts rather than flagged.
-* **partially built residues.** A residue with a backbone and no side chain is what
-  ``rebuild(backbone=True)`` produces, and also how deposited structures model side-chain
-  disorder. See :data:`_TIER_BACKBONE`.
-
-Reporting, not raising
-----------------------
-:func:`validate_bonds` returns a :class:`BondReport` that collects every finding, following the
-:class:`~dodo.geometry.metrics.TraceReport` pattern. A caller wants the whole list, not the first
-item. Exceptions are reserved for input that cannot be validated at all (a nonsensical tolerance,
-something that is not a :class:`~dodo.structure.Structure`); :meth:`BondReport.raise_if_invalid`
-is there for callers who want the strict form.
-
-Performance
------------
-Everything is vectorized over numpy arrays or delegated to a KD-tree; nothing loops over atom
-pairs in Python. Measured on the 61,511-atom, 7,781-residue 6kn7 EM assembly: **27 ms** for the
-whole structure, 62,548 bonds checked -- of which the KD-tree pass over all 62,548 pairs inside
-1.90 A is 15 ms. The intra-residue pass runs 20 vectorized passes, one per residue type, rather
-than one per residue.
 """
 
 from __future__ import annotations

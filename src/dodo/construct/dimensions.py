@@ -165,10 +165,24 @@ def _require_sequence(sequence: str) -> str:
 #: Layout generation of the on-disk prediction cache. Bump to abandon existing entries.
 _PREDICTION_CACHE_GENERATION: Final[int] = 1
 
-#: Entries kept before the oldest are dropped. MEASURED: an entry is a 64-character hash plus a
-#: float, about 90 bytes of JSON, so the cap is roughly 1.8 MB -- and a real structure contributes
-#: one entry per disordered region, so reaching it takes thousands of distinct proteins.
-_PREDICTION_CACHE_LIMIT: Final[int] = 20_000
+#: Hard ceiling on the on-disk prediction cache, in bytes. Oldest entries are dropped to stay
+#: under it.
+#:
+#: A SIZE cap rather than an entry count, because the thing being protected is disk, and an entry
+#: count only bounds it via an assumed bytes-per-entry that can drift. (It did: this was 20,000
+#: entries documented as "roughly 1.8 MB" on an assumed 90 bytes; measured, an entry is 116 bytes,
+#: so the real ceiling was 2.3 MB.)
+#:
+#: 10 MiB is deliberately far above any honest workload. MEASURED by rebuilding the entire
+#: AlphaFold human proteome -- 23,587 structures, every disordered region in all of them -- which
+#: produced **9,172 entries totalling 1.07 MB**. So the cap is about ten times the whole human
+#: proteome, and a user doing something ordinary will never approach it. It exists only so that a
+#: pathological workload cannot grow a file in a directory the user did not choose, without bound.
+_PREDICTION_CACHE_MAX_BYTES: Final[int] = 10 * 1024 * 1024
+
+#: Fraction of the cap to trim back to when it is exceeded, so eviction is amortised rather than
+#: running on every subsequent write once the cache is full.
+_PREDICTION_CACHE_TRIM_TO: Final[float] = 0.8
 
 _prediction_cache: dict[str, float] | None = None
 
@@ -231,21 +245,41 @@ def _prediction_key(kind: str, sequence: str, sparrow_version: str) -> str:
     return f"{sparrow_version}|{kind}|{digest}"
 
 
+def _trim_to_cap(cache: dict[str, float]) -> str:
+    """Drop the oldest entries until the serialized cache fits the cap. Returns the JSON to write.
+
+    Modifies ``cache`` in place. Python dicts preserve insertion order and JSON round-trips it, so
+    the front of the dict is the oldest entry and this is FIFO eviction. Serialized size is
+    measured rather than estimated, so the guarantee holds whatever a key or value costs.
+    """
+    payload = json.dumps(cache)
+    if len(payload.encode("utf-8")) <= _PREDICTION_CACHE_MAX_BYTES:
+        return payload
+    target = int(_PREDICTION_CACHE_MAX_BYTES * _PREDICTION_CACHE_TRIM_TO)
+    keys = list(cache)
+    while keys and len(payload.encode("utf-8")) > target:
+        # Geometric, so a cache far over the cap converges in a handful of re-serializations
+        # rather than one per entry.
+        drop = max(1, len(keys) // 8)
+        for stale in keys[:drop]:
+            del cache[stale]
+        keys = keys[drop:]
+        payload = json.dumps(cache)
+    return payload
+
+
 def _store_prediction(key: str, value: float) -> None:
     """Add an entry and write the cache out atomically."""
     cache = _load_prediction_cache()
     cache[key] = value
-    if len(cache) > _PREDICTION_CACHE_LIMIT:
-        # dicts preserve insertion order, so this drops the oldest entries.
-        for stale in list(cache)[: len(cache) - _PREDICTION_CACHE_LIMIT]:
-            del cache[stale]
+    payload = _trim_to_cap(cache)
     path = _prediction_cache_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         # Write-then-replace: a process killed mid-write leaves the old file intact rather than a
         # truncated one. Two processes racing both produce a valid file; one simply wins.
         temporary = path.with_suffix(f".{os.getpid()}.tmp")
-        temporary.write_text(json.dumps(cache))
+        temporary.write_text(payload)
         temporary.replace(path)
     except OSError:
         return

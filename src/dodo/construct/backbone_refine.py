@@ -241,14 +241,6 @@ def _bond_separation(kind_a: str, residue_a: int, kind_b: str, residue_b: int) -
 
 #: Bond separation at or below which two backbone atoms are close for covalent reasons and must not
 #: be scored as a clash.
-#:
-#: MEASURED at 4, not the 3 that looks right on paper. A 1-4 pair such as CA(i)-C(i+1) or
-#: O(i)-C(i+1) has its distance set mostly by bond geometry, not by packing, so putting it in a
-#: 2.9 A clash term adds a penalty no rotation can relieve -- and the optimizer then trades real
-#: clashes away to reduce it. Measured on dnmt3a, including 1-4 pairs took steric contacts from 3
-#: to 15; excluding them brings it back. This is the same failure as the original 14,859 fake
-#: clashes, one shell further out and correspondingly easier to miss.
-#:
 #: 4 still admits the pair that motivated counting bonds at all: two carbonyl oxygens on adjacent
 #: residues are 5 bonds apart.
 _BONDED_SEPARATION: Final[int] = 4

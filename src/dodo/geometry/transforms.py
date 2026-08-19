@@ -1,27 +1,6 @@
 """Rigid-body rotations, with every degenerate case handled explicitly.
 
-Everything in DODO that moves an atom goes through this module. That concentration is
-deliberate: the pre-rewrite code built rotation matrices inline in four places with four
-different conventions, and two of those hand-rolled Rodrigues expansions were wrong in
-ways that produce plausible-looking output.
-
-Two confirmed defects motivate the shape of this module.
-
-**The antiparallel case.** ``find_transform`` returned ``-np.eye(3)`` when the two
-vectors pointed in opposite directions. That matrix has determinant -1: it is a point
-inversion, not a rotation. It maps ``a`` onto ``-a`` correctly, which is why it went
-unnoticed, but it also mirrors every other component of whatever it is applied to. In
-the cone generator this silently negated the axial component of every candidate
-position, turning a requested CA-CA-CA angle of ``theta`` into ``180 - theta`` for any
-chain segment running antiparallel to the template axis. Here,
-:func:`rotation_between_vectors` returns a genuine rotation by pi about an axis
-perpendicular to ``a``, and every matrix this module returns is checked to be a proper
-rotation before it leaves.
-
-**Degenerate input.** A zero-length vector has no direction, and normalizing it yields
-NaN. The old code divided by the norm unguarded, so a coincident pair of coordinates
-produced a matrix of NaN that propagated into the output structure as NaN coordinates.
-Every entry point here raises :class:`~dodo.exceptions.GeometryError` instead.
+Everything in DODO that moves an atom goes through this module.
 
 Conventions
 -----------
@@ -178,16 +157,7 @@ def _require_proper_rotation(rotation: np.ndarray, context: str) -> np.ndarray:
 
 
 def _perpendicular_to(unit_axis: np.ndarray) -> np.ndarray:
-    """Return some unit vector perpendicular to the unit vector ``unit_axis``.
-
-    Picks the world axis that ``unit_axis`` is *least* aligned with before taking the
-    cross product. Any unit vector has a component of magnitude at most ``1/sqrt(3)``
-    along its own smallest axis, so the cross product's norm is at least ``sqrt(2/3)``
-    and normalizing it is always well conditioned. The naive "always cross with x"
-    version fails outright when the input *is* the x axis, which is not a rare input:
-    it is what a chain segment lying along a coordinate axis produces, and DODO's own
-    test fixtures are built that way.
-    """
+    """Return some unit vector perpendicular to the unit vector ``unit_axis``."""
     smallest = int(np.argmin(np.abs(unit_axis)))
     reference = np.zeros(3)
     reference[smallest] = 1.0
@@ -466,11 +436,6 @@ def apply(
     about
         Point held fixed by the rotation. Defaults to the world origin.
 
-        Note the contrast with :meth:`dodo.structure.Domain.rotate`, which defaults to
-        the domain's centroid: there, "rotate the domain" almost always means about
-        itself. Here the input is a bare array with no notion of what it belongs to, so
-        the default is the one that composes -- ``apply(coords, R)`` is exactly
-        ``coords @ R.T``.
 
     Returns
     -------
@@ -490,16 +455,6 @@ def apply(
     caught before it becomes an ``ATOM`` record reading ``nan nan nan``, which is what
     the pre-rewrite pipeline emitted.
 
-    ``rotation`` is checked for orthonormality as well as for a determinant of +1. Both
-    are needed: a shear like ``[[1, 0.6, 0], [0, 1, 0], [0, 0, 1]]`` has determinant
-    exactly +1 and is not rigid -- measured, it turned uniform 4.294 A CA-CA bonds into
-    5.385 / 3.280 / 3.280 / 5.385 A. The determinant-only version of this check was
-    justified as a hot-path saving on the grounds that nothing in this module produces a
-    shear; that reasoning does not extend to the caller-supplied matrices this function
-    is built to accept. Measured cost of the orthonormality half: 1.15 us, against 44 us
-    for the :func:`~dodo.geometry.sampling.cone_candidates` call that is this module's
-    hottest caller -- 2.6% of the per-residue budget, and that call's total is unchanged
-    at 44 us.
     """
     array = np.asarray(coords, dtype=np.float64)
     single_point = array.ndim == 1

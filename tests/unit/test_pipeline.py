@@ -943,6 +943,76 @@ _BACKBONE_BASELINE: dict[str, tuple[int, int]] = {
 }
 
 
+class TestEndToEndToleranceIsDisclosed:
+    """The 10% end-to-end allowance must be visible where it applies -- and only there.
+
+    It applies to a *steered* region: one with a free end, whose span the walk actually aims at a
+    target. It does NOT apply to an interior region, whose span is dictated by its two fixed
+    anchors; the engine neither samples a target for one nor checks it afterwards. Comparing the
+    two numbers there compares a region's own span against the separation of the anchors outside
+    it, which differ by the direction of two terminal bonds -- up to 7.62 A of pure geometry.
+    """
+
+    def test_interior_regions_are_never_flagged(self) -> None:
+        """The bug this guards: scoring interior regions flagged 7 of 7, none of them real.
+
+        dnmt3a seed 2 is the sharpest case -- residues 433-473 span 52.2 A between anchors that
+        are 47.6 A apart, which is a correct closure, not a 9.5% miss.
+        """
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            report = rebuild(DNMT3A, seed=2, progress=False)
+        interior = [o for o in report.outcomes if o.built and not o.steered]
+        assert interior, "fixture must contain an interior region for this to mean anything"
+        wide = [
+            o
+            for o in interior
+            if abs(o.achieved_end_to_end - o.requested_end_to_end) / o.requested_end_to_end > 0.05
+        ]
+        assert wide, "seed 2 no longer produces a wide interior span; re-pick one"
+        assert "from the requested end-to-end distance" not in report.summary()
+        # ...and it is described as a span, not as a missed target.
+        assert "set by its anchors" in str(wide[0])
+
+    def test_steered_regions_hit_their_target_on_the_corpus(self) -> None:
+        """Where steering applies it is accurate, so the summary stays quiet."""
+        worst = 0.0
+        for name in ("dnmt3a", "arf19"):
+            for seed in (0, 1, 2):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    report = rebuild(FIXTURES / f"{name}.pdb", seed=seed, progress=False)
+                for o in report.outcomes:
+                    if o.built and o.steered and o.achieved_end_to_end and o.requested_end_to_end:
+                        rel = abs(o.achieved_end_to_end - o.requested_end_to_end)
+                        worst = max(worst, rel / o.requested_end_to_end)
+                assert "from the requested end-to-end distance" not in report.summary()
+        assert worst < 0.05, f"steered end-to-end accuracy regressed: worst {worst:.1%}"
+
+    def test_a_steered_region_that_leans_on_the_tolerance_is_named(self) -> None:
+        """The disclosure path itself, driven directly so it does not depend on a lucky seed."""
+        from dodo.construct.pipeline import RebuildReport, RegionOutcome
+
+        report = RebuildReport(
+            outcomes=[
+                RegionOutcome(
+                    model=1,
+                    chain_id="A",
+                    residues=(1, 40),
+                    n_residues=40,
+                    built=True,
+                    achieved_end_to_end=90.0,
+                    requested_end_to_end=100.0,
+                    steered=True,
+                )
+            ]
+        )
+        summary = report.summary()
+        assert "1 region(s) finished more than 5% from the requested end-to-end distance" in summary
+        assert "10.0%" in summary
+        assert "1-40" in summary
+
+
 class TestBackboneBaseline:
     """Frozen 2026-08 baseline for ``--backbone`` quality on the committed corpus (BB-0 floor).
 

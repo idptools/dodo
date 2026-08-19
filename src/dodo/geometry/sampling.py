@@ -1,13 +1,5 @@
 """Random and enumerated candidate positions for a growing CA trace.
 
-Three primitives, one implementation each. That is a deliberate reaction to the code
-being replaced, which had a scalar and a "vectorized" sibling for every sampler here:
-of three such pairs, two of the batch versions were outright broken (one applied a
-forward rotation where the inverse was required, one divided by a zero-length normal and
-returned all-NaN) and all three were dead code, because every caller used the scalar
-version in a Python loop. The batch form is the only form here, and ``n = 1`` is a
-normal case of it.
-
 Reproducibility
 ---------------
 Every stochastic function takes an explicit :class:`numpy.random.Generator`. There is no
@@ -57,9 +49,7 @@ _TEMPLATE_AXIS = np.array([0.0, 0.0, 1.0])
 #: Without an offset every ring uses the same ``per_angle`` azimuths, so all 355 default
 #: candidates lie in just 10 meridional half-planes: a single obstacle sitting in one of
 #: those planes rules out 71 candidates at once, and the search has far less freedom than
-#: its candidate count suggests. Advancing the azimuth by the golden angle per ring
-#: spreads the union of the rings evenly around the axis. It is a fixed irrational
-#: offset, not a random one, so :func:`cone_candidates` stays deterministic.
+#: its candidate count suggests.
 _GOLDEN_RATIO_CONJUGATE = 0.5 * (np.sqrt(5.0) - 1.0)
 
 #: Cache size for cone templates. Small on purpose: a build uses one or two distinct
@@ -136,22 +126,6 @@ def random_unit_vectors(n: int, rng: np.random.Generator) -> np.ndarray:
         If a drawn vector cannot be normalized even after resampling, which would
         require repeatedly drawing three Gaussians that all underflow to zero.
 
-    Notes
-    -----
-    Uses normalized Gaussians. This is the standard correct method: the trivariate
-    standard normal is spherically symmetric, so dividing by its norm gives an exactly
-    uniform direction.
-
-    The tempting alternative -- sampling the polar angle ``theta`` uniformly on
-    ``[0, pi]`` and the azimuth uniformly on ``[0, 2 pi)`` -- is **wrong**, and wrong in
-    a way that matters here. The area element on a sphere is ``sin(theta) d(theta)
-    d(phi)``, so uniform ``theta`` oversamples the poles by ``1 / sin(theta)``: the
-    density diverges at both ends. A random-walk step drawn that way is biased toward
-    continuing along, or reversing, the previous axis, which changes the chain's
-    persistence length and therefore its radius of gyration -- the one quantity DODO
-    exists to get right. Sampling ``cos(theta)`` uniformly on ``[-1, 1]`` is the correct
-    inverse-CDF version of that approach; normalized Gaussians are simpler and avoid the
-    trigonometry entirely.
     """
     _require_generator(rng)
     count = _require_count(n, "n", TypeError)
@@ -242,20 +216,6 @@ def _cone_template(angles: tuple[float, ...], per_angle: int, bond_length: float
     return all candidates sitting on the apex -- zero-length bonds out of the one function
     that guarantees exact bond lengths.
 
-    Cached because the geometry depends only on these three arguments and not at all on
-    the coordinates it will be rotated onto -- the pre-rewrite code noted that opportunity
-    and never took it, rebuilding every candidate offset from scratch for every residue of every
-    attempt, at a measured 2.82 ms per call.
-
-    Measured here, when the default was 71 angles x 10 candidates (it is now x 5, so a call is
-    cheaper than these figures): a full
-    :func:`cone_candidates` call costs 44 us warm and 58 us with the cache cleared, so the
-    cache is worth 1.3x, not the 86x the pre-rewrite note anticipated. The reason is that
-    most of the old 2.82 ms was not the trigonometry but the Python loop around it -- 71
-    angles, each calling a circle-point helper and then transforming its 10 points one at
-    a time. Building the whole template with array operations removes that, and what the
-    cache saves on top is the remaining 13 us of arithmetic. It stays because 13 us of 44
-    is still 30% of the per-residue budget and the output is bit-identical either way.
     """
     angle_array = np.asarray(angles, dtype=np.float64)
 

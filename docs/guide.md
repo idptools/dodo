@@ -77,6 +77,19 @@ thing at any chain length.
 | `super_expanded` | 1.6× |
 | `max_expansion` | 2.0× |
 
+**The target is hit to within 10%, not exactly.** That allowance is deliberate rather than
+sloppy: ALBATROSS's own predictions are good to a few percent, and the analytical fallback used
+when it is unavailable is looser still, so insisting on tighter agreement would be precision
+theatre. In practice the walk does much better — measured across the test corpus, a region steered
+to a target lands within 0.27% of it at the median and 1.32% at the worst. The run summary names
+any region that uses more than half the allowance, so you never have to take the fit on trust.
+
+This applies to regions with a **free end**, which are the ones a target is aimed at. A region
+pinned between two folded domains has no target to hit: its span is whatever the anchor positions
+dictate, so DODO reports it as a span rather than scoring it against a number it was never steered
+to. That is also why the domains are moved first — step 3 puts the anchors at the predicted
+distance, and the linker is then built to fit them.
+
 A mode is a multiplier, but **no mode can exceed what the chain can physically span.** A region of
 `N` residues has `N - 1` virtual CA–CA bonds of 3.81 Å, so its end-to-end distance can never exceed
 `(N - 1) × 3.81 Å` — the fully extended contour length. Asking for more would mean breaking bonds.

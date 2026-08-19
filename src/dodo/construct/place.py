@@ -9,12 +9,9 @@ linker *in place* can only produce a stretched rod -- the chain is forced to spa
 sequence says it should not. The fix is not a better linker builder. It is to **move the
 domains** so their separation matches the prediction, and only then build the linker.
 
-Getting this backwards is exactly what an earlier version of this rewrite did, and the output
-looked wrong for precisely this reason.
-
 What moves and what does not
 ----------------------------
-Folded-domain atoms are **never rebuilt**. They come from AlphaFold (or AlphaFold3, or a
+Folded-domain atoms are **never rebuilt**. They come from AlphaFold (or AlphaFold2/3, or a
 crystal structure) and are trusted. A domain only ever moves as a **rigid body**: its internal
 geometry must come out bit-identical, while its position and orientation change. Every
 transform here is a rotation plus a translation applied to whole domains, and

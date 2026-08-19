@@ -2,12 +2,7 @@
 
 :func:`validate_ca_trace` is the contract. A generated backbone is acceptable when its
 CA-CA bond lengths are within tolerance of :data:`dodo.constants.CA_CA_BOND_LENGTH` and
-its CA-CA-CA pseudo-angles lie inside the generation window. "It ran" is not the
-criterion, because the code being replaced ran fine: it had no angle constraint at all
-and produced measured pseudo-angles from 47 to 178 degrees. No real protein trace
-exhibits a 47 degree CA-CA-CA angle -- at 3.8 A bonds it puts CA(i-1) and CA(i+1) 3.1 A
-apart, closer than two non-bonded carbons can sit -- and such a trace cannot be
-reconstructed to all-atom because there is no backbone dihedral pair that produces it.
+its CA-CA-CA pseudo-angles lie inside the generation window.
 
 The report names every violation with its residue index rather than returning a bare
 bool, for the same reason the rest of this package raises instead of returning sentinel

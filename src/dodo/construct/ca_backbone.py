@@ -1,75 +1,4 @@
-"""Place backbone N, C and O on a CA-only trace, from the neighbouring alpha carbons.
-
-The advantage DODO has over general backbone prediction is that it already knows *every* alpha
-carbon. That turns backbone placement from a modelling problem into a lookup, because of one fact
-about protein geometry:
-
-**The peptide unit is rigid.** Measured over 19,302 peptide units from 100 frames of all-atom IDR
-simulation, its internal bonds do not move:
-
-===============  =================  =============================
-bond             measured           :mod:`dodo.constants` value
-===============  =================  =============================
-CA(i)-C(i)       1.525 +/- 0.004 A  ``CA_C_BOND_LENGTH`` 1.525
-C(i)-N(i+1)      1.329 +/- 0.004 A  ``C_N_PEPTIDE_BOND_LENGTH`` 1.329
-N(i+1)-CA(i+1)   1.458 +/- 0.004 A  ``N_CA_BOND_LENGTH`` 1.458
-CA(i)-CA(i+1)    3.813 +/- 0.033 A  ``CA_CA_BOND_LENGTH`` 3.81
-===============  =================  =============================
-
-So given both flanking alpha carbons, the unit between them has exactly **one** degree of freedom:
-a rotation about the CA-CA axis. Everything else is fixed. The whole problem is predicting that one
-angle, and the neighbouring alpha carbons are what predict it.
-
-Why four and not three, and why five beats four
-------------------------------------------------
-Three consecutive alpha carbons give the CA-CA-CA pseudo-*angle*. The peptide plane's rotation is
-set by the pseudo-*dihedral*, which needs a fourth. Measured, held out on alternating frames:
-
-==========  =========  =========  =========
-predictor   C(i)       N(i+1)     O(i)
-==========  =========  =========  =========
-3 CAs       0.471 A    0.311 A    1.495 A
-4 CAs       0.274 A    0.192 A    0.843 A
-==========  =========  =========  =========
-
-The fourth alpha carbon removes 53% of the peptide plane's angular uncertainty, from 64.4 to
-30.5 degrees. It roughly halves the error on C and N.
-
-A *fifth* adds a second, smaller increment. Conditioning a unit on both flanking pseudo-dihedrals
-rather than only its own (:data:`_C_BY_BIN_2D`) is worth a further 5.1% on C and 3.8% on N in
-held-out placed-atom error, each with a paired 95% CI excluding zero. That is the shipped
-predictor for every interior unit with a fifth alpha carbon; the last interior unit of a region has
-none and uses the 4-CA table above. Diminishing returns are real, though -- see the module note on
-what was measured and rejected, and ``backbone_plan.md`` Phase BB-3.
-
-Three things this module does *not* do, each for a measured reason
-------------------------------------------------------------------
-**It does not average positions.** Binning the local-frame coordinates and using the bin mean --
-which is the obvious implementation -- produces C-N bonds of 1.254 A against an ideal 1.329, because
-averaging points scattered on a sphere lands inside it. Every placed atom is instead rescaled onto
-its exact ideal bond length, which costs nothing in accuracy (C 0.279 -> 0.281 A) and makes the
-output valid by construction.
-
-**It does not predict the carbonyl O.** O is fully determined by CA(i), C(i) and N(i+1): placed by
-ideal geometry from the *true* three, it lands within **0.013 A**. Its 0.84 A error above is
-entirely inherited from C and N, amplified because O sits 1.769 A from the CA-CA axis where C sits
-0.556 A -- so the same angular uncertainty displaces it three times as far. Predicting it
-separately is both redundant and worse.
-
-**It does not invent alpha carbons at the termini.** Synthesizing a missing CA by reflection, or by
-extrapolating at the mean pseudo-angle, was measured at 3.9-5.3 A error -- larger than the 3.81 A
-bond itself, so a synthesized alpha carbon carries no information about the real one. Nor does the
-adjacent peptide unit help: copying its plane rotation leaves a 99.0 degree residual, *worse* than
-the 64.4 degree marginal, because successive peptide planes alternate rather than track. So a
-terminal unit falls back to the marginal for its frame -- the honest 3-CA answer -- and the two
-atoms no peptide unit covers are placed by ideal internal geometry.
-
-Provenance
-----------
-The table is MEASURED from 100 frames of all-atom IDR simulation supplied by the author
-(``subset_frames``), 19,302 peptide units, binned at 20 degrees. Every bin holds at least 146
-observations. It is IDR data on purpose: this module exists to rebuild disordered regions.
-"""
+"""Place backbone N, C and O on a CA-only trace, from the neighbouring alpha carbons."""
 
 from __future__ import annotations
 
@@ -1226,6 +1155,7 @@ def _polish_coupled_clashes(
     fixed_xyz = np.asarray(structure.xyz, dtype=np.float64)
     fixed_res = np.asarray(structure.residue_index)
     fixed_elem = np.array([str(e).upper() for e in structure.element], dtype=object)
+    fixed_name = np.array([str(a) for a in structure.atom_name], dtype=object)
     mov_keys = [
         (r, nm)
         for r in sorted(rebuilt)
@@ -1237,6 +1167,52 @@ def _polish_coupled_clashes(
     all_xyz = np.vstack([fixed_xyz, np.array([placed[r][nm] for r, nm in mov_keys])])
     all_res = np.concatenate([fixed_res, np.array([r for r, _ in mov_keys], dtype=fixed_res.dtype)])
     all_elem = np.concatenate([fixed_elem, np.array([nm for _, nm in mov_keys], dtype=object)])
+    all_name = np.concatenate([fixed_name, np.array([nm for _, nm in mov_keys], dtype=object)])
+
+    # Covalent separation along the backbone graph, exactly as the refinement counts it
+    # (:func:`~dodo.construct.backbone_refine._bond_separation`): chain position 3*residue + offset,
+    # plus one step for each carbonyl oxygen hanging off its carbon.
+    #
+    # This replaces a "within one residue" rule, which is the bug the proteome run found. That rule
+    # looks safe -- consecutive residues ARE held close by the peptide bond -- but among adjacent
+    # backbone atoms the pairs at five bonds or more are free to collide, and excluding them let the
+    # polish rotate a unit into a collision it could not see. Measured over 23,587 human AlphaFold
+    # models: 86 structures ended with an impossible contact, and the atom pairs involved were
+    # exactly O-O, CA-O and N-O between adjacent residues -- precisely the >=5-bond set. The
+    # refinement had already learned this and says so in its own ``_bond_separation`` docstring.
+    chain_offset = {"N": 0, "CA": 1, "C": 2, "O": 2}
+
+    def _chain_and_oxygen(names: np.ndarray, residues: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        offsets = np.array([chain_offset.get(str(nm), -1) for nm in names], dtype=np.int64)
+        backbone = offsets >= 0
+        chain = 3 * np.asarray(residues, dtype=np.int64) + np.where(backbone, offsets, 0)
+        oxygen = np.array([1 if str(nm) == "O" else 0 for nm in names], dtype=np.int64)
+        safe: np.ndarray = np.where(backbone, chain, np.iinfo(np.int64).max // 4)
+        return safe, oxygen
+
+    def _too_close_covalently(
+        name_a: str, residue_a: int, names_b: np.ndarray, residues_b: np.ndarray
+    ) -> np.ndarray:
+        """Report where a pair is close for covalent reasons rather than colliding.
+
+        Backbone-to-backbone pairs use the real bond count. Anything involving a side-chain atom
+        keeps the old within-one-residue rule, which is conservative and is not where the observed
+        defect lives.
+        """
+        chain_b, oxy_b = _chain_and_oxygen(names_b, residues_b)
+        offset_a = chain_offset.get(name_a, -1)
+        residues_b = np.asarray(residues_b, dtype=np.int64)
+        if offset_a < 0:
+            near: np.ndarray = np.abs(residues_b - residue_a) <= 1
+            return near
+        chain_a = 3 * residue_a + offset_a
+        oxy_a = 1 if name_a == "O" else 0
+        separation = np.abs(chain_a - chain_b) + oxy_a + oxy_b
+        backbone_b = np.array([str(nm) in chain_offset for nm in names_b], dtype=bool)
+        excluded: np.ndarray = np.where(
+            backbone_b, separation <= 4, np.abs(residues_b - residue_a) <= 1
+        )
+        return excluded
 
     def unit_of(index: int) -> int | None:
         if index < len(fixed_xyz):
@@ -1282,6 +1258,7 @@ def _polish_coupled_clashes(
         static = np.ones(len(all_xyz), dtype=bool)
         static[moved] = False
         txyz, tres, telem = all_xyz[static], all_res[static], all_elem[static]
+        tname = all_name[static]
         static_tree = cKDTree(txyz)
 
         # Precompute each moved atom's static neighbours ONCE for the whole group search, not with a
@@ -1298,7 +1275,11 @@ def _polish_coupled_clashes(
                 static_tree.query_ball_point(anchor, query_r + reach), dtype=np.int64
             )
             if found.size:
-                found = found[np.abs(tres[found] - residue) > 1]
+                found = found[
+                    ~_too_close_covalently(
+                        str(all_name[r_idx]), residue, tname[found], tres[found]
+                    )
+                ]
             nbr_xyz[r_idx] = txyz[found]
             nbr_lim[r_idx] = np.array([limit(element, str(telem[j])) for j in found])
 
@@ -1309,7 +1290,12 @@ def _polish_coupled_clashes(
         for a_pos in range(len(moved)):
             for b_pos in range(a_pos + 1, len(moved)):
                 ia, ib = moved[a_pos], moved[b_pos]
-                if abs(int(all_res[ia]) - int(all_res[ib])) <= 1:
+                if _too_close_covalently(
+                    str(all_name[ia]),
+                    int(all_res[ia]),
+                    all_name[ib : ib + 1],
+                    all_res[ib : ib + 1],
+                )[0]:
                     continue
                 inter_pairs.append((ia, ib, limit(str(all_elem[ia]), str(all_elem[ib]))))
 

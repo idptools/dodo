@@ -5,74 +5,6 @@ time from a cone of candidates around the previous two alpha carbons, rejects ca
 that clash or that would make the region's endpoint unreachable, and picks from what
 survives with a physically weighted random choice.
 
-It replaces a builder that got several things wrong. Each is fixed here by construction,
-not by a check afterwards, and each has a named regression test.
-
-**(a) There was no angle constraint at all.** The old walk sampled uniformly on the
-3.8 A sphere around the previous CA, so the only thing preventing a fold-back onto
-residue ``i - 2`` was a 3.0 A clash cutoff -- and a 3.0 A CA(i)-CA(i+2) distance
-corresponds to a CA-CA-CA pseudo-angle of 2 * asin(3.0 / (2 * 3.8)) = 46.5 degrees.
-Measured output ranged from 47 to 178 degrees. No real trace exhibits 47 degrees, and
-such a trace cannot be reconstructed to all-atom. Here every candidate comes from
-:func:`dodo.geometry.sampling.cone_candidates`, which places it at an angle drawn from
-:func:`dodo.constants.backbone_angle_grid`, so the whole window
-:data:`~dodo.constants.BACKBONE_ANGLE_MIN`-:data:`~dodo.constants.BACKBONE_ANGLE_MAX` is
-respected by construction.
-
-That used to come with an excuse: the pseudo-angle centred on an *anchor* was left
-unconstrained, on the grounds that constraining it would need the anchor's own neighbour
-and "the anchor is outside the region anyway". Both halves were wrong. The anchor is a
-residue of the structure DODO writes, its two neighbours are a fixed CA and the region's
-own terminal CA, and measured over 480 junctions built that way the angle ran from 38.6 to
-176.8 degrees -- 41% below the window floor, 3% above its ceiling, every conformer marked
-successful. That is defect (a) intact at the seams. So
-:attr:`~dodo.engines.base.IDRRequest.n_anchor_prev_xyz` and
-:attr:`~dodo.engines.base.IDRRequest.c_anchor_next_xyz` now carry the neighbour the excuse
-said the request did not have; when they are present the junction residues are generated
-from :func:`~dodo.geometry.sampling.cone_candidates` like any interior residue and the
-junction angles are *measured* in the final validation over the spliced trace. When they
-are absent the engine says so -- :class:`UnconstrainedJunctionWarning` plus
-:attr:`~dodo.engines.base.IDRResult.unconstrained_junctions` -- rather than leaving an
-unchecked angle to look like a checked one.
-
-**(b) The radius ramp was seeded from the residue count, not from the anchors.** The old
-builder derived its expansion schedule from ``n_residues`` alone, so it fought its own
-anchors: asked to bridge 150 A it produced a near-perfect rod, and asked to bridge 20 A
-it looped out to 32 A before coming back. Here the closure schedule is seeded from
-:attr:`~dodo.engines.base.IDRRequest.anchor_separation`, the real distance between the
-two anchor CAs, and is expressed as a constant *extension fraction* of the geometric
-reach (see :func:`max_reach`): a taut bridge stays taut and a slack one keeps its slack.
-
-**(c) The first and last residues were written on top of the anchor CAs.** That put two
-atoms at 0.00 A separation at every junction. Anchors lie outside the span
-(:attr:`dodo.structure.Span.n_anchor`, :attr:`~dodo.structure.Span.c_anchor`), so the
-first generated residue is placed exactly one bond length *from* the N-anchor and the
-last exactly one bond length from the C-anchor. The closure step solves for that last
-position analytically -- it is the intersection circle of two spheres of radius
-:data:`~dodo.constants.CA_CA_BOND_LENGTH` -- so both junction bonds are exact to machine
-precision rather than merely within tolerance.
-
-**(d) A batch of conformers was a batch of copies.** Steering every conformer to the same
-end-to-end distance with a hard per-conformer corridor collapsed the ensemble: measured
-CV(Re) was 0.006-0.045 where a matched freely-rotating chain gives 0.35-0.48, so sixty
-models of a 200-residue IDR spanned under two Angstroms of extension. A predicted
-end-to-end distance is the *mean* of a distribution, so it is treated as one:
-:func:`sample_end_to_end_targets` draws a per-conformer target from the Maxwell-Boltzmann
--like radial distribution of a Gaussian chain and each conformer is steered to its own
-value. The consequence is deliberate and must be tested for as such -- the *ensemble* mean
-matches the target while individual conformers scatter around it by tens of percent.
-
-**(e) The clash threshold and the check on it were the same number.** The relaxation ladder
-was walked on every request, including ones with no obstacles at all, and the acceptance
-check then compared the measured contact against whichever rung the conformer had ended up
-using -- so a conformer that relaxed to 2.0 A was validated against 2.0 A and the clash
-check could not reject what the ladder had allowed. Here the region's own trace, its anchors
-and its flanking residues are held to :data:`~dodo.constants.CA_CLASH_DISTANCE`
-unconditionally; only the external obstacle set, whose coordinates are all-atom positions
-where a 2.8 A approach to a CA is tight rather than impossible, can be relaxed, only when
-the strict threshold admitted no candidate, and always with the rung reported through
-:attr:`~dodo.engines.base.IDRResult.relaxed_to`.
-
 Failure is loud
 ---------------
 Nothing here returns a partial or degenerate chain. A conformer that dead-ends is marked
@@ -81,14 +13,6 @@ failed and retried with fresh randomness up to
 raises :class:`~dodo.exceptions.ExhaustedAttemptsError`. A request that is geometrically
 impossible raises before any sampling happens, because spending 40 attempt rounds on an
 unsatisfiable target and then returning zeros is what the old code did.
-
-"Impossible" includes the low side, which used to be unreachable: :func:`min_reach`
-returned 0.0 for every span of four bonds or more, so a 10-residue region asked for an
-end-to-end distance of 0.5 A returned success at 4 A -- an overshoot of +658% -- and two
-anchors at the *same coordinate* were not diagnosed at all, burning the whole attempt
-budget before raising :class:`~dodo.exceptions.ExhaustedAttemptsError` about the budget.
-Two CA atoms three or more residues apart cannot sit closer than
-:data:`~dodo.constants.CA_CLASH_DISTANCE`, and :func:`min_reach` now says so.
 """
 
 from __future__ import annotations
@@ -140,44 +64,9 @@ __all__ = [
 #: Identifier recorded in :attr:`dodo.engines.base.IDRResult.engine`.
 ENGINE_NAME: Final[str] = "self_avoiding_walk"
 
-
-#: Query points below which a KD-tree lookup runs single-threaded.
-#:
-#: MEASURED against an 18,457-atom obstacle tree, milliseconds per query, serial vs 18 threads::
-#:
-#:     points     serial   parallel
-#:        256      0.098      0.658
-#:        710      0.369      0.551
-#:       2000      0.822      0.570
-#:      10000      4.226      1.015
-#:     200000     89.344      7.695
-#:
-#: Thread setup costs a roughly fixed ~0.3 ms, so parallelism pays only above about 1-2k points.
-#: Every query the walk engine actually makes is 355 points -- median, 90th percentile and max, at
-#: the current :data:`~dodo.constants.CANDIDATES_PER_ANGLE` -- so in practice this constant sends
-#: all of them down the serial path. The 710-point row above was measured when that constant was
-#: twice its present value, and is kept because it brackets the crossover from the other side.
 _PARALLEL_QUERY_MINIMUM: Final[int] = 2000
 
 #: Clearance around a candidate cloud's centre below which the cloud cannot clash, in A.
-#:
-#: DERIVED, and exact. Every candidate for one residue sits at *precisely*
-#: :data:`~dodo.constants.CA_CA_BOND_LENGTH` from a single point -- the cone apex in
-#: :func:`~dodo.geometry.sampling.cone_candidates`, the sphere centre in the unconstrained
-#: junction case, the attachment point in :meth:`SelfAvoidingWalk._close`. So by the triangle
-#: inequality, if that centre is at least ``CA_CA_BOND_LENGTH + CA_CLASH_DISTANCE`` from every
-#: obstacle then every candidate is at least ``CA_CLASH_DISTANCE`` from every obstacle, and the
-#: whole 355-or-710-point clash query is a foregone conclusion. One 1-point query settles it.
-#:
-#: MEASURED share of obstacle query points this skips, seed 0, over a full rebuild::
-#:
-#:     structure   query points   skipped
-#:     dnmt3a         165,785       67.2%
-#:     arf19          455,820       96.5%
-#:     p300         1,885,760       94.4%
-#:
-#: A long region spends most of its length in open solvent, which is exactly where the test
-#: fires, so the saving concentrates on the regions that cost the most.
 _CANDIDATE_CLEAR_DISTANCE: Final[float] = CA_CA_BOND_LENGTH + CA_CLASH_DISTANCE
 
 
@@ -194,27 +83,30 @@ class UnconstrainedJunctionWarning(UserWarning):
 
 #: Fractional tolerance on the achieved end-to-end distance of a free or terminal region.
 #:
-#: CHOICE, and a candidate for promotion into :mod:`dodo.constants` -- it is a tuning knob
-#: of the same kind as everything in there, but this module is not allowed to add to that
-#: file. 10% is deliberately loose: ALBATROSS's own end-to-end predictions are good to a
+#: 10% is deliberately loose: ALBATROSS's own end-to-end predictions are good to a
 #: few percent, and the analytical fallback
 #: (:func:`dodo.constants.flory_end_to_end`) is measured at 0.62-2.62x depending on
 #: composition. Demanding better agreement than that would be precision theatre.
 #:
-#: It is applied as a pure fraction, with no absolute floor. It used to be floored at
-#: ``CA_CA_BOND_LENGTH`` -- "no schedule can hit a target more precisely than one step" --
-#: which sounds reasonable and is false: the final residue is chosen from hundreds of candidates
-#: whose distances to residue 0 sweep a continuum, so the achievable resolution is a
-#: fraction of an Angstrom. What the floor actually did was make the low-side gate
-#: unreachable, so a 10-residue region asked for 0.5 A returned 4 A at success=True (+658%)
-#: and the "independent" post-hoc audit, reusing the same floored number, could never catch
-#: it.
+#: It is applied as a pure fraction, with no absolute floor.
 END_TO_END_TOLERANCE_FRACTION: Final[float] = 0.10
 
 #: Width of the closure steering weight in the safe direction, as a multiple of
 #: ``CA_CA_BOND_LENGTH * sqrt(bonds left)``.
 #:
-#: CHOICE. Applies to a *closure*, where the far anchor is a fixed point and the schedule is
+#: CHOICE, and MEASURED to be inert -- the value does not matter, only that it is not tiny.
+#: Swept over an interior bridge at extensions 0.60 and 0.88, output is bit-identical from
+#: **0.05 to 1e6**: success 1.000, mean pairwise RMSD 14.6163 A and achieved/requested 0.9855 at
+#: every value in that range. It only begins to bind below about 0.05, 15x under this default.
+#:
+#: That is the term working as intended rather than a defect. It is the width in the *safe*
+#: direction, and it is applied as a Gaussian over the span between the schedule and the corridor
+#: floor -- a span far narrower than ``0.75 * 3.81 * sqrt(k)`` (20 A at k = 50), so the weight is
+#: flat across every candidate and expresses no preference, which is exactly the "essentially
+#: unbiased" behaviour described below. Do not spend time tuning it; if you need the closure to
+#: behave differently, :data:`SCHEDULE_MARGIN_FRACTION` is the lever that does something.
+#:
+#: Applies to a *closure*, where the far anchor is a fixed point and the schedule is
 #: seeded from the real anchor separation. The scaling is the point rather than the constant:
 #: the span of a ``k``-bond subchain fluctuates as ``sqrt(k)``, so a width proportional to
 #: ``sqrt(k)`` leaves the walk essentially unbiased while it has plenty of chain left --
@@ -228,10 +120,17 @@ END_TO_END_TOLERANCE_FRACTION: Final[float] = 0.10
 STEERING_SIGMA_FACTOR: Final[float] = 0.75
 
 #: Fraction of the remaining headroom used as the closure steering width in the
-#: unrecoverable direction. CHOICE. Small enough that the walk tracks its schedule with
-#: margin to spare rather than grinding along the reachability ceiling, where the discrete
-#: candidate set runs out of legal moves; large enough that the walk is not pinned to a
-#: curve.
+#: unrecoverable direction. CHOICE, and MEASURED to be nearly inert. Small enough that the walk
+#: tracks its schedule with margin to spare rather than grinding along the reachability ceiling,
+#: where the discrete candidate set runs out of legal moves; large enough that the walk is not
+#: pinned to a curve.
+#:
+#: Swept 0.10 to 1.00 over six interior bridges (extensions 0.30-0.90, n = 20-120, four seeds):
+#: success stays 1.000 throughout, mean pairwise RMSD moves only 15.68-16.78 A and
+#: achieved/requested 0.9850-0.9905, with no monotone trend -- a 10x change in the constant is
+#: worth less than the seed-to-seed scatter. It is partly floored out by construction: the width
+#: is ``max(fraction * gap, 0.5 * CA_CA_BOND_LENGTH)``, so wherever the gap is small the floor,
+#: not this fraction, sets the width.
 HEADROOM_STEERING_FRACTION: Final[float] = 0.35
 
 #: Fraction of the headroom between the closure schedule and the hard reachability bound
@@ -252,6 +151,27 @@ HEADROOM_STEERING_FRACTION: Final[float] = 0.35
 #: bridge at ten seeds each, this takes extension fractions of 0.05 through 0.97 from
 #: "0.78 and above never builds" to "every fraction builds, almost always on the first
 #: attempt".
+#: SWEPT 2026-08-18, and this is the one closure constant that does anything. Over an interior
+#: bridge at extensions 0.80-0.97 (six conformers, five seeds), success rate by value:
+#:
+#:     margin   x0.80  x0.88  x0.94  x0.96  x0.97
+#:     0.25     1.00   1.00   1.00   1.00   1.00
+#:     0.50     1.00   1.00   1.00   1.00   1.00
+#:     0.75     1.00   1.00   1.00   1.00   1.00
+#:     0.90     1.00   1.00   1.00   1.00   0.00
+#:     1.00     0.00   0.00   0.00   0.00   0.00
+#:
+#: So the cliff is real and closer than the note above implies: **1.0 fails at every extension
+#: from about 0.70 upward**, not merely at 0.78, and 0.90 is already inside the failure region at
+#: 0.97. The usable band is roughly 0.25-0.75 and 0.5 sits in the middle of it.
+#:
+#: Raising it to 0.75 was considered and REJECTED. On the synthetic bridge it looks like a free
+#: win -- diversity up 29-31% (mean pairwise RMSD 14.3 vs 10.9 A at extension 0.80) at unchanged
+#: success -- but that does not survive contact with real structures, where closure competes with
+#: folded-domain obstacles and most residues sit in terminal regions whose diversity comes from
+#: target sampling instead. Measured on dnmt3a/arf19/p300 at five models: zero failures either
+#: way, clashes 4/1/7 against 3/0/8, diversity 104/143/136 A against 110/145/126 -- mixed in both
+#: directions and inside single-seed noise. No reason to move a stabilized constant for that.
 SCHEDULE_MARGIN_FRACTION: Final[float] = 0.5
 
 #: Steering width on the distance to the far endpoint for a free or terminal region, in A.
@@ -271,13 +191,49 @@ SCHEDULE_MARGIN_FRACTION: Final[float] = 0.5
 #:     n = 50 : 0.993 / 0.985 / 0.979 / 0.966 / 0.905
 #:     n = 200: 0.998 / 0.995 / 0.992 / 0.987 / 0.946
 #:
-#: 0.5 A sits in the flat part of that curve. Tighter buys nothing measurable; looser
-#: reintroduces the bias. Note what it does *not* cost: the candidates that achieve a given
+#: That sweep bottomed out at 0.4 and its conclusion -- that 0.5 sat in the flat part of the
+#: curve and tighter bought nothing -- did not survive being tested below its own floor; see the
+#: re-sweep below. What tightening does *not* cost is unchanged: the candidates that achieve a given
 #: distance from the endpoint form a ring rather than a point, so pinning the radial
 #: coordinate this hard leaves the transverse freedom -- and therefore the conformational
 #: diversity -- untouched. Measured over 20 conformers at the predicted dimension, the
 #: internal scaling exponent is 0.53-0.64 and the coefficient of variation of the end-to-end
 #: distance is 0.48, both squarely in the polymer range.
+#: RE-SWEPT 2026-08-18, 12 seeds with standard errors, and the note above needs qualifying: the
+#: sweep it cites never tested a width below **0.4**, and never tested 0.5 itself -- 0.5 was
+#: interpolated between 0.4 and 0.6. "Tighter buys nothing measurable" was therefore an
+#: extrapolation past the edge of the data, and it does not hold. Accuracy keeps improving
+#: monotonically below 0.4:
+#:
+#:     width          0.15     0.20     0.30     0.40     0.50     0.75     1.00     2.00
+#:     achieved/req  0.9998   0.9997   0.9988   0.9979   0.9969   0.9930   0.9874   0.9706
+#:     std error     0.0001   0.0001   0.0002   0.0003   0.0005   0.0010   0.0018   0.0036
+#:
+#: An earlier revision of this note claimed tightening costs about 6% of inter-conformer RMSD.
+#: That was seed scatter, not signal: with error bars the diversity is flat across the whole
+#: range (254.6 +- 24.9 A at 0.15 against 257.8 +- 25.3 A at 0.5), and on real structures it does
+#: not move either (dnmt3a/arf19/p300 at six models: 102/139/136 A at 0.5 against 104/139/141 A
+#: at 0.2).
+#:
+#: Nor does tightening distort the polymer statistics, which is the claim that would actually
+#: matter. Measured at the *predicted* dimension -- the regime this ships in -- 24 conformers of a
+#: 120-residue region give an internal scaling exponent of 0.583 at width 0.5 and 0.586 at 0.2,
+#: with CV(Re) 0.488 either way: indistinguishable, and both sitting on the self-avoiding value of
+#: ~0.588. (Measure that at an over-extended target instead and the exponent rises to ~0.87 for
+#: every width alike -- that is the target straightening the chain, not the steering width.)
+#:
+#: The accuracy gain is real but concentrated where the target is extended: negligible at the
+#: predicted dimension (1.0008 against 1.0000) and 1.02% -> 0.15% at 0.963 of the geometric reach.
+#:
+#: **0.2 was tried on that basis and REVERTED, because tightening costs steric clashes.** The
+#: sweep above scores accuracy and diversity, and those were the wrong metrics to decide on: a
+#: more tightly steered walk has less freedom left to dodge an obstacle, so marginal contacts
+#: survive into the backbone stage. Measured over dnmt3a/arf19/p300 at four seeds, introduced
+#: clashes total **21 at width 0.5 against 25 at 0.2**, and p300 alone goes 3 -> 7 at seed 0,
+#: past the frozen ratchet in ``tests/unit/test_pipeline.py``. A 0.2% end-to-end difference sits
+#: about a hundredfold inside the 10% tolerance and is invisible in any output; four extra steric
+#: contacts are physical defects a user can see. So 0.5 stands, now for a measured reason rather
+#: than an interpolated one.
 TARGET_STEERING_WIDTH: Final[float] = 0.5
 
 #: ``<Re> / sqrt(<Re^2>)`` for the radial distribution of a Gaussian chain.
@@ -351,19 +307,6 @@ def max_reach(n_bonds: int, bond_length: float = CA_CA_BOND_LENGTH) -> float:
         max_reach(k) = hypot(k * b * sin(h), b * cos(h) if k odd else 0)
 
     which correctly returns exactly ``b`` at ``k = 1``.
-
-    **Why not the old table.** The code being replaced carried the literal list
-    ``[15.8868, 13.6407, 11.0914, 8.6688, 6.441, 3.89]`` for ``n = 6..1``, and the idea
-    behind it -- refusing any candidate from which the far anchor is no longer reachable
-    -- is genuinely good and is carried forward here. The numbers were not: they were
-    measured at a 3.89 A bond (one of three bond lengths live in that codebase at once)
-    and are an *empirical envelope*, roughly 0.69x the geometric bound at ``k = 6``,
-    equivalent to assuming every angle is about 112 degrees. As multiples of the bond
-    length, the old table gives ``1.00, 1.66, 2.23, 2.85, 3.51, 4.08`` where geometry
-    allows ``1.00, 1.97, 2.97, 3.95, 4.93, 5.92``. An envelope that tight is not a
-    reachability bound: it vetoes closures that are perfectly achievable, and a builder
-    that hits it reports failure for a region it could have built. This function returns
-    the provable bound, so a candidate it rejects is genuinely unreachable.
     """
     if n_bonds < 0:
         raise ValueError(f"n_bonds must be non-negative, got {n_bonds}.")
@@ -895,12 +838,7 @@ class _WalkPlan:
 
         # Hard corridor: the endpoint still has to land ``target`` from residue 0 using
         # ``remaining`` bonds, so a candidate at distance d is usable only while
-        # ``|target - d| <= reach_left + tolerance``. Clamped into what ``index`` bonds can
-        # span at all, which is what stops an aggressive target from emptying the corridor at
-        # residue 1. The epsilon is numerical only: at index 1 the clamp collapses the
-        # corridor onto exactly one bond length, and comparing a distance of
-        # 3.8000000000000003 against a wall of 3.8000000000000007 would reject the only legal
-        # move in existence.
+        # ``|target - d| <= reach_left + tolerance``.
         band_lo = min_reach(index) - _CORRIDOR_EPSILON
         band_hi = max_reach(index) + _CORRIDOR_EPSILON
         lo = np.clip(target - reach_left - tolerance, band_lo, band_hi)
@@ -926,28 +864,10 @@ class _WalkPlan:
             # The larger of the two, not the average: the bridge profile is what makes a slack
             # target a coil rather than a spoke (mid-chain it deliberately bulges *past* a very
             # compact target and comes back), while the catch-up term is what stops a taut
-            # target from being missed. Each is the binding one in the regime the other has
-            # nothing to say about.
+            # target from being missed.
             schedule = np.maximum(schedule, catch_up)
         schedule = np.clip(schedule, band_lo, band_hi)
 
-        # The width is the fix for the one-sided bias, and it has to be understood together
-        # with the walls. The previous version steered with a width proportional to
-        # ``sqrt(index)`` -- 20 A at mid-chain -- which expresses no preference between
-        # advancing 1 A and advancing 3.5 A on a step whose whole range is 7.5 A. So the walk
-        # fell behind its schedule, and the only thing that eventually brought it to the target
-        # was the hard low wall, which it therefore *landed on*: measured mean(Re)/target was
-        # 0.957-0.965 for every expansion mode at every length, with all 60 conformers of a
-        # 200-residue region inside 1.9 A of the wall.
-        #
-        # Two ingredients replace it. The free-chain residual width
-        # ``b * sqrt(remaining / 3)`` is the honest scale of how much slack the remaining
-        # chain has, and it tightens on its own as the chain runs out. Capping it by the
-        # headroom between the schedule and the geometric ceiling is what makes an extended
-        # target track: where the schedule demands 95% of the available reach there is no room
-        # to wander, the cap drops the width to half a bond length, and the walk follows its
-        # schedule instead of lagging and being dragged. Where the target is slack the cap is
-        # inactive and the walk is left alone.
         width = TARGET_STEERING_WIDTH
         return _Goal(
             lo=lo,
@@ -1600,18 +1520,6 @@ class SelfAvoidingWalk:
         # The region's own trace: hard threshold, no ladder, ever.
         acceptable &= self._chain_clear_mask(candidates, chain_points, candidate_centres)
 
-        # External obstacles: the same hard threshold as the region's own trace, no ladder.
-        #
-        # There used to be a relaxation ladder here, descending 3.20 -> 2.80 -> 2.50 -> 2.00 A
-        # when the strict threshold admitted no candidate, on the theory that a tight contact
-        # beats a failed region. Measured across p300, arf19 and dnmt3a at seeds 0-3, that
-        # theory was wrong in both halves: the ladder was responsible for 69 of the 79 steric
-        # clashes in the output, and removing it caused ZERO additional region failures. It was
-        # buying nothing and paying for it in exactly the defect DODO is supposed to avoid.
-        #
-        # Do not reintroduce it without re-running that measurement. If a region genuinely
-        # cannot be built at 3.20 A, the honest answer is the per-region failure the report
-        # already models, not a contact the validators will flag.
         rung_used = np.full(n_live, CA_CLASH_DISTANCE, dtype=np.float64)
         if obstacle_tree is None:
             chosen_mask = acceptable
@@ -1712,10 +1620,7 @@ class SelfAvoidingWalk:
         finite = np.all(np.isfinite(flat), axis=1)
         distances = np.full(flat.shape[0], np.inf)
         if np.any(finite):
-            # workers=-1 only above _PARALLEL_QUERY_MINIMUM. Handing scipy a thread pool for a
-            # query this small costs far more than it saves, and this is the hottest call in the
-            # engine, so it mattered: 8,450 calls of 710 points each spawned 152,100 threads and
-            # 760,500 lock acquisitions, which was 4.4 of the 9.7 seconds a full arf19 rebuild took.
+            # workers=-1 only above _PARALLEL_QUERY_MINIMUM.
             workers = -1 if int(np.count_nonzero(finite)) >= _PARALLEL_QUERY_MINIMUM else 1
             found, _ = obstacle_tree.query(flat[finite], workers=workers)
             distances[finite] = found
@@ -1760,13 +1665,7 @@ class SelfAvoidingWalk:
         (:data:`~dodo.constants.CA_CA_BOND_LENGTH`) from its apex, so a chain point farther
         than ``CA_CA_BOND_LENGTH + CA_CLASH_DISTANCE`` from that apex is farther than the
         clash distance from *every* candidate in the row and cannot decide the mask.
-        Restricting the distance test to the points inside that radius leaves the mask
-        unchanged while turning an all-points query into a handful of near ones: whenever a
-        candidate does clash, the offending point is within that radius by the triangle
-        inequality, so it is kept and the clash is seen. The kept point's clash is decided on
-        its exact Euclidean distance, which agrees with the tree to the ~1e-15 their two
-        summation orders differ by -- far below any separation a real backbone produces, and
-        checked bit-identical over the engine's builds rather than assumed.
+
         """
         n_live, count, _ = candidates.shape
         clear = np.ones((n_live, count), dtype=bool)
@@ -1832,36 +1731,6 @@ class SelfAvoidingWalk:
         :func:`_validate_conformer`. Output is therefore bit-identical, which is how this is
         tested rather than merely asserted.
 
-        Dilating a spheroid by ``m`` is not a spheroid, so the sum-of-distances bound is raised
-        by ``2 * m`` instead: if ``x`` is within ``m`` of a point ``p`` inside the envelope then
-        ``|x - N| + |x - C| <= |p - N| + |p - C| + 2 * m``. Loose by up to ``m``, in the safe
-        direction.
-
-        MEASURED yield, seed 0, obstacles kept as a share of obstacles offered::
-
-            structure   regions   obstacles   kept
-            dnmt3a         4          18,650   76.7%
-            arf19          4          14,159   56.4%
-            p300           6          45,916   81.5%
-
-        Those totals flatter it. The saving lands entirely on short loops -- 9.2% kept for a
-        10-residue loop on p300 -- while a region of 150 residues already reaches 564 A, further
-        than any of these structures is wide, so nothing at all is dropped for it. Cost scales
-        with residues placed, not with regions, so the regions this helps are the ones that were
-        already cheap.
-
-        MEASURED end to end, mean wall clock over seeds 0-3, this alone against no pruning::
-
-            structure   without    with   change
-            dnmt3a       2.10 s   2.00 s   -4.8%
-            arf19        5.58 s   5.47 s   -2.0%
-            p300         4.27 s   4.22 s   -1.1%
-
-        Run-to-run spread on a fixed seed reached 0.33 s on these same structures, so none of
-        those differences is separable from noise: treat this as worth zero until measured on a
-        structure built mostly of short loops. It is kept because it is a handful of vectorized
-        operations on a path that runs once per region, not per residue, and because it can only
-        ever remove work.
         """
         if obstacles is None:
             return None
@@ -2172,20 +2041,6 @@ def _check_fixed_context(request: IDRRequest) -> None:
         than :data:`~dodo.constants.CA_CLASH_DISTANCE`, or if an outer residue is not
         roughly one bond length from its anchor.
 
-    Notes
-    -----
-    None of this is geometry the walk generates, so no amount of sampling can fix it. Left
-    undiagnosed it surfaces as :class:`~dodo.exceptions.ExhaustedAttemptsError` after the
-    full 40-round budget, blaming the attempt budget for the caller having handed in two
-    residues on top of each other -- which is precisely the mislabelled-failure pattern the
-    rewrite exists to remove. Checking costs four points.
-
-    The outer-residue bond is checked loosely, at +/- 1.0 A rather than
-    :data:`~dodo.constants.CA_CA_BOND_TOLERANCE`. Deposited structures do contain unusual
-    CA-CA distances -- cis-proline sits near 2.9 A -- and refusing to build next to one
-    would be measuring the *input* against the generator's taste. Only the direction to the
-    outer residue is used, so an unusual distance is harmless; a wildly wrong one means the
-    caller passed a residue that is not the anchor's neighbour at all.
     """
     fixed: list[tuple[int, str, np.ndarray]] = []
     if request.n_anchor_prev_xyz is not None:

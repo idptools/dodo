@@ -4,24 +4,6 @@ One request type, one result type, one protocol. Every engine speaks exactly thi
 orchestrator can choose one at runtime without knowing anything about how it works. One ships
 today -- the self-avoiding walk -- and the protocol is what lets another be added later without
 the orchestrator changing.
-
-Why the result carries an explicit success mask
------------------------------------------------
-The code being replaced returned a bare coordinate array. When it could not build a
-region it returned that array anyway, full of exact ``(0, 0, 0)`` rows, and the caller
-wrote them into a PDB file. Every atom of a failed region landed on the origin, which
-looks in a viewer like a single dense blob and in a figure like a real result.
-
-So :class:`IDRResult` pairs coordinates with a boolean :attr:`IDRResult.success` mask,
-and refuses to be constructed with finite coordinates for a conformer marked failed.
-That is not a stylistic preference: it makes the old failure mode -- an array of
-plausible-looking zeros with no indication of failure -- impossible to express through
-this interface. Rows for failed conformers are NaN, are documented as meaningless, and
-will visibly poison any arithmetic that touches them rather than quietly biasing it.
-
-The other half of the contract is on the engines: partial success is reported through
-the mask, total failure raises from :mod:`dodo.exceptions`, and nothing in between is
-allowed. An engine that cannot satisfy a request never returns degenerate coordinates.
 """
 
 from __future__ import annotations
@@ -146,20 +128,6 @@ class IDRRequest:
     from the anchor residue's carbonyl carbon by construction, and an engine's clash
     threshold is a CA-to-CA threshold, so those atoms are not obstacles in any useful
     sense.
-
-    What including them actually costs is worth stating precisely, because an earlier
-    version of this docstring called it a trap that would drive regions into the clash
-    relaxation ladder or into
-    :class:`~dodo.exceptions.ExhaustedAttemptsError`. Measured on an interior 20-residue
-    region with all eight anchor-residue backbone atoms left in: the same conformers
-    succeed in the same number of attempt rounds as with ``obstacles=None``, so it does not
-    cause failures. It does make some seeds come back with
-    ``relaxed_to = 2.80`` and a 2.93 A closest approach -- to a *carbonyl carbon*, which is
-    chemically unremarkable. So the cost is a false report of relaxed geometry on a region
-    that is clean, not a lost build.
-
-    The real hazard at a junction is the *pseudo-angle*, which no obstacle set can
-    express. Pass :attr:`n_anchor_prev_xyz` and :attr:`c_anchor_next_xyz` to close it.
     """
 
     sequence: str

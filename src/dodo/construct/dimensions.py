@@ -1,27 +1,5 @@
 """Target dimensions for a disordered region.
 
-This module is the scientific premise of DODO. Everything else -- parsing, region
-identification, coordinate generation -- exists to serve one question: *how big should
-this disordered region be?* An IDR rebuilt to the wrong dimensions is just differently
-wrong from AlphaFold's extended spaghetti.
-
-The answer comes from ALBATROSS (via sparrow), which predicts mean end-to-end distance
-from sequence. When sparrow is not installed, an analytical polymer scaling law stands in;
-it is sequence-blind and documented as an approximation, not a substitute.
-
-What changed from v1, and why
------------------------------
-v1 expressed its named build modes as **Angstroms per residue** -- ``normal`` was 0.8
-A/residue, ``max_expansion`` 1.65, and so on -- with ``predicted`` as a separate mode that
-called ALBATROSS. That is linear in chain length, but real IDR end-to-end distance scales
-as roughly :math:`N^{0.55}`, so a fixed multiplier can only agree with the prediction at
-one length. ``normal`` gives 80 A at N=100, which is about right, and 400 A at N=500,
-where the prediction is nearer 190 A. The error grows without bound.
-
-Worse, the first v2 attempt dropped ALBATROSS entirely and substituted two *disagreeing*
-placeholders -- ``1.0 * n_residues`` in the IDR builder and ``1.4 * n_residues`` for
-folded-domain spacing -- so the walk was actively fighting its own anchors.
-
 Here the modes are multipliers **on the predicted end-to-end distance**. ``expanded``
 means 1.3x whatever this sequence's predicted dimension is, at any length. The vocabulary
 users know is preserved; the numbers underneath are length-independent and physically

@@ -247,7 +247,9 @@ def _atom_rows(
     # thing the PDB writer does. With annotate_regions the B-factor column is replaced by
     # the region annotation; reusing the PDB writer's function keeps the two formats
     # identical, BETA_FOLDED/BETA_DISORDERED polarity and "residue in no domain" note alike.
-    b_per_residue = _residue_b_factors(structure, annotate_regions=True) if annotate_regions else None
+    b_per_residue = (
+        _residue_b_factors(structure, annotate_regions=True) if annotate_regions else None
+    )
 
     residue_index = structure.residue_index
     residue_name = structure.residue_name
@@ -314,7 +316,7 @@ def _element_fallback(atom_name: str) -> str:
 
 
 def _chain_id_of(structure: Structure, chain: int) -> str:
-    """The chain id string for a chain index, generating one only if the view is missing.
+    """Return the chain id string for a chain index, generating one if the view is missing.
 
     mmCIF keeps chain ids verbatim -- ``label_asym_id`` may be several characters, so
     unlike the PDB writer there is no remap onto single characters and no chain is ever
@@ -503,8 +505,13 @@ def structure_to_cif_text(
         lines.extend(_cell_lines(box))
         lines.append("#")
     if seqres:
-        lines.extend(_loop(("entity_id", "num", "mon_id", "hetero"), "entity_poly_seq",
-                           _entity_poly_seq_rows(reference, written)))
+        lines.extend(
+            _loop(
+                ("entity_id", "num", "mon_id", "hetero"),
+                "entity_poly_seq",
+                _entity_poly_seq_rows(reference, written),
+            )
+        )
         lines.append("#")
     lines.extend(_loop(_ATOM_SITE_COLUMNS, "atom_site", atom_rows))
     lines.append("#")

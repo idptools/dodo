@@ -8,18 +8,18 @@ structures have low-confidence regions that do not adopt any predicted secondary
 structure. DODO takes these regions and rebuilds them under the assumption that they
 are disordered regions. At this time, the rebuilt regions include the backbone of the 
 amino acids but do not include the side chains. This is an improvement over the first
-version of DODO because we now have the backbone instead of just alpha carbons. I'm 
+version of DODO because we now have the full backbone instead of just alpha carbons. I'm 
 hoping to implement all atom IDR rebuilds in the future. 
 
-To be clear: the work that the various groups do to make structure predictors is **amazing**, 
-and none of this takes away from it in *any way*. But for figures and presentations it's
-useful for disordered regions *look* like what they are.
+I want to be extremely clear that **the DODO-generated IDRs are not simulations** and should not be
+treated as such. The main constraints are simply bond lengths, angles, and to avoid clashing. 
+That's about it. 
 
 By default, DODO identifies each disordered region and predicts its end-to-end distance from sequence
 — with ALBATROSS ([sparrow](https://github.com/idptools/sparrow)).
 You can also ask for regions more compact or more expanded than predicted. And you
 can generate several conformers into one multi-model PDB, which in VMD looks *like* a
-simulation trajectory — to be very clear, it is **not** equivalent to a simulation, but it's
+simulation trajectory. Once again, to be very clear, it is **not** equivalent to a simulation, but it's
 nice for visualization.
 
 
@@ -38,7 +38,7 @@ Requires Python 3.10 or newer.
 pip install git+https://github.com/idptools/dodo.git
 ```
 
-The base install depends on **numpy, scipy, numba, tqdm, getSequence, and SPARROW**.
+The base install depends on **numpy, scipy, numba, tqdm, getSequence, and sparrow**.
 
 
 ## Command line
@@ -83,10 +83,10 @@ deletes it on exit. Pass `--cache-structures` if you want repeat fetches of the 
 skip the download. A model averages 0.25 MB and runs to 1.51 MB — small individually, but a
 directory you never chose to grow, so keeping them is your decision rather than DODO's.
 
-**ALBATROSS predictions are cached, and this one is on by default.** The reason is speed, not
-convenience: a cache miss has to import sparrow, which pulls in parrot and torch. Measured on a
-912-residue structure, that import is **1.6 s against 0.17 s of actual rebuilding** — it dominates
-the run. Every CLI invocation is a fresh process, so without the cache you pay it every single
+**ALBATROSS predictions are cached, and this one is on by default. However, we won't destroy your disk.** 
+The reason is speed, not convenience: a cache miss has to import sparrow, which pulls in parrot and torch. 
+Measured on a 912-residue structure, that import is **1.6 s against 0.17 s of actual rebuilding** — it 
+dominates the run. Every CLI invocation is a fresh process, so without the cache you pay it every single
 time:
 
 | | full `dodo rebuild` |
@@ -94,10 +94,10 @@ time:
 | prediction cache warm | **0.36 s** |
 | prediction cache disabled | **1.96 s** |
 
-The disk cost is negligible, and that is measured rather than assumed. An entry is a sequence hash
+The disk cost is negligible. We measured this. An entry is a sequence hash
 and a float — **116 bytes**. Rebuilding *the entire AlphaFold human proteome*, all 23,587
-structures and every disordered region in them, produced **9,172 entries totalling 1.07 MB**. The
-whole human proteome costs about one megabyte.
+structures and every disordered region in them **totalled 1.07 MB**. The whole human proteome 
+costs about one megabyte.
 
 The cache lives at `~/.cache/dodo/<generation>/` (or the platform equivalent) and is keyed by
 sequence hash *and* sparrow version, so upgrading sparrow invalidates old values rather than
@@ -113,7 +113,7 @@ is only slower.
 
 Exit status is `0` on success, `2` if a region of 10 residues or more could not be rebuilt, `1` on
 error. A shorter region that could not be rebuilt is reported and left as it arrived, and does not
-fail the run — a few residues of AlphaFold geometry do not spoil a figure, whereas a long extended
+fail the run — a few residues of AlphaFold geometry do not spoil a rebuild, whereas a long extended
 region does.
 
 ## Python API
@@ -181,21 +181,11 @@ The order of these steps is not incidental — it's the algorithm.
 
 Steps 4–6 run in that order because that is decreasing order of constraint: a loop is pinned at
 both ends inside one domain, a connecting IDR is pinned between two domains that have already
-been positioned for it, and a terminal IDR is free at one end and can go almost anywhere. Build
-the loose regions first and they occupy space the tight ones then cannot avoid.
-
-**Step 3 is the one that makes the rest work, and it is easy to miss.** AlphaFold has no way to
-know where to put two domains joined by a long disordered linker, so it packs them together —
-measured on real models, **2–3.6× closer than the linker between them predicts** (p300's
-151-residue linker: a 26.1 Å gap against a 94.9 Å prediction). Rebuilding the linker into that
-gap can only produce a compact blob wedged between domains. The fix isn't a better linker
-builder; it's moving the domains.
+been positioned for it, and a terminal IDR is free at one end and can go almost anywhere. 
 
 **Folded-domain atoms are never rebuilt.** They come from AlphaFold (or AlphaFold3, or a
-crystal structure) and are trusted. A domain only ever moves as a rigid body, and DODO checks
-that: after each domain is repositioned, `verify_rigid` asserts its internal geometry is unchanged
-to within **10⁻⁶ Å** — a bound set to catch a non-rigid transform, not floating-point noise. The
-residual of a float64 rigid move comes in far under it: measured across these structures, ~10⁻¹³ Å.
+crystal structure, or wherever else) and are trusted. A domain only ever moves as a rigid body, and DODO checks
+that: after each domain is repositioned.
 
 ## Build modes
 
@@ -210,17 +200,12 @@ Modes are **multipliers on the predicted end-to-end distance**:
 | `super_expanded` | 1.6× |
 | `max_expansion` | 2.0× |
 
-**This changed from 1.x, and it matters.** v1 expressed modes as Ångströms *per residue* —
+**This changed from 1.x.** v1 expressed modes as Ångströms *per residue* —
 `normal` was 0.8 Å/residue. That's linear in chain length, but real IDR end-to-end distance
 scales as roughly $N^{0.52}$, so a fixed per-residue multiplier can only agree with the
 prediction at one length. `normal` gave 80 Å at N=100 (about right) and 400 Å at N=500, where
 the prediction is nearer 190 Å — and the error grew without bound.
-
-Now a mode means the same thing at every length. One consequence: `normal` and `predicted` are
-now synonyms, which they weren't in 1.x.
-
-A target that exceeds what the chain can physically span is clamped to 95% of contour length
-rather than being chased fruitlessly, and the clamping is reported.
+One consequence: `normal` and `predicted` are now synonyms, which they weren't in 1.x.
 
 A mode is a multiplier, but **no mode can exceed what the chain can physically span.** A region of
 `N` residues has `N - 1` virtual CA–CA bonds of 3.81 Å, so its end-to-end distance can never exceed
@@ -230,61 +215,12 @@ DODO caps every target at **95% of the contour length** and warns when it has to
 not timidity: a chain at exactly its contour length is a straight rod with one conformation, leaving
 the sampler no freedom to avoid a clash.
 
-This bites `max_expansion` on short regions, because the prediction it multiplies grows as roughly
-`N^0.55` while the ceiling grows as `N`. Measured, with `*` marking a capped request:
-
-| Region length | 95% ceiling | generic IDR | poly-E | poly-P | poly-G |
-|---|---|---|---|---|---|
-| 8 residues | 25.3 Å | 34 Å `*` | 39 Å `*` | 48 Å `*` | 30 Å `*` |
-| 10 residues | 32.6 Å | 38 Å `*` | 46 Å `*` | 55 Å `*` | 34 Å `*` |
-| 15 residues | 50.7 Å | 50 Å | 64 Å `*` | 72 Å `*` | 42 Å |
-| 20 residues | 68.8 Å | 57 Å | 80 Å `*` | 86 Å `*` | 49 Å |
-| 30 residues | 105.0 Å | 71 Å | 109 Å `*` | 108 Å `*` | 61 Å |
-| 50 residues | 177.4 Å | 97 Å | 155 Å | 143 Å | 78 Å |
-
-Where the cap bites depends on composition, because the prediction does: an expanded sequence like
-poly-proline hits the ceiling out to about 30 residues, while poly-glycine never does. So on a short
-region `max_expansion`, `super_expanded` and `expanded` can all converge on the same capped answer —
-there is no more chain to give. The warning names which of the two reasons applied: the request
-exceeded the contour length outright, or it was reachable only by straightening so completely that
-no conformation remained.
-
-## Dimension prediction
-
-With sparrow installed, targets come from ALBATROSS. Without it, DODO falls back to
-an analytical scaling law, $R_e = 6.22\,N^{0.522}$ (from Kohn *et al.* 2004), and **warns you**
-that it did — a silent downgrade would make two runs of the same command disagree with no
-visible cause.
-
-How good is the fallback? Benchmarked against ALBATROSS over 72 sequences across six
-compositional classes, its ratio to the prediction is 0.97 on average. Per class at N=500:
-
-| | ratio | | ratio |
-|---|---|---|---|
-| polar | 0.95× | polyampholyte | 0.92× |
-| proline-rich | 0.74× | polyanionic | 0.62× |
-| polycationic | 0.64× | hydrophobic | 2.62× |
-
-So for genuine IDR compositions it lands within roughly 0.6–0.95×, erring compact. The charged
-classes are worst because polyelectrolyte expansion pushes their scaling exponent to 0.60–0.64.
-
-The 2.62× outlier is worth understanding: a sequence drawn uniformly from all 20 amino acids is
-hydrophobic-rich, and ALBATROSS correctly predicts a **collapsed globule** (measured scaling
-exponent 0.20). Such a sequence isn't disordered at all, so no length-only law can describe it.
-The error here is *compositional*, not a matter of tuning — true $R_e$ spans 3.4× across
-compositions at fixed length — so refitting the exponent doesn't help, and was tried.
-
-Use the fallback to keep a light install working, not to avoid installing sparrow for real work.
-
 ## Region identification
 
 Four strategies behind one flag:
 
 - **`density`** — DODO's original all-atom density metric: all-atom pairs within 8 Å per
-  residue, thresholded at 480. **This is the method DODO was built and validated on**; the author
-  reports it draws better region boundaries than sequence-based disorder predictors, though that
-  comparison predates this repository and is not benchmarked here. Reimplemented over a
-  KD-tree rather than changed — same numbers, 10.1 s down to 7 ms on a 1,086-residue model.
+  residue, thresholded at 480. **This is the method DODO was built and validated on**.
 - **`contact`** — a CA-only alternative. Composition-free (every residue has exactly one CA)
   and invariant to whether side chains are modelled, which the density score is not. Useful for
   comparison and for CA-only input, but it is not the validated method.
@@ -379,6 +315,9 @@ models correctly. So:
 A *single*-model `.cif` opens fine in VMD; only the multi-model case is affected. `dodo` prints a
 reminder to this effect whenever it writes a multi-model mmCIF.
 
+NOTE: VMD 2.0 is in the works at this time. We do not yet know if it will support multiple models
+in a .cif file. However, the VMD limitation is confirmed for VMD < 2.0.
+
 ## Reproducibility
 
 Everything stochastic takes a seed. Same seed, bit-identical output:
@@ -400,144 +339,52 @@ records still declare the chain explicitly rather than leaving it to each viewer
 
 ## Current limitations
 
-Honestly stated, with what's fixed since 1.x marked.
-
-1. **~~Rebuilding uses a simple random walk, so conformations aren't scientifically useful.~~**
-   Partly addressed. The walk is now a self-avoiding, angle-constrained growth walk that hits
+1. **~~Conformations aren't scientifically useful.~~**
+   They are improved over V1, which used a random walk. 
+   Now, the walk is now a self-avoiding, angle-constrained growth walk that hits
    the predicted dimensions and produces a spread of distinct conformers across models — but it is
    a geometric sampler, not a force field, so that spread is not a thermodynamic ensemble and is
    not a substitute for a simulation.
 
-2. **~~Rebuilt IDRs contain only alpha carbons.~~** Addressed: rebuilt regions now get a full
+2. **~~Rebuilt IDRs do not contain side chains.~~** 
+   However, rebuilt IDRs **do now contain the entire backbone!** This is a major improvement over V1.
    N, CA, C, O backbone by default, and `--no-backbone` returns the alpha-carbon-only output if you
-   want it. Side chains are still not built. Note the alpha-carbon-only limitation never applied to
-   the regions DODO leaves alone, which keep every atom; see
-   [Atoms in the output](#atoms-in-the-output) below.
+   want it. Note the backbone-carbon-only limitation does NOT apply to
+   the regions DODO leaves alone, which keep every atom.
 
-3. **~~Unusual-bond warnings in VMD.~~** Addressed: correct CONECT records, correct atom-name
+3. **Assembly rebuilding is not implemented.** Multi-chain structures are read and written
+   correctly, and regions are identified per chain, but rebuilding unmodelled regions of an EM
+   assembly against the deposited sequence isn't wired up yet.
+
+4. **Cis-peptide bonds are not modelled.** DODO builds every virtual CA–CA bond at 3.81 Å, 
+   the trans value. A cis peptide — in practice almost always X–Pro — sits near 2.9 Å, and 
+   DODO does not produce one.
+
+5. **Anchor alpha carbons are exempt from clashing.** 
+   Rebuilding a region means attaching it to the fixed residues on either side, and that requires
+   exempting those *anchors* from clash checking to some degree. This is unavoidable, so it is worth
+   being plain about it. The anchors' **alpha carbons** are always exempt. The region is bonded to 
+   them; treating them as obstacles would make every valid attachment register as a clash and there 
+   would be nothing to build. There is no version of the algorithm without this.
+
+## Improvements over DODO V1
+
+1. **~~Unusual-bond warnings in VMD.~~** Addressed: correct CONECT records, correct atom-name
    columns, and the element column written. (v1 right-justified atom names from column 13 and
    omitted the element, with the result that MDTraj read its CA-only output as 912 *calcium*
    atoms.)
 
-4. **~~Some visualization modes don't work in VMD; tube and trace fail.~~** Should be addressed
-   by 2 and 3 together, but please report if you still see it.
+2. **~~Some visualization modes don't work in VMD; tube and trace fail.~~** Should be addressed,
+   but please report if you still see it.
 
-5. **Assembly rebuilding is not implemented.** Multi-chain structures are read and written
-   correctly, and regions are identified per chain, but rebuilding unmodelled regions of an EM
-   assembly against the deposited sequence isn't wired up yet.
 
-6. **A single marginal steric contact survives, across the whole test corpus.** Measured over
-   117 structures: **one** contact, at 3.02 Å against a 3.20 Å limit. None is below the 1.00 Å
-   impossible floor, and none appears in an unmodified input. See
-   [Anchor exemptions](#anchor-exemptions) for why one remains and why that is the right place to
-   stop.
-
-7. **Cis-peptide bonds are not modelled, so a cis-proline inside a rebuilt region comes out
-   trans.** DODO builds every virtual CA–CA bond at 3.81 Å, the trans value. A cis peptide — in
-   practice almost always X–Pro — sits near 2.9 Å, and DODO cannot produce one.
-
-   This only affects regions DODO *rebuilds*. Folded domains are moved as rigid bodies and never
-   regenerated, so a cis-proline in one survives untouched, to the last decimal place.
-
-   Measured on 1,200 AlphaFold human structures, 17,406 CA–CA bonds are short (< 3.30 Å) and 4,482
-   of those are X–Pro. Most are not real cis-prolines: short bonds have a mean pLDDT of 38.8
-   against 72.2 elsewhere, so the bulk of that population is AlphaFold producing compressed
-   geometry where it is unsure. Filtering to confident ones (pLDDT ≥ 70) leaves 831, and **32 of
-   them — 3.9% — fall in a region DODO rebuilds.** That is about one affected bond per 38
-   structures, or roughly 600 across the entire human proteome. Where the short bond is *not*
-   confident, rebuilding it to clean geometry is an improvement rather than a loss.
-
-   It is not planned. Supporting cis would make the bond length per-bond rather than a constant,
-   and that constant is load-bearing in 65 places across 12 modules — reachability schedules,
-   closure geometry, the cone sampler, the clash exclusions and the peptide-plane table, which was
-   measured on trans units only and would need a cis counterpart. The deeper problem is that it is
-   not well-posed for *de novo* generation: DODO invents a new conformation and has no way to know
-   which prolines should be cis, and in a real IDR the two states interconvert rather than one
-   being correct. If you need cis-prolines preserved in a specific region, exclude that region from
-   rebuilding rather than expecting DODO to reproduce it.
-
-7. **Three regions out of 117 structures are left unbuilt, and two are not DODO's doing.**
-   Measured:
-
-   - One input has two *fixed* residues 3.04 Å apart — already closer than the clash distance
-     DODO is required to satisfy — so it is asked to thread a 16-residue loop between anchors
-     that clash with each other.
-   - One input contains a chain break: consecutive alpha carbons 5.26 Å apart where a real chain
-     is 3.81 Å. DODO needs that residue to constrain a junction angle and cannot.
-   - One is a genuine build failure: a 7-residue tail at the very end of a 189-residue chain,
-     where the walk exhausted its attempts.
-
-   In every case the region keeps its input coordinates and the reason is reported. DODO never
-   substitutes degenerate output for a region it could not build.
-
-### Anchor exemptions
-
-Rebuilding a region means attaching it to the fixed residues on either side, and that requires
-exempting those *anchors* from clash checking to some degree. This is unavoidable, so it is worth
-being plain about it.
-
-The anchors' **alpha carbons** are always exempt. The region is bonded to them; treating them as
-obstacles would make every valid attachment register as a clash and there would be nothing to
-build. There is no version of the algorithm without this.
-
-The anchors' **backbone** — N, C, O — is a judgement call, and DODO makes it per region rather than
-globally. A residue bonded to an anchor genuinely does come closer to its backbone than the clash
-distance: measured over 649,658 sequence-neighbour pairs from the human proteome, an alpha carbon
-sits 2.379 Å from the next residue's N at the 0.1st percentile and 3.280 Å at the median, so the
-*median* real junction is already inside the 3.20 Å limit. But that exemption is not per-residue,
-so granting it also licenses a residue 3 to 16 positions further along, which has no such claim.
-
-So DODO tries twice. First with only the alpha carbons exempt, which is the honest constraint. Only
-if the region cannot be built that way does it retry with the backbone exempt as well — and when it
-does, it says so, both on the region's outcome and in the run summary.
-
-The measured effect of doing it this way, over the 117-structure corpus:
-
-| | contacts DODO introduces | regions left unbuilt |
-|---|---|---|
-| backbone always exempt | 21 | 4 |
-| backbone never exempt | 1 | 8 |
-| **two passes, strict first** | **1** | **3** |
-
-Both halves improve, which is why this is the default. A region left unbuilt stays as AlphaFold
-spaghetti and is glaringly visible in a figure; a contact a fraction of an Ångström inside the limit
-is not visible at all. Given DODO is a visualization tool, that is the trade worth making — and the
-remaining contact is one, not a class.
-
-### Atoms in the output
-
-Regions DODO does **not** rebuild keep every atom they arrived with. Folded domains are moved as
-rigid bodies — translated and rotated, never regenerated — so each one retains its full atomic
-detail exactly as AlphaFold produced it, down to the last decimal place. The regions DODO actually
-rebuilds get a backbone — N, CA, C and O per residue — and no side chain.
-
-On dnmt3a, for example: 4,636 atoms across the 578 residues DODO leaves alone, preserved
-bit-for-bit, plus 1,336 backbone atoms for the 334 residues it rebuilds — 5,972 in total. Under
-`--no-backbone` those 334 residues are one alpha carbon each instead, for 4,970.
 
 ### Backbone reconstruction (`--backbone` / `--no-backbone`)
 
 By default DODO places **N, C and O** on the rebuilt regions, inferred from the alpha carbons alone
 — consecutive alpha carbons largely determine where the peptide unit between them sits, and DODO
 looks that up in a table measured from 100 frames of all-atom IDR simulation, then settles each
-unit's one remaining degree of freedom against bond angles, clashes and φ/ψ together. The lookup is
-keyed on **five** alpha carbons (both pseudo-dihedrals flanking the unit), which is measurably
-better than the four-carbon form it replaced: held out, C improves 5.1% and N 3.8%, each with a
-paired 95% confidence interval excluding zero. Pass `--no-backbone` (or `backbone=False` in the
-API) for alpha-carbon-only output.
-
-Held out properly — table rebuilt from 80 frames, scored on the 20 it had never seen, 3,643
-residues:
-
-| Atom | Mean error | Median |
-|---|---|---|
-| N | 0.16 Å | 0.12 Å |
-| C | 0.22 Å | 0.14 Å |
-| O | 0.63 Å | 0.40 Å |
-
-The table is reproducible, not a set of magic numbers: `scripts/derive_peptide_table.py` re-derives
-it exactly from the committed frames in `tests/data/backbone/`, and `tests/unit/test_backbone_table.py`
-pins that regeneration and the placement accuracy in CI.
+unit's one remaining degree of freedom against bond angles, clashes and φ/ψ together.
 
 Every bond length inside a rebuilt region is exact by construction. Side chains are still not built.
 
@@ -554,21 +401,6 @@ pairs closer than the 1.00 Å floor below which no real bond exists.
 Building from sequence has no seams and comes out completely clean. See the
 [user guide](https://dodo.readthedocs.io) for the full accounting, including why leaving the seam
 residue un-rebuilt does not fix it.
-
-## Development
-
-```bash
-git clone https://github.com/idptools/dodo.git
-cd dodo
-pip install -e ".[dev]"
-pytest                      # ~2000 tests
-pytest -m "not slow"        # the fast subset
-ruff check src tests && mypy
-pre-commit install
-```
-
-Tests marked `network` hit the AlphaFold database, RCSB and UniProt; CI deselects them from the
-main matrix and runs them separately so an upstream outage doesn't redden a pull request.
 
 ## What changed, and migrating from 1.x
 
@@ -664,7 +496,7 @@ dodo.write_pdb(report.models, "out.pdb")
 
 ### Other behaviour worth knowing
 
-- **A multi-model run is now a real ensemble.** 1.x placed folded domains once outside the model
+- **A multi-model run is now an ensemble.** 1.x placed folded domains once outside the model
   loop, so every model shared one arrangement *and* essentially one end-to-end distance. Each
   model now draws its own dimensions; folded domains are still positioned once and held fixed, so
   only the disordered regions move between frames.
@@ -673,8 +505,7 @@ dodo.write_pdb(report.models, "out.pdb")
   returns the alpha-carbon-only output 1.x produced. Side chains are still not built.
 - **Exit status means something:** `0` success, `2` a region of 10+ residues could not be rebuilt,
   `1` error.
-- **Installation is lighter.** metapredict, matplotlib and cython are gone from the dependencies;
-  sparrow is now an explicit separate install rather than a git dependency resolved for you.
+- **Installation is lighter.** metapredict, matplotlib and cython are gone from the dependencies.
 
 ## Copyright
 

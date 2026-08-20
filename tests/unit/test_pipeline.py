@@ -480,6 +480,162 @@ class TestBuildFromSequence:
         with pytest.raises(ValueError, match="Use 'walk'"):
             build_from_sequence(IDR_SEQUENCE, engine="nonesuch")
 
+    def test_ensemble_shares_a_centre_not_a_pinned_atom(self) -> None:
+        """Models are centred on their centroids, not nailed together at one atom.
+
+        The walk builds every free conformer in its own frame with residue 0 at the origin.
+        Shipped like that, every model of a multi-model build had its first CA at exactly
+        (0, 0, 0) and the ensemble fanned out from that one pinned point.
+        """
+        report = build_from_sequence(IDR_SEQUENCE, n_models=6, seed=7)
+        assert report.n_built == 6
+        first_cas = np.array([m.ca_xyz[0] for m in report.models])
+        assert not np.allclose(first_cas, first_cas[0]), "first CA is pinned across models"
+        for m in report.models:
+            assert np.allclose(m.ca_xyz.mean(axis=0), 0.0, atol=1e-9)
+
+
+class TestFullyDisorderedRebuildStaysPut:
+    """A chain with no folded domain is rebuilt with no anchors, in the engine's own frame.
+
+    The pipeline must land each model back on the input chain's centroid. Shipped without
+    that, every model came out with its first CA at the engine's origin -- pinning the
+    ensemble to (0, 0, 0) and abandoning wherever the input actually placed the chain.
+    """
+
+    def test_every_model_lands_on_the_input_centroid(self) -> None:
+        source = build_from_sequence(IDR_SEQUENCE, seed=1, backbone=False).models[0]
+        # Move the input well away from the origin so "kept where the input was" is
+        # distinguishable from "left in the engine's origin frame".
+        source.xyz += np.array([100.0, 50.0, -30.0])
+        input_centroid = source.ca_xyz.mean(axis=0)
+
+        report = rebuild(source, n_models=3, seed=2, progress=False)
+        assert report.n_built == 3
+        first_cas = np.array([m.ca_xyz[0] for m in report.models])
+        assert not np.allclose(first_cas, first_cas[0]), "first CA is pinned across models"
+        for m in report.models:
+            assert np.allclose(m.ca_xyz.mean(axis=0), input_centroid, atol=1e-6)
+
+
+def _two_chain_structure(centre_a: np.ndarray, centre_b: np.ndarray) -> Structure:
+    """Build a synthetic two-chain input for the anchor-free placement tests.
+
+    Chain A: a 60-residue helical CA globule at ``centre_a``, preset as folded.
+    Chain B: a 54-residue CA ring centred on ``centre_b``, preset as one anchor-free IDR.
+    """
+    from dodo.regions import assign_regions_from_spec
+
+    def helix(n: int, centre: np.ndarray) -> np.ndarray:
+        t = np.arange(n)
+        coords = np.stack([4.0 * np.cos(t * 1.75), 4.0 * np.sin(t * 1.75), t * 1.5], axis=1)
+        return coords - coords.mean(axis=0) + centre
+
+    def ring(n: int, centre: np.ndarray) -> np.ndarray:
+        angles = np.arange(n) * 2 * np.pi / n
+        coords = 32.7 * np.stack([np.cos(angles), np.sin(angles), np.zeros(n)], axis=1)
+        return coords - coords.mean(axis=0) + centre
+
+    n_a, n_b = 60, 54
+    structure = Structure.from_atom_records(
+        xyz=np.vstack([helix(n_a, centre_a), ring(n_b, centre_b)]),
+        atom_name=["CA"] * (n_a + n_b),
+        element=["C"] * (n_a + n_b),
+        residue_name=["ALA"] * n_a + ["SER"] * n_b,
+        residue_number=list(range(1, n_a + 1)) + list(range(1, n_b + 1)),
+        chain_id=["A"] * n_a + ["B"] * n_b,
+        source="synthetic two-chain",
+    )
+    assign_regions_from_spec(structure, {"A": [("folded", 1, n_a)], "B": [("idr", 1, n_b)]})
+    return structure
+
+
+class TestFreeRegionPlacementRespectsObstacles:
+    """The clash guarantee for an anchor-free region is enforced at its FINAL position.
+
+    The region is generated in the engine's own frame and landed on its input centroid
+    afterwards. First shipped without that, the region was clash-checked at the world origin and
+    translated away from everything the check saw: a disordered chain could be written
+    straight through a folded partner while the report said built and ok.
+    """
+
+    def _min_inter_chain(self, model: Structure) -> float:
+        a = model.ca_xyz[model.chains[0].span.slice]
+        b = model.ca_xyz[model.chains[1].span.slice]
+        return float(np.linalg.norm(a[:, None] - b[None], axis=-1).min())
+
+    def test_built_regions_are_clash_free_where_they_land(self) -> None:
+        from dodo.constants import CA_CLASH_DISTANCE
+
+        # Both chains' input centroids coincide, so a landing that ignored the folded chain
+        # would overlap it. Every model must either land clear or refuse to build.
+        centre = np.array([50.0, 50.0, 50.0])
+        structure = _two_chain_structure(centre, centre)
+        report = rebuild(
+            structure, strategy="preset", n_models=3, seed=3, backbone=False, progress=False
+        )
+        outcomes = [o for o in report.outcomes if o.chain_id == "B"]
+        for model, outcome in zip(report.models, outcomes, strict=True):
+            if outcome.built:
+                assert self._min_inter_chain(model) >= CA_CLASH_DISTANCE
+            else:
+                b = model.chains[1].span.slice
+                assert np.allclose(model.ca_xyz[b], structure.ca_xyz[b]), (
+                    "an unbuilt region must keep its input coordinates"
+                )
+
+    def test_an_obstacle_at_the_world_origin_does_not_abort_the_build(self) -> None:
+        from dodo.constants import CA_CLASH_DISTANCE
+
+        # Real AlphaFold files have atoms within the clash distance of the world origin. That
+        # must not matter to a region whose input position is 120 A away: the engine's
+        # origin-frame guard fired here when world-frame obstacles were (wrongly) passed in.
+        structure = _two_chain_structure(np.zeros(3), np.array([120.0, 0.0, 0.0]))
+        # Put a chain-A atom exactly on the origin, the worst case for the old guard.
+        shift = -structure.xyz[np.argmin(np.linalg.norm(structure.xyz[:60], axis=1))]
+        structure.xyz[:60] += shift
+        assert float(np.linalg.norm(structure.xyz[:60], axis=1).min()) < 1e-9
+
+        report = rebuild(
+            structure, strategy="preset", n_models=1, seed=0, backbone=False, progress=False
+        )
+        outcome = next(o for o in report.outcomes if o.chain_id == "B")
+        assert outcome.built, outcome.reason
+        assert self._min_inter_chain(report.models[0]) >= CA_CLASH_DISTANCE
+
+    def test_a_buried_centroid_is_refused_not_silently_clashed(self) -> None:
+        from dodo.regions import assign_regions_from_spec
+
+        # A disordered chain whose input centroid sits inside a dense folded blob cannot land
+        # clear anywhere near it. The honest outcome is NOT BUILT with the input kept, never
+        # a model that threads the blob.
+        centre = np.array([50.0, 50.0, 50.0])
+        grid = np.stack(np.meshgrid(*[np.arange(4) * 3.9] * 3), axis=-1).reshape(-1, 3)
+        blob = grid - grid.mean(axis=0) + centre
+        angles = np.arange(24) * 2 * np.pi / 24
+        ring = 14.6 * np.stack([np.cos(angles), np.sin(angles), np.zeros(24)], axis=1)
+        ring = ring - ring.mean(axis=0) + centre
+        n_a, n_b = len(blob), len(ring)
+        structure = Structure.from_atom_records(
+            xyz=np.vstack([blob, ring]),
+            atom_name=["CA"] * (n_a + n_b),
+            element=["C"] * (n_a + n_b),
+            residue_name=["ALA"] * n_a + ["SER"] * n_b,
+            residue_number=list(range(1, n_a + 1)) + list(range(1, n_b + 1)),
+            chain_id=["A"] * n_a + ["B"] * n_b,
+            source="synthetic buried centroid",
+        )
+        assign_regions_from_spec(structure, {"A": [("folded", 1, n_a)], "B": [("idr", 1, n_b)]})
+
+        report = rebuild(
+            structure, strategy="preset", n_models=1, seed=0, backbone=False, progress=False
+        )
+        outcome = next(o for o in report.outcomes if o.chain_id == "B")
+        assert not outcome.built
+        assert "clashed" in (outcome.reason or "")
+        b = report.models[0].chains[1].span.slice
+        assert np.allclose(report.models[0].ca_xyz[b], structure.ca_xyz[b])
+
 
 class TestCli:
     def test_help_exits_cleanly(self, capsys: pytest.CaptureFixture[str]) -> None:

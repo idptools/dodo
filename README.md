@@ -23,7 +23,7 @@ simulation trajectory — to be very clear, it is **not** equivalent to a simula
 nice for visualization.
 
 
-![DODO_EXAMPLE](https://github.com/idptools/dodo/blob/main/images/DODO_example.png)
+![DODO_EXAMPLE](https://github.com/idptools/dodo/blob/main/images/DODO_ensemble.gif)
 
 > **DODO 2.0 is a rewrite and it breaks the 1.x API.** The `build.pdb_from_name()` /
 > `pdb_from_pdb()` / `pdb_from_sequence()` functions and the three `pdb-from-*` console

@@ -109,6 +109,19 @@ class IDRRequest:
         CA coordinate of the fixed residue one further C-terminal, the mirror image of
         :attr:`n_anchor_prev_xyz`. Constrains and exposes the pseudo-angle centred on the
         C-anchor.
+    ensemble_mean_end_to_end
+        The end-to-end distance the *region* was asked for, in Angstroms, when
+        :attr:`target_end_to_end` is one draw from an ensemble spread around it rather than
+        the mean itself. ``None`` means they are the same thing, which is the case whenever
+        the engine does its own spreading.
+
+        This exists because a caller may do the spreading instead. :mod:`dodo.construct.pipeline`
+        draws a per-model target for every terminal region up front and then calls the engine once
+        per model with ``n_conformations=1``, so from inside the engine that draw is
+        indistinguishable from a region that was simply asked for a compact target. The
+        distinction matters to :func:`dodo.engines.walk._target_steering_width`, which decides
+        whether a region is long enough to be worth spending accuracy on -- a property of the
+        region, not of one draw. Leave it unset and a compact draw is treated as a small region.
     n_conformations
         How many independent conformers to generate. Used for multi-model output; the
         engine reports one success flag per conformer.
@@ -137,6 +150,7 @@ class IDRRequest:
     c_anchor_xyz: np.ndarray | None = None
     n_anchor_prev_xyz: np.ndarray | None = None
     c_anchor_next_xyz: np.ndarray | None = None
+    ensemble_mean_end_to_end: float | None = None
     n_conformations: int = 1
 
     def __post_init__(self) -> None:

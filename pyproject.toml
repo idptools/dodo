@@ -43,6 +43,10 @@ dependencies = [
     "getSequence>=3.0",
     "tqdm>=4.66",
     "numba>=0.60",
+    # Not on PyPI yet, so this has to be a direct git reference. Requires
+    # tool.hatch.metadata.allow-direct-references below. DELIBERATE: DODO installs from a
+    # GitHub checkout or URL until sparrow itself is on PyPI, at which point this becomes a
+    # normal versioned dependency and the flag below can go.
     "sparrow @ git+https://github.com/idptools/sparrow.git",
 ]
 
@@ -80,6 +84,20 @@ Issues = "https://github.com/idptools/dodo/issues"
 # ---------------------------------------------------------------------------
 # Build configuration
 # ---------------------------------------------------------------------------
+
+[tool.hatch.metadata]
+# Required because `sparrow` is not on PyPI and is declared as a direct git reference.
+# Hatchling refuses a direct reference in project.dependencies unless this is set, so
+# without it EVERY build fails -- `pip install -e .` dies in "Preparing editable metadata"
+# with "Dependency #6 ... cannot be a direct reference", and so do the wheel-build tests.
+#
+# Consequence, and it is an accepted one rather than an oversight: PyPI rejects uploads
+# whose metadata contains a direct reference, so while sparrow is declared this way DODO is
+# installed from GitHub and is not published to PyPI. That is the plan until sparrow lands
+# on PyPI -- do not "fix" it by dropping sparrow to an optional extra, which would silently
+# hand anyone installing without the extra the analytical fallback (measured at 0.62-2.62x
+# of ALBATROSS depending on composition) instead of a real prediction.
+allow-direct-references = true
 
 [tool.hatch.version]
 source = "vcs"

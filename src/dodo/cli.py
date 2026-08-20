@@ -38,7 +38,13 @@ _ENGINE_CHOICES = ("walk",)
 
 def _add_common_build_arguments(parser: argparse.ArgumentParser) -> None:
     """Add the flags shared by every building subcommand, defined once."""
-    parser.add_argument("-o", "--out", required=True, help="output PDB path")
+    parser.add_argument(
+        "-o",
+        "--out",
+        required=True,
+        help="output path; the format follows the extension (.cif/.mmcif write mmCIF, "
+        "anything else writes PDB)",
+    )
     parser.add_argument(
         "--no-cache",
         action="store_true",
@@ -317,7 +323,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0 if result.ok else 2
 
         from .construct.pipeline import build_from_sequence, rebuild
-        from .io import write_pdb
+        from .io import write_structure
 
         common = {
             "mode": args.mode,
@@ -385,7 +391,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         status = _report(report, quiet=args.quiet)
         if report.models:
-            write_pdb(
+            write_structure(
                 report.models,
                 args.out,
                 conect=not args.no_conect,

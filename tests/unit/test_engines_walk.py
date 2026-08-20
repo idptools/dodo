@@ -42,6 +42,7 @@ from dodo.constants import (
 from dodo.engines.base import ConformationEngine, IDRRequest, IDRResult
 from dodo.engines.walk import (
     SelfAvoidingWalk,
+    _target_steering_width,
     _WalkPlan,
     max_reach,
     min_reach,
@@ -1267,6 +1268,196 @@ class TestEnsembleStatistics:
         first = build(40, seed=99, n_anchor=ORIGIN, n_conformations=8)[1]
         second = build(40, seed=99, n_anchor=ORIGIN, n_conformations=8)[1]
         assert np.array_equal(first.ca_coords, second.ca_coords)
+
+
+# ---------------------------------------------------------------------------
+# Local shape
+#
+# Confirmed defect: with a flat TARGET_STEERING_WIDTH the radial preference and the
+# pseudo-angle preference were sharp at the same time, and a bond direction satisfying both
+# has only two solutions -- mirror images across a plane that turns slowly as the chain
+# grows. Steered regions therefore came out as flat zig-zags: measured on p300's 583-residue
+# terminal region, CA pseudo-dihedrals piled up at 0 and 180 degrees (planar order 0.618
+# against 0.05-0.08 for a real coil) and the pseudo-angle mean was dragged to 131 degrees.
+#
+# Nothing in the suite caught it, and that is the point of these tests. Every existing check
+# on a steered region measures a *global* observable -- the end-to-end distance, the ensemble
+# CV, the scaling exponent -- and all of them stayed healthy, because each conformer picked a
+# different plane. The defect lives in the local geometry, so it needs a local measurement.
+# ---------------------------------------------------------------------------
+
+
+def _pseudo_dihedrals(trace: np.ndarray) -> np.ndarray:
+    """CA pseudo-dihedrals in degrees, ``(n - 3,)``."""
+    b0 = trace[1:-2] - trace[:-3]
+    b1 = trace[2:-1] - trace[1:-2]
+    b2 = trace[3:] - trace[2:-1]
+    n1 = np.cross(b0, b1)
+    n2 = np.cross(b1, b2)
+    m1 = np.cross(n1, b1 / np.linalg.norm(b1, axis=1, keepdims=True))
+    return np.degrees(np.arctan2(np.sum(m1 * n2, axis=1), np.sum(n1 * n2, axis=1)))
+
+
+def _planar_order(trace: np.ndarray) -> float:
+    """``|<exp(2i * dihedral)>|``: 1.0 for a planar zig-zag, ~0 for free dihedrals.
+
+    Doubling the angle before averaging is what makes this a *planarity* measure rather than
+    a trans-content measure: 0 and 180 degrees are both in-plane and both map to the same
+    point, so a chain alternating between them scores 1.0 just as a pure all-trans one does.
+    That alternation is exactly the artifact, and an unsigned dihedral histogram misses it.
+    """
+    radians = np.radians(_pseudo_dihedrals(trace))
+    return float(np.hypot(np.cos(2 * radians).mean(), np.sin(2 * radians).mean()))
+
+
+#: Planar order of a freely-rotating chain carrying DODO's own angle distribution, measured
+#: over 20 chains at each of n = 50, 120, 300 and 583: 0.127, 0.083, 0.047, 0.035. It falls
+#: with length because the average runs over more dihedrals.
+#:
+#: Two ceilings rather than one, because a single conformer's planar order scatters: measured
+#: at n = 120 over eight conformers the mean is 0.105 and the highest single value 0.258, so a
+#: bound on the maximum tight enough to be meaningful would be flaky. The mean is the robust
+#: statistic and carries the tight bound; the per-conformer bound only has to be tight enough
+#: to catch the regression, whose *mean* was 0.46-0.62.
+MAX_MEAN_PLANAR_ORDER = 0.20
+MAX_ANY_PLANAR_ORDER = 0.40
+
+
+class TestSteeredRegionsAreNotPlanar:
+    @pytest.mark.parametrize("n_residues", [120, 300])
+    def test_dihedrals_are_not_pinned_to_the_plane(self, n_residues: int) -> None:
+        # p300's real terminal regions sit at 0.085-0.126 of the geometric reach, which is
+        # where the artifact was worst; the predicted dimension lands in that band.
+        target = flory_end_to_end(n_residues)
+        _, result = build(n_residues, seed=5, n_anchor=ORIGIN, target=target, n_conformations=8)
+        assert result.all_successful
+        orders = np.array([_planar_order(trace) for trace in result.ca_coords])
+        assert orders.mean() < MAX_MEAN_PLANAR_ORDER, (
+            f"mean planar order {orders.mean():.3f} at n={n_residues}: the steered walk is "
+            f"laying the chain out in a plane again. A real coil scores under 0.13 at this "
+            f"length and the flat-width regression scored 0.46-0.60."
+        )
+        assert orders.max() < MAX_ANY_PLANAR_ORDER, (
+            f"one conformer reached planar order {orders.max():.3f} at n={n_residues}, past "
+            f"anything per-conformer scatter explains."
+        )
+
+    @pytest.mark.parametrize("n_residues", [120, 300])
+    def test_dihedrals_avoid_the_perpendicular_hole(self, n_residues: int) -> None:
+        # The sharper signature, and the one a summary statistic can hide: the two-solution
+        # collapse does not merely favour 0 and 180, it *empties* +-90, because those are the
+        # dihedrals that carry the chain out of the plane. Measured on the regression, the
+        # +-60-to-120 band held 6% of dihedrals against 33% for a uniform distribution.
+        target = flory_end_to_end(n_residues)
+        _, result = build(n_residues, seed=6, n_anchor=ORIGIN, target=target, n_conformations=8)
+        assert result.all_successful
+        dihedrals = np.concatenate([_pseudo_dihedrals(t) for t in result.ca_coords])
+        magnitude = np.abs(dihedrals)
+        occupancy = float(((magnitude >= 60.0) & (magnitude <= 120.0)).mean())
+        assert occupancy > 0.20, (
+            f"only {occupancy:.1%} of pseudo-dihedrals are within 30 degrees of "
+            f"perpendicular (uniform would be 33%); the out-of-plane directions are being "
+            f"starved."
+        )
+
+    def test_the_angle_distribution_is_not_dragged_extended(self) -> None:
+        # Same cause, separate symptom: rings with a larger cone radius sweep a wider range of
+        # distances, so a sharp radial filter over-selects them and the realized pseudo-angle
+        # mean rises. Measured at 131 deg on the regression against the 125 deg DODO samples.
+        target = flory_end_to_end(200)
+        _, result = build(200, seed=7, n_anchor=ORIGIN, target=target, n_conformations=8)
+        assert result.all_successful
+        angles = np.concatenate([np.degrees(_pseudo_angles(trace)) for trace in result.ca_coords])
+        assert abs(float(angles.mean()) - BACKBONE_ANGLE_MEAN) < 3.0
+
+    def test_closure_regions_were_never_affected(self) -> None:
+        # The control. A region pinned between two anchors steers with _natural_fluctuation,
+        # which is tens of Angstroms wide, so it never had the defect and must not acquire
+        # one from any future change to the steered path.
+        far = np.array([120.0, 0.0, 0.0])
+        _, result = build(
+            120, seed=8, n_anchor=ORIGIN, c_anchor=far, target=120.0, n_conformations=6
+        )
+        assert result.all_successful
+        assert np.mean([_planar_order(trace) for trace in result.ca_coords]) < MAX_MEAN_PLANAR_ORDER
+
+
+class TestCompactDrawsInAMultiModelEnsemble:
+    """The width cap keys on the region, not on one conformer's draw.
+
+    Confirmed defect, and it only appeared at ``n_models > 1``. The pipeline draws a
+    per-model end-to-end target for every terminal region and then calls the engine once per
+    model with ``n_conformations=1``, so from inside the engine a compact draw is
+    indistinguishable from a genuinely small region. The cap -- a fraction of the target,
+    there to stop short regions paying accuracy for a benefit they cannot get -- therefore
+    handed compact draws a near-floor width and they came out flat while their siblings did
+    not. Measured on p300's 583-residue tail at twenty models: the two most compact draws
+    (27.9 and 72.1 A against a mean of 186) scored 0.474 and 0.132, the other eighteen
+    0.011-0.082, and width against planar order correlated at -0.96.
+
+    Isolating width from target settles which one is responsible. Holding the target at 27.9 A
+    and forcing the width by hand, planar order runs 0.476 / 0.144 / 0.055 / 0.034 at widths
+    0.56 / 1.20 / 2.23 / 4.00 while the achieved ratio stays at 0.9935-1.0448. It is the
+    width, and widening it costs the compact conformer essentially nothing.
+    """
+
+    def test_the_cap_reads_the_region_mean_not_the_conformer_draw(self) -> None:
+        span, mean = 582, 186.0
+        compact = np.array([[27.9]])
+        from_mean = float(_target_steering_width(compact, span, mean)[0, 0])
+        from_draw = float(_target_steering_width(compact, span, 27.9)[0, 0])
+        assert from_draw == pytest.approx(0.02 * 27.9, rel=1e-6), (
+            "capping on the draw is what produced the flat conformer; this documents it"
+        )
+        assert from_mean > 2.0, (
+            f"a compact draw from a 186 A ensemble got width {from_mean:.2f}; the region is "
+            f"583 residues long and its width must not collapse because one draw was compact"
+        )
+
+    def test_a_compact_draw_from_a_long_ensemble_is_not_planar(self) -> None:
+        n = 400
+        mean = flory_end_to_end(n)
+        # 0.15 * mean is exactly the low clip dodo.construct.pipeline applies to its own draws,
+        # so this is the most compact conformer the multi-model path can actually ask for.
+        request = IDRRequest(
+            sequence="G" * n,
+            n_residues=n,
+            target_end_to_end=0.15 * mean,
+            n_anchor_xyz=ORIGIN,
+            ensemble_mean_end_to_end=mean,
+            n_conformations=6,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = SelfAvoidingWalk().generate(request, None, np.random.default_rng(4))
+        assert result.all_successful
+        orders = np.array([_planar_order(trace) for trace in result.ca_coords])
+        assert orders.mean() < MAX_MEAN_PLANAR_ORDER, (
+            f"mean planar order {orders.mean():.3f} for the most compact draw a multi-model "
+            f"run can produce; the regression scored 0.474 here."
+        )
+        assert orders.max() < MAX_ANY_PLANAR_ORDER
+
+    def test_the_default_is_the_target_itself(self) -> None:
+        # Left unset, the two are the same number, which is correct whenever the engine does
+        # its own spreading -- then target_end_to_end already is the mean.
+        target = flory_end_to_end(80)
+        plan = _WalkPlan.build(
+            IDRRequest("G" * 80, 80, target, n_anchor_xyz=ORIGIN),
+            0.1,
+            np.random.default_rng(0),
+        )
+        assert plan.mean_target == pytest.approx(target)
+
+
+def _pseudo_angles(trace: np.ndarray) -> np.ndarray:
+    """CA-CA-CA pseudo-angles in radians, ``(n - 2,)``."""
+    first = trace[:-2] - trace[1:-1]
+    second = trace[2:] - trace[1:-1]
+    cosine = np.sum(first * second, axis=1) / (
+        np.linalg.norm(first, axis=1) * np.linalg.norm(second, axis=1)
+    )
+    return np.arccos(np.clip(cosine, -1.0, 1.0))
 
 
 # ---------------------------------------------------------------------------

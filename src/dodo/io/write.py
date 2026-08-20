@@ -547,20 +547,25 @@ def _layout(structure: Structure, *, ca_only: bool, annotate_regions: bool) -> _
 # ---------------------------------------------------------------------------
 
 
-def _backbone_positions(structure: Structure, layout: _Layout) -> dict[str, np.ndarray]:
+def _backbone_positions(structure: Structure, atom_indices: np.ndarray) -> dict[str, np.ndarray]:
     """Locate each residue's backbone atoms as positions within the written atoms.
+
+    ``atom_indices`` are the structure atoms actually written, in output order (a
+    :class:`_Layout`'s ``atom_indices``); a returned position indexes into *that* array.
+    Taking the indices directly rather than a whole ``_Layout`` is what lets the mmCIF
+    writer share this connectivity logic without first building a PDB atom block.
 
     ``-1`` means the residue does not have that atom, which is the normal case for a
     CA-only structure and for the incomplete terminal residues real files contain.
 
     A residue can also carry the *same* backbone name twice -- unresolved alternate
     conformers, which DODO's own reader preserves. Only one of them can hold the
-    residue's backbone connectivity, so the others are written with no CONECT record at
-    all and render as isolated dots. That is recorded, because an unbonded atom in the
-    output is precisely the failure this module exists to prevent.
+    residue's backbone connectivity, so the others are written with no connectivity
+    record at all and render as isolated dots. That is recorded, because an unbonded atom
+    in the output is precisely the failure this module exists to prevent.
     """
-    names = structure.atom_name[layout.atom_indices]
-    residues = structure.residue_index[layout.atom_indices]
+    names = structure.atom_name[atom_indices]
+    residues = structure.residue_index[atom_indices]
     positions: dict[str, np.ndarray] = {}
     repeated = 0
     first_repeat = -1
@@ -588,8 +593,12 @@ def _backbone_positions(structure: Structure, layout: _Layout) -> dict[str, np.n
     return positions
 
 
-def _bonds(structure: Structure, layout: _Layout) -> list[tuple[int, int]]:
+def _bonds(structure: Structure, atom_indices: np.ndarray) -> list[tuple[int, int]]:
     """List bonds as pairs of positions within the written atoms.
+
+    ``atom_indices`` are the structure atoms actually written, in output order; each
+    returned pair indexes into that array. The mmCIF writer reuses this so its
+    connectivity records describe exactly the bonds the PDB writer's CONECT records do.
 
     Intra-residue N-CA, CA-C and C-O wherever both atoms are present, plus one bond per
     residue junction. Whether a junction is bonded is decided from the CA-CA separation
@@ -603,8 +612,8 @@ def _bonds(structure: Structure, layout: _Layout) -> list[tuple[int, int]]:
     A CA-CA record is deliberately *not* added on top of a real peptide bond: it would
     draw a spurious 3.8 A bond across every peptide unit in an all-atom model.
     """
-    positions = _backbone_positions(structure, layout)
-    xyz = structure.xyz[layout.atom_indices]
+    positions = _backbone_positions(structure, atom_indices)
+    xyz = structure.xyz[atom_indices]
     bonds: list[tuple[int, int]] = []
 
     for first, second in (("N", "CA"), ("CA", "C"), ("C", "O")):
@@ -645,7 +654,7 @@ def _conect_lines(structure: Structure, layout: _Layout) -> list[str]:
     """
     serials = layout.serials
     partners: dict[int, list[int]] = {}
-    for left, right in _bonds(structure, layout):
+    for left, right in _bonds(structure, layout.atom_indices):
         low, high = sorted((int(serials[left]), int(serials[right])))
         partners.setdefault(low, []).append(high)
 

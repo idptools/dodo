@@ -64,7 +64,7 @@ dodo regions AF-P04637-F1-model_v6.pdb
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-o`, `--out` | *required* | Output PDB path |
+| `-o`, `--out` | *required* | Output path. The format follows the extension: `.cif`/`.mmcif` write mmCIF, anything else writes PDB. See [multi-model output](#multi-model-output-is-now-a-spread-of-conformers) for which to use in which viewer |
 | `-m`, `--mode` | `predicted` | Target dimension as a multiplier on the predicted end-to-end distance |
 | `-n`, `--models` | `1` | Number of conformers. Folded domains are positioned once and held fixed across all models; only the disordered regions differ |
 | `-s`, `--strategy` | `auto` | How to identify regions: `auto`, `density`, `contact`, `plddt` |
@@ -357,6 +357,27 @@ Two details worth knowing:
 - Only regions with a **free end** scatter. An interior region pinned between two folded
   domains has its end-to-end distance determined by the anchor separation — there's nothing to
   sample, and its models differ in path rather than in span.
+
+### File format, and a VMD caveat
+
+The output format follows the `-o` extension. `.pdb` writes the conformers as `MODEL`/`ENDMDL`
+frames; `.cif`/`.mmcif` writes a single `_atom_site` loop keyed by `pdbx_PDB_model_num`, which is
+the mmCIF way to carry several models. Both are correct, and PyMOL, ChimeraX and most tools read
+the models from either.
+
+**VMD is the exception for mmCIF.** Its mmCIF reader loads every model into a *single* frame, so a
+multi-model `.cif` opens as all conformers overlaid at once — a hairball — instead of a browsable
+trajectory. This is a VMD limitation, not a problem with the file: VMD does the same to the PDB's
+own deposited NMR ensembles (e.g. 1L2Y's 38 models load as one frame), while other readers see the
+models correctly. So:
+
+- **Opening a multi-model ensemble in VMD → write PDB** (`-o out.pdb`). VMD reads its
+  `MODEL`/`ENDMDL` frames as a proper trajectory you can step through.
+- **PyMOL or ChimeraX → either format works.** mmCIF is the better choice for very large single
+  models, where PDB's fixed-width columns run out of room.
+
+A *single*-model `.cif` opens fine in VMD; only the multi-model case is affected. `dodo` prints a
+reminder to this effect whenever it writes a multi-model mmCIF.
 
 ## Reproducibility
 

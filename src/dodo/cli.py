@@ -400,6 +400,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if not args.quiet:
                 print(f"wrote {args.out}", file=sys.stderr)
+                if len(report.models) > 1 and str(args.out).lower().endswith((".cif", ".mmcif")):
+                    # A multi-model mmCIF is correct and PyMOL/ChimeraX read the models,
+                    # but VMD's mmCIF plugin loads every model into one frame (measured on
+                    # DODO output and on RCSB's own NMR ensembles), so an ensemble drawn in
+                    # VMD is a hairball. Say so here rather than let the user discover it.
+                    print(
+                        f"note: {args.out} holds {len(report.models)} models. VMD's mmCIF "
+                        f"reader merges them into a single frame; for a browsable ensemble "
+                        f"in VMD write PDB instead (-o with a .pdb name). PyMOL and ChimeraX "
+                        f"read the mmCIF models correctly.",
+                        file=sys.stderr,
+                    )
         return status
 
     except DodoError as exc:

@@ -193,11 +193,21 @@ def write_structure(
     structure
         A single :class:`~dodo.structure.Structure` or a sequence of them.
     path
-        Destination file. The extension selects the format.
+        Destination file. The extension selects the format; a trailing ``.gz`` is peeled
+        for that decision (so ``out.cif.gz`` is mmCIF), exactly as :func:`read_structure`
+        peels it. Note that neither writer compresses: the bytes are plain text whatever
+        the name, and DODO's reader accepts plain text under a ``.gz`` name because it
+        sniffs the gzip magic rather than trusting the extension.
     conect, models_as_frames, annotate_regions, ca_only, box, seqres
         Forwarded to the chosen writer.
     """
-    suffix = Path(path).suffix.lower()
+    # Peel a trailing .gz before deciding, so "out.cif.gz" dispatches on ".cif" rather
+    # than ".gz" -- which would otherwise fall through to the PDB writer and put PDB
+    # records in a .cif.gz file, the mirror of the bug read_structure avoids on input.
+    suffixes = [s.lower() for s in Path(path).suffixes]
+    if suffixes and suffixes[-1] == ".gz":
+        suffixes = suffixes[:-1]
+    suffix = suffixes[-1] if suffixes else ""
     writer = write_cif if suffix in _CIF_SUFFIXES else write_pdb
     writer(
         structure,

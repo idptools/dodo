@@ -23,16 +23,26 @@ Sharing :func:`dodo.io.write._bonds` in particular means the connectivity this m
 emits (as ``_struct_conn``) describes exactly the bonds the PDB writer emits as
 ``CONECT`` -- there is one definition of what is bonded, not two that can drift.
 
-A note on connectivity and viewers
------------------------------------
-The CA-CA virtual bond is 3.81 A, past the automatic distance-based bond cutoff every
-common viewer uses, so a CA-only trace needs its connectivity stated explicitly or it
-renders as disconnected dots. In PDB that is ``CONECT``; the mmCIF equivalent is
-``_struct_conn``. PyMOL, ChimeraX and the wwPDB tools read ``_struct_conn`` and draw the
-bonds. Some builds of VMD's mmCIF plugin read coordinates only and re-derive bonds by
-distance regardless, so a CA-only mmCIF may still show gaps there even though the file is
-correct; the honest fix for a CA-only model in that specific viewer is the PDB output,
-which is why ``_struct_conn`` is written but not claimed to be universal.
+A note on viewers, and on VMD in particular
+--------------------------------------------
+DODO's product is a picture, and a file that *parses* is not the same as a file that
+*displays*. Two facts about this output were measured against VMD 1.9.4, PyMOL, ChimeraX
+and biotite rather than assumed:
+
+* Connectivity. The CA-CA virtual bond is 3.81 A, past the distance-based bond cutoff
+  every common viewer uses, so a CA-only trace needs its connectivity stated or it renders
+  as disconnected dots. The mmCIF vehicle for that is ``_struct_conn`` (PDB's is
+  ``CONECT``). PyMOL, ChimeraX and biotite read ``_struct_conn``; VMD's mmCIF plugin does
+  not -- it bonds by distance only -- so a CA-only *mmCIF* shows gaps in VMD however it is
+  written. For a CA-only model in VMD, the PDB output is the one that draws the trace.
+
+* Multiple models. mmCIF states several conformers with ``pdbx_PDB_model_num``, and PyMOL,
+  ChimeraX and biotite read them as distinct models. VMD's mmCIF plugin does not separate
+  them: it loads every ``_atom_site`` row into a single frame -- measured on both DODO
+  output and RCSB's own NMR ensembles (1L2Y's 38 models load as one 11,552-atom frame) --
+  so an ensemble drawn in VMD becomes a hairball of overlaid models. This is a VMD
+  limitation, not a property of the file. For a browsable ensemble in VMD, write PDB, whose
+  ``MODEL``/``ENDMDL`` frames VMD does read as a trajectory.
 """
 
 from __future__ import annotations
@@ -232,13 +242,14 @@ def _atom_rows(
     *,
     model_num: int,
     first_serial: int,
+    label_seq: np.ndarray,
     annotate_regions: bool,
-) -> tuple[list[list[str]], int, int]:
+) -> tuple[list[list[str]], int]:
     """Render one model's ``_atom_site`` rows and return them with the next free serial.
 
     Serials continue across models (RCSB numbers them globally), so ``first_serial`` is
-    threaded in and the next free value is returned. The third return value counts
-    occupancy/B-factor substitutions, aggregated by the caller into a single note.
+    threaded in and the next free value is returned. ``label_seq`` supplies the
+    ``label_seq_id`` column; the author number goes to ``auth_seq_id``.
     """
     element = _elements(structure)
     occupancy = structure.occupancy
@@ -261,7 +272,6 @@ def _atom_rows(
 
     model_field = str(model_num)
     rows: list[list[str]] = []
-    substitutions = 0
     serial = first_serial
     for atom in atom_indices.tolist():
         residue = int(residue_index[atom])
@@ -269,17 +279,17 @@ def _atom_rows(
         group = "ATOM" if name in THREE_TO_ONE else "HETATM"
         chain_id = _encode_value(_chain_id_of(structure, int(chain_index[residue])))
         entity = str(int(chain_index[residue]) + 1)
-        seq = str(int(residue_number[residue]))
+        auth_seq = str(int(residue_number[residue]))
+        label_seq_field = str(int(label_seq[residue]))
         icode_raw = str(insertion_code[residue])
         icode = _encode_value(icode_raw) if icode_raw else _UNKNOWN
         atom_field = _encode_value(str(atom_name[atom]))
         comp_field = _encode_value(name)
         symbol = str(element[atom]) or _element_fallback(str(atom_name[atom]))
 
-        occ_field, occ_sub = _real(float(occupancy[residue]), _DEFAULT_OCCUPANCY)
+        occ_field, _ = _real(float(occupancy[residue]), _DEFAULT_OCCUPANCY)
         b_source = b_per_residue if b_per_residue is not None else structure.b_factor
-        b_field, b_sub = _real(float(b_source[residue]), _DEFAULT_B_FACTOR)
-        substitutions += int(occ_sub) + int(b_sub)
+        b_field, _ = _real(float(b_source[residue]), _DEFAULT_B_FACTOR)
 
         x, y, z = (float(v) for v in xyz[atom])
         rows.append(
@@ -292,14 +302,14 @@ def _atom_rows(
                 comp_field,
                 chain_id,
                 entity,
-                seq,
+                label_seq_field,
                 icode,
                 f"{x:.3f}",
                 f"{y:.3f}",
                 f"{z:.3f}",
                 occ_field,
                 b_field,
-                seq,
+                auth_seq,
                 comp_field,
                 chain_id,
                 atom_field,
@@ -307,7 +317,7 @@ def _atom_rows(
             ]
         )
         serial += 1
-    return rows, serial, substitutions
+    return rows, serial
 
 
 def _element_fallback(atom_name: str) -> str:
@@ -333,15 +343,72 @@ def _chain_id_of(structure: Structure, chain: int) -> str:
     return str(chain + 1)
 
 
-def _struct_conn_rows(structure: Structure, atom_indices: np.ndarray) -> list[list[str]]:
+def _label_seq_ids(structure: Structure, written: np.ndarray) -> np.ndarray:
+    """Assign each written residue its ``label_seq_id``: a 1-based index within its chain.
+
+    This is what ``label_seq_id`` *means* in mmCIF -- the monomer's position in its
+    polymer entity, and a pointer into ``_entity_poly_seq.num`` -- and it is emphatically
+    not the author residue number. Using the author number (which this writer first did)
+    breaks in three ways that a lenient reader hides but a strict one does not:
+
+    * two residues that share an author number but differ by insertion code (52 and 52A)
+      would get the *same* ``label_seq_id``, so a reader keying ``_struct_conn`` on
+      ``(asym, seq, atom)`` cannot tell them apart and drops the bonds around them -- the
+      disconnected-dots failure this module exists to prevent (confirmed with gemmi);
+    * an expression-tag numbering like ``-1, 0, 1`` would put ``label_seq_id`` outside its
+      positive-integer domain;
+    * it would disagree with ``_entity_poly_seq.num``, which is a plain 1-based counter,
+      making the file internally inconsistent.
+
+    Counting only *written* residues keeps the ids contiguous and in step with
+    ``_entity_poly_seq``, which also lists only what was written. Unwritten residues get 0,
+    which nothing reads. The author number is preserved, in ``auth_seq_id``.
+    """
+    label_seq = np.zeros(structure.n_residues, dtype=np.int64)
+    counters: dict[int, int] = {}
+    for residue in range(structure.n_residues):
+        if not written[residue]:
+            continue
+        chain = int(structure.chain_index[residue])
+        counters[chain] = counters.get(chain, 0) + 1
+        label_seq[residue] = counters[chain]
+    return label_seq
+
+
+def _count_substitutions(
+    structure: Structure, written: np.ndarray, *, annotate_regions: bool
+) -> int:
+    """Count occupancy/B-factor values that would be substituted, once per residue.
+
+    Matches the PDB writer's accounting: occupancy and B-factor are per-residue, and a
+    residue missing both counts twice. Computed once on the reference frame -- the ensemble
+    shares these per-residue values -- so the note does not multiply by atoms-per-residue
+    or by model count the way a per-atom, per-frame tally would.
+    """
+    b = (
+        _residue_b_factors(structure, annotate_regions=True)
+        if annotate_regions
+        else structure.b_factor
+    )
+    occupancy = structure.occupancy
+    count = 0
+    for residue in np.flatnonzero(written):
+        count += int(not np.isfinite(occupancy[residue])) + int(not np.isfinite(b[residue]))
+    return count
+
+
+def _struct_conn_rows(
+    structure: Structure, atom_indices: np.ndarray, label_seq: np.ndarray
+) -> list[list[str]]:
     """Render ``_struct_conn`` rows for the backbone/CA-CA bonds of one topology.
 
     The bonds are :func:`dodo.io.write._bonds`, so this connectivity is identical to the
-    PDB writer's ``CONECT`` set. Written once for all models, keyed by label identifier.
+    PDB writer's ``CONECT`` set. Written once for all models, keyed by label identifier --
+    ``label_seq`` (from :func:`_label_seq_ids`), so a partner resolves to exactly one
+    residue even when author numbers repeat across insertion codes.
     """
     residue_index = structure.residue_index
     residue_name = structure.residue_name
-    residue_number = structure.residue_number
     insertion_code = structure.insertion_code
     chain_index = structure.chain_index
     atom_name = structure.atom_name
@@ -353,7 +420,7 @@ def _struct_conn_rows(structure: Structure, atom_indices: np.ndarray) -> list[li
         return [
             _encode_value(_chain_id_of(structure, int(chain_index[residue]))),
             _encode_value(str(residue_name[residue])),
-            str(int(residue_number[residue])),
+            str(int(label_seq[residue])),
             _encode_value(str(atom_name[atom])),
             _encode_value(icode_raw) if icode_raw else _UNKNOWN,
         ]
@@ -364,25 +431,33 @@ def _struct_conn_rows(structure: Structure, atom_indices: np.ndarray) -> list[li
     return rows
 
 
-def _entity_poly_seq_rows(structure: Structure, written: np.ndarray) -> list[list[str]]:
+def _entity_poly_seq_rows(
+    structure: Structure, written: np.ndarray, label_seq: np.ndarray
+) -> list[list[str]]:
     """Render ``_entity_poly_seq`` rows -- the mmCIF equivalent of SEQRES.
 
-    Describes the residues actually written, grouped by chain (its entity id) and
-    numbered from 1 within each, so the sequence block cannot claim residues the
-    coordinates do not contain. Interleaved runs of one chain id are concatenated, as the
-    PDB writer's SEQRES does, because one entity cannot be declared twice.
+    Describes the residues actually written, grouped by chain (its entity id) and numbered
+    by ``label_seq`` so ``num`` is exactly the ``label_seq_id`` the ``_atom_site`` rows
+    carry -- the two are the same key and must agree. The sequence block therefore cannot
+    claim residues the coordinates do not contain. Like the PDB writer's SEQRES this lists
+    every written residue of a chain, so a non-standard residue kept in a protein chain is
+    reported as part of that chain's sequence; DODO's output is protein, so this is the
+    common and correct case.
     """
     chain_index = structure.chain_index
     residue_name = structure.residue_name
-    counts: dict[int, int] = {}
     rows: list[list[str]] = []
     for residue in range(structure.n_residues):
         if not written[residue]:
             continue
         entity = int(chain_index[residue]) + 1
-        counts[entity] = counts.get(entity, 0) + 1
         rows.append(
-            [str(entity), str(counts[entity]), _encode_value(str(residue_name[residue])), "n"]
+            [
+                str(entity),
+                str(int(label_seq[residue])),
+                _encode_value(str(residue_name[residue])),
+                "n",
+            ]
         )
     return rows
 
@@ -475,23 +550,24 @@ def structure_to_cif_text(
 
     written = np.zeros(reference.n_residues, dtype=bool)
     written[reference.residue_index[atom_indices]] = True
+    label_seq = _label_seq_ids(reference, written)
 
     atom_rows: list[list[str]] = []
-    substitutions = 0
     serial = 1
     for model_num, frame in enumerate(frames, start=1):
         # ca_only selection depends only on atom names and residue grouping, which the
         # topology check has already proved identical across frames, so the reference
-        # selection applies to every frame and the serial keeps climbing.
-        rows, serial, subs = _atom_rows(
+        # selection (and its label_seq) applies to every frame and the serial keeps climbing.
+        rows, serial = _atom_rows(
             frame,
             atom_indices,
             model_num=model_num,
             first_serial=serial,
+            label_seq=label_seq,
             annotate_regions=annotate_regions,
         )
         atom_rows.extend(rows)
-        substitutions += subs
+    substitutions = _count_substitutions(reference, written, annotate_regions=annotate_regions)
     if substitutions:
         _note(
             reference,
@@ -509,14 +585,14 @@ def structure_to_cif_text(
             _loop(
                 ("entity_id", "num", "mon_id", "hetero"),
                 "entity_poly_seq",
-                _entity_poly_seq_rows(reference, written),
+                _entity_poly_seq_rows(reference, written, label_seq),
             )
         )
         lines.append("#")
     lines.extend(_loop(_ATOM_SITE_COLUMNS, "atom_site", atom_rows))
     lines.append("#")
     if conect:
-        conn_rows = _struct_conn_rows(reference, atom_indices)
+        conn_rows = _struct_conn_rows(reference, atom_indices, label_seq)
         if conn_rows:
             lines.extend(_loop(_STRUCT_CONN_COLUMNS, "struct_conn", conn_rows))
             lines.append("#")

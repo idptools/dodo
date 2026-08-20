@@ -343,6 +343,128 @@ class TestWriteStructureDispatch:
         write_structure(make_structure(4, all_atom=True), path, ca_only=True)
         assert read_cif(path).n_atoms == 4
 
+    def test_gz_suffix_dispatches_on_the_inner_extension(self, tmp_path: Path) -> None:
+        # "out.cif.gz" must write mmCIF, not PDB records under a .cif.gz name. DODO's
+        # writers do not compress, and read_structure reads plain text under a .gz name.
+        path = tmp_path / "out.cif.gz"
+        write_structure(make_structure(3, all_atom=False), path)
+        assert path.read_text().startswith("data_")
+        from dodo.io import read_structure
+
+        assert read_structure(path).n_residues == 3
+
+
+# ---------------------------------------------------------------------------
+# label_seq_id semantics -- the confirmed review findings
+# ---------------------------------------------------------------------------
+
+
+def _atom_columns(text: str) -> list[list[str]]:
+    return [line.split() for line in atom_site_rows(text)]
+
+
+class TestLabelSeqId:
+    """``label_seq_id`` is the 1-based monomer index, not the author number.
+
+    Using the author number silently drops connectivity: two residues sharing an author
+    number but differing by insertion code get the same key, and a reader resolving
+    ``_struct_conn`` on ``(asym, seq, atom)`` then cannot tell them apart.
+    """
+
+    def test_label_seq_id_is_a_contiguous_1_based_index(self) -> None:
+        text = structure_to_cif_text(make_structure(3, all_atom=False, first_residue_number=100))
+        rows = _atom_columns(text)
+        assert [r[8] for r in rows] == ["1", "2", "3"], "label_seq_id counts from 1"
+        assert [r[15] for r in rows] == ["100", "101", "102"], "auth_seq_id keeps the author number"
+
+    def test_insertion_codes_get_distinct_label_seq_ids(self) -> None:
+        structure = Structure.from_atom_records(
+            xyz=np.array([[0.0, 0, 0], [3.8, 0, 0], [7.6, 0, 0]]),
+            atom_name=["CA", "CA", "CA"],
+            element=["C", "C", "C"],
+            residue_name=["ALA", "GLY", "SER"],
+            residue_number=[1, 1, 2],
+            chain_id=["A", "A", "A"],
+            insertion_code=["", "A", ""],
+        )
+        rows = _atom_columns(structure_to_cif_text(structure))
+        assert [r[8] for r in rows] == ["1", "2", "3"], "distinct label_seq_id per residue"
+        assert [r[15] for r in rows] == ["1", "1", "2"], "author number repeats, as it should"
+
+    def test_entity_poly_seq_num_equals_label_seq_id(self) -> None:
+        text = structure_to_cif_text(
+            make_structure(3, all_atom=False, first_residue_number=100), seqres=True
+        )
+        label_seq = [r[8] for r in _atom_columns(text)]
+        nums = [
+            line.split()[1]
+            for line in text.splitlines()
+            if line.split()[:1] == ["1"] and line.strip().endswith(" n")
+        ]
+        assert label_seq == nums == ["1", "2", "3"]
+
+    def test_struct_conn_partners_resolve_under_insertion_codes(self, tmp_path: Path) -> None:
+        gemmi = pytest.importorskip("gemmi")
+        structure = Structure.from_atom_records(
+            xyz=np.array([[0.0, 0, 0], [3.8, 0, 0], [7.6, 0, 0]]),
+            atom_name=["CA", "CA", "CA"],
+            element=["C", "C", "C"],
+            residue_name=["ALA", "GLY", "SER"],
+            residue_number=[1, 1, 2],
+            chain_id=["A", "A", "A"],
+            insertion_code=["", "A", ""],
+        )
+        path = tmp_path / "ins.cif"
+        write_cif(structure, path)
+        model = gemmi.read_structure(str(path))[0]
+        connections = gemmi.read_structure(str(path)).connections
+        assert len(connections) == 2
+        unresolved = sum(
+            model.find_cra(c.partner1).atom is None or model.find_cra(c.partner2).atom is None
+            for c in connections
+        )
+        assert unresolved == 0, "every _struct_conn partner must resolve to exactly one atom"
+
+
+class TestSubstitutionNote:
+    def _missing_occ_and_b(self, n_residues: int) -> Structure:
+        names = ("N", "CA", "C", "O")
+        offs = ((-1.0, 0.3), (0.0, 0.0), (1.5, 0.3), (1.6, 1.5))
+        xyz, atom_name, element, resname, resnum, chain = [], [], [], [], [], []
+        for i in range(n_residues):
+            for name, (dx, dy) in zip(names, offs, strict=True):
+                xyz.append([i * 3.8 + dx, dy, 0.0])
+                atom_name.append(name)
+                element.append(name[0])
+                resname.append("ALA")
+                resnum.append(i + 1)
+                chain.append("A")
+        return Structure.from_atom_records(
+            xyz=np.array(xyz),
+            atom_name=atom_name,
+            element=element,
+            residue_name=resname,
+            residue_number=resnum,
+            chain_id=chain,
+            b_factor=[np.nan] * len(atom_name),
+            occupancy=[np.nan] * len(atom_name),
+        )
+
+    def test_counted_per_residue_not_per_atom(self) -> None:
+        structure = self._missing_occ_and_b(1)
+        structure.notes.clear()
+        structure_to_cif_text(structure)
+        note = next(n for n in structure.notes if "occupancy/B-factor" in n)
+        # One residue missing both -> 2, not 8 (would be 4 atoms x 2 fields).
+        assert note.startswith("2 "), note
+
+    def test_not_multiplied_by_model_count(self) -> None:
+        frames = [self._missing_occ_and_b(1) for _ in range(3)]
+        frames[0].notes.clear()
+        structure_to_cif_text(frames)
+        note = next(n for n in frames[0].notes if "occupancy/B-factor" in n)
+        assert note.startswith("2 "), note  # not 6
+
 
 # ---------------------------------------------------------------------------
 # Independent validation with a third-party mmCIF parser, when installed

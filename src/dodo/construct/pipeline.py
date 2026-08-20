@@ -32,6 +32,7 @@ from ..constants import (
     ANCHOR_EXEMPT_ATOMS,
     ANCHOR_EXEMPT_ATOMS_BY_RESIDUE,
     CA_CA_BOND_LENGTH,
+    CA_CLASH_DISTANCE,
     DEFAULT_MODE,
     MIN_IDR_LENGTH,
     SHORT_REGION_TOLERANCE,
@@ -44,6 +45,7 @@ from .dimensions import DimensionTarget, target_dimensions
 from .place import DomainPlacement, reposition_folded_domains
 
 if TYPE_CHECKING:
+    from ..engines.base import IDRRequest, IDRResult
     from .ca_backbone import SeamStrain
 
 __all__ = [
@@ -408,47 +410,58 @@ def _build_region(
         n_conformations=1,
     )
 
-    # TWO PASSES over the anchor exemption, strictest first.
-    #
-    # A region is bonded to its anchors' alpha carbons, so those must always be exempt from
-    # clash checking -- without that there is no way to attach the region at all. The anchors'
-    # BACKBONE atoms are a different matter. The residue actually bonded to an anchor does come
-    # closer to them than the clash distance (measured over 649,658 sequence-neighbour pairs, an
-    # alpha carbon sits 2.379 A from the next residue's N at the 0.1st percentile and 3.280 A at
-    # the median), but a residue further along the region has no such licence -- and exempting
-    # them region-wide let residues 3 to 16 positions away be placed against anchor backbone.
-    #
-    # So: try with only the alpha carbons exempt, which is the honest constraint, and fall back
-    # to exempting the backbone only for a region that would otherwise not be built at all.
-    # Measured over 36 structures, the strict pass alone takes contacts from 19 to 1 but takes
-    # unbuilt regions from 2 to 8, and an unbuilt region is far more visible in a figure than a
-    # contact a fraction of an Angstrom inside the limit. This gets both: strict where it is
-    # free, relaxed only where the alternative is leaving the region as AlphaFold spaghetti.
     result = None
+    placed_ca: np.ndarray | None = None
     failure: str | None = None
     relaxed = False
-    for exempt_backbone in (False, True):
-        try:
-            attempt = engine.generate(  # type: ignore[attr-defined]
-                request,
-                obstacles=_obstacles_for_span(
-                    structure, span, exempt_anchor_backbone=exempt_backbone
-                ),
-                rng=rng,
-            )
-        except DodoError as exc:
-            failure = f"{label}: {type(exc).__name__}: {exc}"
-            continue
-        if bool(attempt.success[0]):
-            result = attempt
-            relaxed = exempt_backbone
-            break
-        failure = f"{label}: the engine reported failure for this conformer"
+    if n_anchor_xyz is None and c_anchor_xyz is None:
+        # A region with no anchors at all -- a fully disordered chain. Its generation and its
+        # placement are one problem and are solved together: see _build_free_region.
+        result, placed_ca, failure = _build_free_region(
+            structure, span=span, request=request, engine=engine, rng=rng, label=label
+        )
+    else:
+        # TWO PASSES over the anchor exemption, strictest first.
+        #
+        # A region is bonded to its anchors' alpha carbons, so those must always be exempt from
+        # clash checking -- without that there is no way to attach the region at all. The
+        # anchors' BACKBONE atoms are a different matter. The residue actually bonded to an
+        # anchor does come closer to them than the clash distance (measured over 649,658
+        # sequence-neighbour pairs, an alpha carbon sits 2.379 A from the next residue's N at
+        # the 0.1st percentile and 3.280 A at the median), but a residue further along the
+        # region has no such licence -- and exempting them region-wide let residues 3 to 16
+        # positions away be placed against anchor backbone.
+        #
+        # So: try with only the alpha carbons exempt, which is the honest constraint, and fall
+        # back to exempting the backbone only for a region that would otherwise not be built at
+        # all. Measured over 36 structures, the strict pass alone takes contacts from 19 to 1
+        # but takes unbuilt regions from 2 to 8, and an unbuilt region is far more visible in a
+        # figure than a contact a fraction of an Angstrom inside the limit. This gets both:
+        # strict where it is free, relaxed only where the alternative is leaving the region as
+        # AlphaFold spaghetti.
+        for exempt_backbone in (False, True):
+            try:
+                attempt = engine.generate(  # type: ignore[attr-defined]
+                    request,
+                    obstacles=_obstacles_for_span(
+                        structure, span, exempt_anchor_backbone=exempt_backbone
+                    ),
+                    rng=rng,
+                )
+            except DodoError as exc:
+                failure = f"{label}: {type(exc).__name__}: {exc}"
+                continue
+            if bool(attempt.success[0]):
+                result = attempt
+                relaxed = exempt_backbone
+                break
+            failure = f"{label}: the engine reported failure for this conformer"
 
     if result is None:
         return outcome(built=False, reason=failure)
 
-    structure.set_ca_xyz(np.arange(span.start, span.stop), result.ca_coords[0])
+    ca_coords = result.ca_coords[0] if placed_ca is None else placed_ca
+    structure.set_ca_xyz(np.arange(span.start, span.stop), ca_coords)
     if domain is not None:
         domain.rebuilt = True
         domain.placed = True
@@ -468,6 +481,83 @@ def _build_region(
             else None
         ),
     )
+
+
+#: How many independent draws a region with no anchors gets to land clear of the already-placed
+#: atoms before it is reported unbuilt. Each attempt is a full fresh conformer, so the budget is
+#: spent only when the input centroid is genuinely crowded -- the common case (a single-chain
+#: input, no obstacles at all) accepts the first draw and never pays for the rest.
+_FREE_REGION_PLACEMENT_ATTEMPTS = 8
+
+
+def _build_free_region(
+    structure: Structure,
+    *,
+    span: Span,
+    request: IDRRequest,
+    engine: object,
+    rng: np.random.Generator,
+    label: str,
+) -> tuple[IDRResult | None, np.ndarray | None, str | None]:
+    """Build a region with no anchors at all and land it on the input region's centroid.
+
+    The engine builds a free region in its own frame, with residue 0 at the world origin, and
+    its documented contract for that case is "pass obstacles=None and place the region
+    afterwards" (the alternative it offers is an anchor to grow from, which this region does
+    not have). World-frame obstacles must NOT be handed to a walk that is not in the world
+    frame: they abort the build outright whenever another chain happens to sit within the
+    clash distance of the world origin -- real AlphaFold files do -- and they protect nothing
+    at the place the region actually ends up.
+
+    So: the walk runs unobstructed, each draw is centred on the INPUT region's centroid, and
+    the FINAL position is checked against the world-frame obstacles under the same rule the
+    engine enforces during growth (every alpha carbon at least
+    :data:`~dodo.constants.CA_CLASH_DISTANCE` from the nearest obstacle atom). A draw that
+    lands badly is retried; a region that cannot land clear is reported unbuilt -- leaving the
+    input coordinates in place -- rather than written on top of another chain with a report
+    that says clean.
+
+    Centring on the input centroid, rather than pinning any single residue, is what keeps a
+    multi-model ensemble usable: every model starts from the same base copy, so all models
+    share one centre of mass and none share an artificial common atom.
+
+    Returns
+    -------
+    tuple
+        ``(result, placed_ca, failure)``: the accepted engine result and its world-frame CA
+        coordinates, or ``(None, None, reason)``.
+    """
+    from scipy.spatial import cKDTree
+
+    # exempt_anchor_backbone is moot with no anchors; both settings yield the same set.
+    obstacles = _obstacles_for_span(structure, span, exempt_anchor_backbone=False)
+    obstacle_tree = cKDTree(obstacles) if obstacles is not None else None
+    input_centroid = structure.ca_xyz[span.slice].mean(axis=0)
+
+    failure: str | None = None
+    for _ in range(_FREE_REGION_PLACEMENT_ATTEMPTS):
+        try:
+            attempt = engine.generate(request, obstacles=None, rng=rng)  # type: ignore[attr-defined]
+        except DodoError as exc:
+            # Raised while resolving the plan -- an unsatisfiable target, invalid fixed
+            # geometry -- which depends only on the request, so a retry would fail identically.
+            return None, None, f"{label}: {type(exc).__name__}: {exc}"
+        if not bool(attempt.success[0]):
+            failure = f"{label}: the engine reported failure for this conformer"
+            continue
+        ca = attempt.ca_coords[0]
+        placed = ca - ca.mean(axis=0) + input_centroid
+        clearance = (
+            float("inf") if obstacle_tree is None else float(obstacle_tree.query(placed)[0].min())
+        )
+        if clearance >= CA_CLASH_DISTANCE:
+            return attempt, placed, None
+        failure = (
+            f"{label}: {_FREE_REGION_PLACEMENT_ATTEMPTS} independent draws all clashed with "
+            f"already-placed atoms when centred on the region's input coordinates; the input "
+            f"coordinates are left as-is"
+        )
+    return None, None, failure
 
 
 def _outer_ca(structure: Structure, anchor: int | None, *, step: int) -> np.ndarray | None:
@@ -1075,6 +1165,12 @@ def build_from_sequence(
         built = bool(result.success[model_number])
         coords = result.ca_coords[model_number]
         if built:
+            # The walk builds a free region in its own frame with residue 0 at the origin, for
+            # every conformer -- so without this, all models of an ensemble share one pinned
+            # first CA and fan out from that point like a starburst. Centering each model on
+            # its own centroid instead puts every model's centre of mass at the origin: the
+            # ensemble occupies one region of space with no artificial common atom.
+            coords = coords - coords.mean(axis=0)
             structure = Structure.from_atom_records(
                 xyz=coords,
                 atom_name=["CA"] * n,

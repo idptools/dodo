@@ -403,6 +403,8 @@ def _build_region(
         c_anchor_xyz=c_anchor_xyz,
         n_anchor_prev_xyz=_outer_ca(structure, span.n_anchor, step=-1),
         c_anchor_next_xyz=_outer_ca(structure, span.c_anchor, step=+1),
+        # The ensemble mean, not this model's draw: see IDRRequest.ensemble_mean_end_to_end.
+        ensemble_mean_end_to_end=(target.end_to_end if target is not None else None),
         n_conformations=1,
     )
 

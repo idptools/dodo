@@ -174,7 +174,18 @@ HEADROOM_STEERING_FRACTION: Final[float] = 0.35
 #: directions and inside single-seed noise. No reason to move a stabilized constant for that.
 SCHEDULE_MARGIN_FRACTION: Final[float] = 0.5
 
-#: Steering width on the distance to the far endpoint for a free or terminal region, in A.
+#: FLOOR on the steering width for a free or terminal region, in A. The width itself is
+#: computed per conformer by :func:`_target_steering_width`; this is only its lower bound.
+#:
+#: **Read this first, because the rest of this note predates the change.** Until 2026-08-19 this
+#: constant *was* the width, applied flat at every step of every steered region, and everything
+#: below is the record of tuning it in that role. It is kept because the measurements are still
+#: true and still constrain the floor. What it did not measure -- and what turned out to matter
+#: more -- is the *local* geometry the width produces. A flat 0.5 A pins the distance to residue
+#: 0 so hard that the pseudo-angle preference and the radial preference together admit only two
+#: bond directions per step, mirror images across a slowly-turning plane, and the chain comes out
+#: as a flat zig-zag. See :data:`STEERING_SLACK_FRACTION` for the measurement, the mechanism and
+#: the replacement.
 #:
 #: MEASURED, and the single number that decides whether the achieved end-to-end distance
 #: matches the requested one. It has to be compared against the *step*, not against the
@@ -261,6 +272,130 @@ MAXWELL_MEAN_FACTOR: Final[float] = math.sqrt(8.0 / (3.0 * math.pi))
 #: which is 0.963 of :func:`max_reach`: this constant has to sit above that or a legitimate
 #: clamped target would be refused as unsatisfiable.
 MAX_TARGET_EXTENSION_FRACTION: Final[float] = 0.98
+
+#: Steering width as a fraction of the radial slack the target leaves per bond.
+#:
+#: MEASURED 2026-08-19, and the fix for the flat-zig-zag artifact. Read with
+#: :data:`STEERING_WIDTH_TARGET_CAP`, which bounds what this produces.
+#:
+#: **The defect.** A step's distance from residue 0 depends only on the angle between the new
+#: bond and the radial direction, so holding that distance fixed puts the bond on a cone about
+#: the radial axis; holding the pseudo-angle fixed puts it on a cone about the previous bond.
+#: Two cones about different axes meet in **two points**. With the old flat 0.5 A width both
+#: preferences are sharp at once, so each step was a choice between two mirror-image directions
+#: either side of a plane that turns only slowly -- and the chain came out flat. It is not a
+#: sampling artifact: re-gridding the candidates to resolve the radial shell (a generator laying
+#: rings on the constant-distance cones, built and measured) changed nothing, because the target
+#: distribution itself is bimodal in azimuth. The width had to change.
+#:
+#: **The measurement.** CA pseudo-dihedral planar order -- ``|<exp(2i * dihedral)>|``, which is
+#: 1.0 for a perfect planar zig-zag and ~0.05-0.08 for a freely-rotating chain with DODO's own
+#: angle distribution -- on p300, dnmt3a and arf19 at three seeds and two modes, per region:
+#:
+#:     region                          old     new     kind
+#:     p300 1832-2414 (583 res)      0.618   0.044    terminal
+#:     p300 1-334     (334 res)      0.578   0.053    terminal
+#:     dnmt3a 1-282   (282 res)      0.604   0.051    terminal
+#:     arf19 1042-1086 (45 res)      0.361   0.113    terminal
+#:     every closure region          unchanged to 4 dp
+#:
+#: Closure regions are untouched by construction -- they steer toward a fixed anchor with
+#: :func:`_natural_fluctuation`, which is tens of Angstroms wide and never had the defect. That
+#: they come out bit-identical is the control on this change.
+#:
+#: **Why it scales with slack rather than being another constant.** The width is how much radial
+#: freedom the walk is allowed, and how much it *can* be allowed is set by how much the target
+#: leaves unused: a target near the geometric ceiling needs nearly every bond to advance
+#: maximally and genuinely has no freedom to give, while a compact target has most of a bond
+#: length spare per step. Swept over six seeds on the realistic length/extension curve, a flat
+#: width fails at one end or the other -- 2.0 A flat misses by 17 A at 0.9 of reach, and the
+#: ``sqrt(remaining)`` form the closure funnel uses collapses outright there (3 of 24 conformers
+#: built). Scaling by the slack holds accuracy at both ends.
+#:
+#: Swept 0.4 / 0.6 / 0.8 (and 0.8 capped) at 180 conformers per cell. 0.6 is the knee: 0.4 leaves
+#: the planar order at 0.12-0.13 on long regions, against 0.047-0.055 at 0.6 and a
+#: freely-rotating reference of 0.047; 0.8 buys no further order and costs three times the
+#: end-to-end scatter.
+#:
+#: **VALIDATED on the whole AlphaFold human proteome** -- all 23,587 structures, old and new width
+#: over the *same* structures, at two independent build seeds (0 and 1):
+#:
+#:     metric                          old            new
+#:     crashes / timeouts              0 / 0          0 / 0
+#:     regions rebuilt                 99.894%        99.894%   (seed 0)
+#:                                     99.905%        99.905%   (seed 1)
+#:     blocked structures              49 / 43        49 / 43   -- the same structures, both seeds
+#:     rebuilt bond defects            0              0
+#:     introduced steric clashes       26,823         22,595    (seed 0)
+#:     structures with >= 20 of them   12 -> 3 (seed 0), 20 -> 4 (seed 1)
+#:     steered planar order            0.497          0.094
+#:     closure planar order            0.086          0.086     -- the control, unchanged
+#:     end-to-end, fraction > 5% off   0.01%          1.51%
+#:     end-to-end, fraction > 10% off  0.00%          0.00%
+#:
+#: **Introduced impossible contacts are unchanged, and that took a control to establish.** At seed
+#: 0 the count went 11 -> 16, which looks like a regression on the one invariant that is never a
+#: ratchet. It is not: the old width alone gives 11 at seed 0 and 15 at seed 1, and at seed 1 the
+#: two policies give **15 and 15**. The seed-0 gap sits inside the old code's own seed-to-seed
+#: swing. Changing this width changes RNG consumption, so every build differs and the *set* of
+#: affected structures churns freely; only the rate is meaningful, and the rate did not move.
+#:
+#: What did move, reproducibly at both seeds, is the *composition*: the median sequence separation
+#: of an introduced impossible contact falls from ~92 to ~48 residues, and the fraction closer than
+#: 20 residues rises from 15% to 35%. A freer walk doubles back on itself locally more often and
+#: slams into distant structure less often. Both classes are equally impossible and the totals are
+#: tiny (about 15 in 23,587), but if anyone chases these next, expect short-range ones now.
+#:
+#: Measure this the way ``known_failures.md`` defines it -- pairs in the output that are **not
+#: already in the input**, matched on atom identity. Several AlphaFold inputs ship with impossible
+#: pairs of their own (AF-Q9BTC0-F1 has 92), and some come out cleaner than they went in, so
+#: counting output pairs conflates DODO's defects with AlphaFold's and inflates the number
+#: threefold.
+STEERING_SLACK_FRACTION: Final[float] = 0.6
+
+#: Ceiling on the steering width as a fraction of that conformer's own end-to-end target.
+#:
+#: MEASURED 2026-08-19. The width is an absolute distance and its accuracy cost is a roughly
+#: fixed number of Angstroms, so as a fraction of the target it falls hardest on the shortest
+#: regions -- which are also the regions with nothing to gain, because a flat zig-zag needs
+#: length to become visible. Measured planar order at 15 residues is 0.257 before the change and
+#: 0.258 after: no benefit at all, for the largest accuracy bill of any length.
+#:
+#: This cap spends the width only where it does something. SWEPT over 500 AlphaFold human
+#: structures (both policies on the same structures, one seed), by rebuilt region size --
+#: mean planar order, and the fraction of steered regions finishing more than
+#: :data:`~dodo.construct.pipeline._END_TO_END_NOTABLE_FRACTION` (5%) from their target:
+#:
+#:     residues     old       0.03      0.02      0.015     <- cap
+#:     < 80       0.406      0.118     0.157      0.214
+#:     < 120      0.450      0.089     0.112      0.163
+#:     < 200      0.490      0.063     0.076      0.104
+#:     < 400      0.567      0.050     0.050      0.052
+#:     >= 400     0.616      0.047     0.046      0.045
+#:     ---- fraction of steered regions more than 5% off target ----
+#:     overall     0.00%     3.43%     0.86%      0.29%
+#:     order > 0.25 rate
+#:     overall    97.40%     1.10%     4.30%     11.10%
+#:
+#: 0.02 is the choice. Above 200 residues -- where a flat zig-zag is actually visible, and where
+#: the complaint that started this came from -- it is indistinguishable from the uncapped 0.03,
+#: and it introduces exactly as many steric clashes (518 either way over the 500 structures).
+#: What it buys is a four-fold cut in how often the 5% reporting threshold fires. Tightening
+#: further to 0.015 keeps giving accuracy back but starts costing real planar order on the
+#: short regions, and 11% of regions above 0.25 is no longer a clean fix.
+#:
+#: **No region at any cap in any sweep exceeded** :data:`END_TO_END_TOLERANCE_FRACTION`, because
+#: :func:`_validate_conformer` rejects a conformer that would and the region is retried. The 10%
+#: contract is enforced, not merely aimed at; this cap is about how often the 5% *reporting*
+#: threshold fires, not about correctness.
+STEERING_WIDTH_TARGET_CAP: Final[float] = 0.02
+
+#: Greatest distance one bond can add along a fixed direction, in Angstroms. DERIVED: the
+#: axial advance of the all-trans zig-zag at :data:`~dodo.constants.BACKBONE_ANGLE_MAX`, the
+#: same quantity :func:`max_reach` accumulates.
+_MAX_ADVANCE_PER_BOND: Final[float] = CA_CA_BOND_LENGTH * math.sin(
+    math.radians(BACKBONE_ANGLE_MAX) / 2.0
+)
 
 #: Numerical slack on the hard distance corridor, in Angstroms.
 #:
@@ -632,6 +767,10 @@ class _WalkPlan:
     #: Fractional tolerance on the achieved end-to-end distance, applied per conformer to
     #: that conformer's own target.
     tolerance_fraction: float = END_TO_END_TOLERANCE_FRACTION
+    #: The end-to-end distance the *region* was asked for, before any per-conformer spreading.
+    #: Equals :attr:`target` unless the caller did the spreading itself; see
+    #: :attr:`dodo.engines.base.IDRRequest.ensemble_mean_end_to_end`.
+    mean_target: float = 0.0
 
     @property
     def closes(self) -> bool:
@@ -678,6 +817,13 @@ class _WalkPlan:
         # Pure fraction, no floor: see END_TO_END_TOLERANCE_FRACTION for why the old
         # CA_CA_BOND_LENGTH floor made every low-side check in this module unreachable.
         tolerance = tolerance_fraction * request.target_end_to_end
+        # Falls back to the per-conformer target, which is correct whenever the engine is the
+        # one doing the spreading -- then they are the same number by construction.
+        mean_target = (
+            request.target_end_to_end
+            if request.ensemble_mean_end_to_end is None
+            else float(request.ensemble_mean_end_to_end)
+        )
         _check_fixed_context(request)
 
         if request.n_anchor_xyz is not None and request.c_anchor_xyz is not None:
@@ -714,6 +860,7 @@ class _WalkPlan:
                 # the variety between conformers comes from the walk between the anchors.
                 targets=np.full(request.n_conformations, request.target_end_to_end),
                 tolerance_fraction=tolerance_fraction,
+                mean_target=mean_target,
             )
 
         # No closure: the achieved end-to-end distance is between the first and last
@@ -765,6 +912,7 @@ class _WalkPlan:
             end_outer=None,
             targets=targets,
             tolerance_fraction=tolerance_fraction,
+            mean_target=mean_target,
         )
 
     def tolerance_for(self, target: float | np.ndarray) -> np.ndarray:
@@ -868,14 +1016,14 @@ class _WalkPlan:
             schedule = np.maximum(schedule, catch_up)
         schedule = np.clip(schedule, band_lo, band_hi)
 
-        width = TARGET_STEERING_WIDTH
+        width = _target_steering_width(target, span, self.mean_target)
         return _Goal(
             lo=lo,
             hi=hi,
             want=schedule,
             # Symmetric: see the class docstring.
-            sigma_down=_column(width),
-            sigma_up=_column(width),
+            sigma_down=width,
+            sigma_up=width,
         )
 
 
@@ -1925,6 +2073,59 @@ def _candidates_per_step() -> int:
 def _natural_fluctuation(n_bonds: int) -> float:
     """Typical fluctuation in the span of an ``n_bonds`` subchain, in Angstroms."""
     return STEERING_SIGMA_FACTOR * CA_CA_BOND_LENGTH * math.sqrt(max(n_bonds, 1))
+
+
+def _target_steering_width(target: np.ndarray, span: int, mean_target: float) -> np.ndarray:
+    """Steering width on the distance to residue 0, for a free or terminal region.
+
+    Parameters
+    ----------
+    target
+        ``(rows, 1)`` end-to-end target of each live conformer, in Angstroms.
+    span
+        Bonds between the region's first and last residue.
+    mean_target
+        The end-to-end distance the *region* was asked for, in Angstroms -- the mean the batch
+        is spread around, not any one conformer's draw.
+
+    Returns
+    -------
+    np.ndarray
+        ``(rows, 1)`` width in Angstroms, applied symmetrically about the schedule.
+
+    Notes
+    -----
+    Three terms, each doing one job. :data:`STEERING_SLACK_FRACTION` of the radial room the
+    target leaves unused is the width the walk would like -- wide enough that a whole ring of
+    bond directions reaches the distance it wants, instead of the two that a sharp radial
+    preference leaves. :data:`STEERING_WIDTH_TARGET_CAP` keeps that from costing more accuracy
+    than it is worth on a short region. :data:`TARGET_STEERING_WIDTH` floors it, so a target
+    close to the geometric ceiling is still steered as tightly as it always was.
+
+    The slack term is per conformer and the cap is per region, and that split is load-bearing.
+    How much radial room a conformer has is a property of *its own* draw, so the slack reads
+    ``target``. Whether the region is big enough for a flat zig-zag to be worth paying accuracy
+    for is a property of the *region*, so the cap reads ``mean_target`` -- the value the caller
+    asked for, before :func:`sample_end_to_end_targets` spread the batch around it.
+
+    Keying the cap on the per-conformer draw instead is a bug that only shows up at
+    ``n_models > 1``, and it was one. The draws have a coefficient of variation near 0.42, so in
+    a batch of twenty a conformer can draw a target several times more compact than the mean;
+    capping at a fraction of *that* handed it a width near the floor and it came out planar
+    while its nineteen siblings did not. Measured on p300's 583-residue terminal region at
+    twenty models: the two most compact draws (27.9 and 72.1 A against a mean of 186 A) received
+    widths of 0.56 and 1.44 A and planar orders of 0.474 and 0.132, against 0.011-0.082 for the
+    other eighteen -- a correlation between width and planar order of -0.96. A region does not
+    become short because one of its conformers drew a compact target.
+    """
+    values = np.asarray(target, dtype=np.float64)
+    reach = max_reach(span) if span >= 1 else 0.0
+    # A zero reach means there is no span to steer along; the floor is the whole answer.
+    slack = 1.0 - np.clip(values / reach, 0.0, 1.0) if reach > 0.0 else np.zeros_like(values)
+    wanted = STEERING_SLACK_FRACTION * _MAX_ADVANCE_PER_BOND * slack
+    ceiling = STEERING_WIDTH_TARGET_CAP * float(mean_target)
+    width: np.ndarray = np.maximum(np.minimum(wanted, ceiling), TARGET_STEERING_WIDTH)
+    return width
 
 
 def _headroom_width(gap: float) -> float:

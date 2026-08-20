@@ -19,11 +19,13 @@ applied silently.
 from __future__ import annotations
 
 import gzip
+from collections.abc import Sequence
 from pathlib import Path
 
 from ..exceptions import StructureFileError, UnsupportedFormatError
 from ..structure import Structure
 from .cif import parse_cif_text, read_cif, read_unobserved_residues
+from .cif_write import structure_to_cif_text, write_cif
 from .fetch import (
     AlphaFoldModel,
     default_cache_dir,
@@ -51,8 +53,11 @@ __all__ = [
     "read_structure",
     "read_unobserved_residues",
     "resolve_uniprot_accession",
+    "structure_to_cif_text",
     "structure_to_pdb_lines",
+    "write_cif",
     "write_pdb",
+    "write_structure",
 ]
 
 #: Extensions handled by the PDB reader, lowercased, with any ``.gz`` already stripped.
@@ -158,3 +163,49 @@ def read_structure(
             f"{path} is neither PDB nor mmCIF, as far as DODO can tell. Reading it as PDB "
             f"failed with: {exc}"
         ) from exc
+
+
+def write_structure(
+    structure: Structure | Sequence[Structure],
+    path: str | Path,
+    *,
+    conect: bool = True,
+    models_as_frames: bool = True,
+    annotate_regions: bool = False,
+    ca_only: bool = False,
+    box: tuple[float, float, float] | None = None,
+    seqres: bool = False,
+) -> None:
+    """Write a structure, choosing the format from the output path's extension.
+
+    The write-side counterpart to :func:`read_structure`: ``.cif``/``.mmcif`` routes to
+    :func:`~dodo.io.write_cif` and everything else to :func:`~dodo.io.write_pdb`, so a
+    caller that has a destination path does not have to know which writer it wants. This
+    is what makes ``dodo ... -o out.cif`` produce real mmCIF rather than PDB records in a
+    ``.cif``-named file.
+
+    The two writers take the same keyword arguments and this function forwards them
+    unchanged; see :func:`~dodo.io.write_pdb` and :func:`~dodo.io.write_cif` for what each
+    means and for how ``models_as_frames`` differs between the formats.
+
+    Parameters
+    ----------
+    structure
+        A single :class:`~dodo.structure.Structure` or a sequence of them.
+    path
+        Destination file. The extension selects the format.
+    conect, models_as_frames, annotate_regions, ca_only, box, seqres
+        Forwarded to the chosen writer.
+    """
+    suffix = Path(path).suffix.lower()
+    writer = write_cif if suffix in _CIF_SUFFIXES else write_pdb
+    writer(
+        structure,
+        path,
+        conect=conect,
+        models_as_frames=models_as_frames,
+        annotate_regions=annotate_regions,
+        ca_only=ca_only,
+        box=box,
+        seqres=seqres,
+    )

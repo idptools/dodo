@@ -112,7 +112,57 @@ class TestPython39IsExcluded:
         assert "from itertools import pairwise" in text, "pairwise is a 3.10+ feature"
 
 
+#: Dependencies declared as a direct reference (``name @ url``) rather than a version range.
+#:
+#: These are exempt from the floor rules below, because a direct reference names a repository
+#: rather than a version and there is no floor to declare or to install. Listing them here
+#: rather than pattern-matching them away is deliberate: a new one has to be added on purpose,
+#: which is the moment to notice that it also blocks publishing to PyPI.
+#:
+#: ``sparrow`` is not on PyPI *yet* -- only ``git+https://github.com/idptools/sparrow.git`` --
+#: so this is not a convenience, it is the only way to declare it. It requires
+#: ``tool.hatch.metadata.allow-direct-references``; without that every build fails outright.
+#: DODO therefore installs from GitHub for now. When sparrow is published, this set becomes
+#: empty and the hatch flag can go with it.
+KNOWN_DIRECT_REFERENCES = frozenset({"sparrow"})
+
+
+def _requirement_name(requirement: str) -> str:
+    """Return the distribution name from a requirement, direct reference or not."""
+    return re.split(r"[><=!\[@]", requirement, maxsplit=1)[0].strip()
+
+
 class TestDependencyFloorsAreDeclaredAsRanges:
+    def test_direct_references_are_the_ones_we_know_about(self, metadata: dict) -> None:
+        """A direct reference cannot carry a floor, so it must be an acknowledged exception.
+
+        It also cannot be uploaded to PyPI: the index rejects metadata containing one. So a new
+        direct reference silently converts the distribution from publishable to
+        checkout-only, and that should not happen by accident.
+        """
+        found = {_requirement_name(r) for r in metadata["project"]["dependencies"] if "@" in r}
+        assert found == KNOWN_DIRECT_REFERENCES, (
+            f"direct references changed: {sorted(found)} against the expected "
+            f"{sorted(KNOWN_DIRECT_REFERENCES)}. Adding one blocks publishing to PyPI; "
+            f"removing one is good news and should update this set."
+        )
+
+    def test_build_config_permits_those_direct_references(self, metadata: dict) -> None:
+        """Without this hatchling flag the direct reference makes every build fail.
+
+        Not a style check. `pip install -e .` dies in "Preparing editable metadata" with
+        "Dependency #6 of field `project.dependencies` cannot be a direct reference unless
+        field `tool.hatch.metadata.allow-direct-references` is set to `true`", and so does
+        every wheel build, including the ones the packaging tests do.
+        """
+        if not KNOWN_DIRECT_REFERENCES:
+            pytest.skip("no direct references to permit")
+        allowed = metadata.get("tool", {}).get("hatch", {}).get("metadata", {})
+        assert allowed.get("allow-direct-references") is True, (
+            "project.dependencies contains a direct reference but "
+            "tool.hatch.metadata.allow-direct-references is not true, so no build can succeed"
+        )
+
     def test_runtime_dependencies_use_lower_bounds_not_pins(self, metadata: dict) -> None:
         """Users must be able to co-install DODO with other packages.
 
@@ -121,6 +171,8 @@ class TestDependencyFloorsAreDeclaredAsRanges:
         job in CI, which installs the declared minimums rather than whatever pip resolves.
         """
         for requirement in metadata["project"]["dependencies"]:
+            if _requirement_name(requirement) in KNOWN_DIRECT_REFERENCES:
+                continue
             assert ">=" in requirement, f"{requirement!r} should declare a lower bound"
             assert "==" not in requirement, f"{requirement!r} pins an exact version"
 
@@ -129,7 +181,9 @@ class TestDependencyFloorsAreDeclaredAsRanges:
         text = CI_WORKFLOW.read_text()
         assert "floors:" in text, "no CI job tests the declared dependency floors"
         for requirement in metadata["project"]["dependencies"]:
-            name = re.split(r"[><=!\[]", requirement, maxsplit=1)[0].strip()
+            name = _requirement_name(requirement)
+            if name in KNOWN_DIRECT_REFERENCES:
+                continue
             floor = requirement.split(">=", 1)[1].strip()
             major_minor = ".".join(floor.split(".")[:2])
             assert f'"{name}=={major_minor}.*"' in text, (

@@ -32,7 +32,15 @@ nice for visualization.
 
 ## Installation
 
-Requires Python 3.10 or newer.
+Requires Python 3.10 or newer. It is recommended to make an environment for DODO. For example,
+if you use conda...
+
+```bash
+conda create --name dodo python=3.11
+conda activate dodo
+```
+
+Then you can install DODO in the environment!
 
 ```bash
 pip install git+https://github.com/idptools/dodo.git

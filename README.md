@@ -489,14 +489,14 @@ records still declare the chain explicitly rather than leaving it to each viewer
    them; treating them as obstacles would make every valid attachment register as a clash and there 
    would be nothing to build. There is no version of the algorithm without this.
 
-## Improvements over DODO V1
+## Other improvements over DODO V1
 
-1. **~~Unusual-bond warnings in VMD.~~** Addressed: correct CONECT records, correct atom-name
+1. **Unusual-bond warnings in VMD.** Addressed: correct CONECT records, correct atom-name
    columns, and the element column written. (v1 right-justified atom names from column 13 and
    omitted the element, with the result that MDTraj read its CA-only output as 912 *calcium*
    atoms.)
 
-2. **~~Some visualization modes don't work in VMD; tube and trace fail.~~** Should be addressed,
+2. **Some visualization modes don't work in VMD; tube and trace fail.** Should be addressed,
    but please report if you still see it.
 
 

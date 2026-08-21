@@ -461,14 +461,14 @@ records still declare the chain explicitly rather than leaving it to each viewer
 
 ## Current limitations
 
-1. **~~Conformations aren't scientifically useful.~~**
+1. **Conformations aren't scientifically useful.**
    They are improved over V1, which used a random walk. 
    Now, the walk is now a self-avoiding, angle-constrained growth walk that hits
    the predicted dimensions and produces a spread of distinct conformers across models — but it is
    a geometric sampler, not a force field, so that spread is not a thermodynamic ensemble and is
    not a substitute for a simulation.
 
-2. **~~Rebuilt IDRs do not contain side chains.~~** 
+2. **Rebuilt IDRs do not contain side chains.** 
    However, rebuilt IDRs **do now contain the entire backbone!** This is a major improvement over V1.
    N, CA, C, O backbone by default, and `--no-backbone` returns the alpha-carbon-only output if you
    want it. Note the backbone-carbon-only limitation does NOT apply to

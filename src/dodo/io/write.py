@@ -975,14 +975,7 @@ def _require_matching_topology(frames: Sequence[Structure]) -> None:
                 f"{frame.n_atoms} atoms but frame 1 has {reference.n_atoms}. Write them "
                 f"separately with models_as_frames=False."
             )
-        for label, left, right in (
-            ("atom names", reference.atom_name, frame.atom_name),
-            ("residue names", reference.residue_name, frame.residue_name),
-            ("residue numbers", reference.residue_number, frame.residue_number),
-            ("insertion codes", reference.insertion_code, frame.insertion_code),
-            ("residue indices", reference.residue_index, frame.residue_index),
-            ("chain indices", reference.chain_index, frame.chain_index),
-        ):
+        for label, left, right in _topology_fields(reference, frame):
             if not np.array_equal(left, right):
                 raise StructureFileError(
                     f"Cannot write these structures as frames of one file: frame "
@@ -996,6 +989,34 @@ def _require_matching_topology(frames: Sequence[Structure]) -> None:
                 f"Cannot write these structures as frames of one file: frame {index} "
                 f"disagrees with frame 1 on chain ids."
             )
+
+
+def _topology_fields(
+    reference: Structure, frame: Structure
+) -> tuple[tuple[str, np.ndarray, np.ndarray], ...]:
+    """List the per-atom record arrays two frames of one file must agree on, with labels."""
+    return (
+        ("atom names", reference.atom_name, frame.atom_name),
+        ("residue names", reference.residue_name, frame.residue_name),
+        ("residue numbers", reference.residue_number, frame.residue_number),
+        ("insertion codes", reference.insertion_code, frame.insertion_code),
+        ("residue indices", reference.residue_index, frame.residue_index),
+        ("chain indices", reference.chain_index, frame.chain_index),
+    )
+
+
+def matching_topology(first: Structure, second: Structure) -> bool:
+    """Return True if the two structures can be written as frames of one multi-model file.
+
+    Exactly the comparison :func:`_require_matching_topology` enforces at write time -- one
+    shared implementation (:func:`_topology_fields`), so a caller deciding WHAT to write
+    cannot drift from what the writers accept.
+    """
+    if first.n_atoms != second.n_atoms:
+        return False
+    if any(not np.array_equal(left, right) for _, left, right in _topology_fields(first, second)):
+        return False
+    return [chain.chain_id for chain in first.chains] == [chain.chain_id for chain in second.chains]
 
 
 def _write_lines(path: Path, lines: list[str]) -> None:

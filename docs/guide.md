@@ -333,43 +333,271 @@ from dodo.construct import target_dimensions
 
 structure = read_structure("model.cif")          # PDB or mmCIF, gzip fine
 assignment = assign_regions(structure, strategy=Strategy.PLDDT)[0]
-print(assignment.describe())                     # chain A: IDR 1-31; FD 32-290; ...
+print(assignment.describe())                     # one line per chain, as `dodo regions` prints
 print(assignment.score, assignment.threshold)    # the evidence behind every boundary
 
 target = target_dimensions("GSGSGSGS" * 18, mode="compact")
 print(target)   # 55.9 A (compact, 0.7x of 79.8 A) via albatross over 144 residues
 ```
 
-### Overriding the regions
+### Reading the notes
 
-If you disagree with a boundary, say so, and DODO will build exactly what you asked for:
+`assign_regions` emits a note whenever it made a decision the region line alone cannot show. On the
+command line these go to **stderr**, indented under the chain they belong to, so
+`dodo regions x.pdb 2>/dev/null` gives clean region lines and `2>&1` keeps the reasoning. In Python
+they are `assignment.notes`. There are four:
+
+| Note | What happened | Consequence |
+|---|---|---|
+| `N short stretch(es) (… residues) scored as folded but came in under the 25-residue minimum for a folded domain` | A run scored folded but was too short to be one | It is treated as disordered, so it **is** rebuilt |
+| `residues A-B (n residue(s)) scored as disordered but are shorter than the 4-residue minimum, so they were absorbed into the adjacent folded domain` | A disordered stretch too short to be worth a random walk | It keeps its input coordinates and is **not** rebuilt |
+| `strategy auto-selected as contact -- the input has no side chains, so the density threshold does not apply` | `auto` declined `density` because the input has no side chains at all | The call is made on a metric DODO was not tuned on |
+| `no folded domain found; the whole chain is treated as disordered` | Nothing cleared the threshold anywhere | The entire chain is rebuilt |
+
+The two minimums are the tuned constants `min_folded_length` (25) and `min_idr_length` (4). Neither
+is a command-line flag, but `assign_regions` takes both, alongside `threshold`, `min_loop_length`,
+`max_internal_gap` and `min_seed_run`:
 
 ```python
 import dodo
 
 structure = dodo.read_structure("model.pdb")
-dodo.assign_regions_from_spec(structure, {"A": [("idr", 1, 40), ("folded", 41, 912)]})
-report = dodo.rebuild(structure, strategy="preset")
+print(dodo.assign_regions(structure)[0].describe())
+# chain A: IDR 1-282; FD 283-432 (loops: 383-393); IDR 433-473; FD 474-912
+
+structure = dodo.read_structure("model.pdb")
+print(dodo.assign_regions(structure, min_folded_length=200)[0].describe())
+# chain A: IDR 1-473; FD 474-912
 ```
 
-`strategy="preset"` means *identify nothing, build what is already there*. Bounds are **1-based
-inclusive**, matching what you read off a PDB file, and the regions must **tile the whole chain** —
-every residue belongs to exactly one. Overlaps, gaps and out-of-range bounds are rejected with an
-explanation naming the offending residue.
+DNMT3A's 150-residue folded domain does not clear a 200-residue minimum, so it is reclassified as
+disordered and folded into the leading IDR — and will therefore be rebuilt. That is the mechanism
+behind the first note in the table, seen from the other side. Moving a minimum steps outside the
+defaults DODO was validated on, which is a different thing from fixing a boundary you disagree with;
+for that, [override the region](#overriding-the-regions) directly.
 
-You can equally start from DODO's own answer and adjust it:
+The last two notes are worth treating as warnings rather than information. A whole chain called
+disordered is a fair answer for a backbone-only fragment, but it is also what a misapplied strategy
+looks like:
+
+```bash
+dodo regions tests/data/structures/idr_frame_backbone.pdb
+# chain A: IDR 1-60
+#   note: strategy auto-selected as contact -- the input has no side chains, so the density threshold does not apply
+#   note: no folded domain found; the whole chain is treated as disordered
+```
+
+Asking for `-s density` on that same file prints the same region line and *only* the second note.
+The auto-selection note is the one thing `auto` tells you that an explicit `-s` cannot, which is a
+reason to leave the default alone.
+
+### Residue numbering: three surfaces, two axes
+
+DODO is 0-based positional internally and never uses PDB numbering as an index. Two of the three
+places that number residues for a human convert to the **file's own numbering**; the third does not,
+and the difference is invisible on the structures where they agree.
+
+| Surface | Axis |
+|---|---|
+| `RegionAssignment.describe()`, and so `dodo regions` | the file's `residue_number`, with insertion code |
+| `dodo regions --scores` labels, and the absorption note | the same |
+| `assign_regions_from_spec` bounds | 1-based counted from the start of that chain |
+
+They coincide exactly when a chain is numbered contiguously from 1, which is most AlphaFold models
+and almost no crystal structures. `Structure.residue_id` is the converter in either direction:
 
 ```python
 import dodo
+
+structure = dodo.read_structure("model.pdb")
+domain = dodo.assign_regions(structure)[0].domains[1]
+print(structure.residue_id(domain.span.start))   # what describe() prints for this boundary
+print(domain.span.start - structure.chains[0].span.start + 1)  # what a spec would take
+```
+
+Three cases make this more than pedantry, all of them real in `tests/data/structures/6kn7.cif`: a
+chain numbered from `-1` (an expression tag), a chain whose numbering is not contiguous (138
+residues spanning 87 to 272), and residues distinguished only by insertion code. A range is
+therefore **endpoints, not a count** — use `len(domain)` for the number of residues — and on a
+negative start the range reads as `-1-29`, which is the honest rendering of an unhelpful numbering.
+
+### What an assignment carries
+
+`assign_regions` returns one `RegionAssignment` per chain. On `model.pdb` (DNMT3A, 912 residues):
+
+```python
+import dodo
+
+structure = dodo.read_structure("model.pdb")
+assignment = dodo.assign_regions(structure)[0]
+
+print(assignment.chain_id)          # 'A'
+print(assignment.strategy.value)    # 'density' -- what auto actually resolved to
+print(assignment.threshold)         # 480.0, the cutoff applied to score
+print(assignment.n_folded, assignment.n_idrs)   # 2 2
+print(assignment.fully_disordered)  # False
+print(assignment.score.shape)       # (912,) -- per residue, chain-length
+print(int(assignment.folded_mask.sum()))        # 485
+print(assignment.notes)             # ()
+```
+
+Two of those mislead if taken at face value. `threshold` is only comparable within one strategy —
+density thresholds at 480, contact at 10, pLDDT at 70, because they are three different scores.
+And `folded_mask` is the **raw** thresholding result, before runs are merged and short ones
+dropped: 485 residues here, against 589 actually covered by the final folded domains. For the
+regions themselves, read `assignment.domains`, not the mask.
+
+### Overriding the regions
+
+DODO's metrics are a convenience, not a requirement. When you already know where the domains are,
+state them and DODO will build exactly that, running no metric at all. Give each chain a list of
+`(kind, start, stop)` regions and rebuild with `strategy="preset"` — *identify nothing, build what
+is already there*:
+
+```python
+import dodo
+
+structure = dodo.read_structure("model.pdb")
+dodo.assign_regions_from_spec(structure, {
+    "A": [
+        ("idr",     1, 282),      # rebuilt from scratch
+        ("folded", 283, 912),     # moved as a rigid body, never regenerated
+    ],
+})
+report = dodo.rebuild(structure, strategy="preset", seed=0)
+dodo.write_pdb(report.models, "my_regions.pdb")
+```
+
+#### The bounds
+
+Inclusive residue numbers, **exactly as the input file numbers them**, which is the same numbering
+`dodo regions` and `describe()` print — so a boundary copies straight from one into the other. See
+[residue numbering](#residue-numbering-three-surfaces-two-axes) for why that is worth stating.
+A residue distinguished only by an insertion code is named as a string:
+
+```python
+import dodo
+
+structure = dodo.read_structure("model.pdb")
+print(structure.residue_id(0), structure.residue_id(structure.n_residues - 1))
+```
+
+Bounds used to be a count from the start of the chain. On a chain numbered from 20, or on any chain
+after the first, that selected the wrong residues silently — no error, and nothing in the output to
+reveal it. If you have a script written against the old behaviour, a chain numbered contiguously
+from 1 is unaffected; any other chain needs its bounds rewritten as real residue numbers.
+
+#### Loops inside a folded domain
+
+A folded domain's atoms are never regenerated, so a stretch inside it that you *do* want rebuilt has
+to be declared as a loop. That is an optional fourth element:
+
+```python
+import dodo
+
+structure = dodo.read_structure("model.pdb")
+assignment = dodo.assign_regions_from_spec(structure, {
+    "A": [("idr", 1, 282), ("folded", 283, 912, [(433, 473)])],
+})[0]
+print(assignment.describe())
+# chain A: IDR 1-282; FD 283-912 (loops: 433-473)
+```
+
+That spec says *283-912 is one domain, and 433-473 is a loop within it* — as against DODO's own
+reading of the same model, which is two folded domains with a linker between them. The distinction
+matters to the builder: a linker's length sets how far apart two domains are placed, while a loop is
+rebuilt in place between two fixed anchors and moves nothing.
+
+A loop must lie **strictly inside** its domain, because it is rebuilt between an anchor residue on
+each side. A stretch touching either boundary is a tail; declare it as its own `idr` region. Loops
+may not overlap each other, and only a `folded` region may have them — an IDR is rebuilt in its
+entirety, so a loop inside one is not a distinct region.
+
+Earlier versions had no syntax for this, so a `describe()` → spec → rebuild round trip quietly
+turned a loop into ordinary folded interior and never rebuilt it.
+
+#### Several chains, and overriding only some of them
+
+A spec takes one entry per chain, each in **that chain's own numbering** — two identical chains of a
+homodimer both read `1` to `375`, not `1-375` and `376-750`. Chains you leave out keep whatever
+regions they already have, loops included, so the usual pattern is to let the metric do the bulk and
+replace only the chain you disagree with:
+
+```python
+import dodo
+
+structure = dodo.read_structure("model.pdb")
+dodo.assign_regions(structure)                    # every chain, by metric
+dodo.assign_regions_from_spec(structure, {        # then replace just this one
+    "A": [("idr", 1, 100), ("folded", 101, 912)],
+})
+report = dodo.rebuild(structure, strategy="preset", seed=0)
+```
+
+`strategy="preset"` then builds whatever is attached to each chain, however it got there — so a
+run can mix DODO's own boundaries on most chains with your own on one.
+
+#### What gets rejected
+
+Every failure raises `InvalidRegionError` naming the residues you typed, before any building starts:
+
+| Spec | Message |
+|---|---|
+| a gap between regions | `Chain 'A' has unassigned residues 283-299.` |
+| regions that overlap | `Chain 'A' has overlapping domains: 1-300 and 250-912.` |
+| not reaching a chain end | `Chain 'A' domains end at residue 900 but the chain ends at 912.` |
+| a residue number the chain lacks | `Chain 'A' has no residue '9999' (start bound). …` |
+| `stop` before `start` | `Region folded 432-283 of chain 'A' ends before it starts.` |
+| a loop touching its domain edge | `Loop 283-393 must lie strictly inside its folded domain 283-432 …` |
+| a loop on an `idr` | `Region idr 1-282 of chain 'A' declares loops, but only a folded domain can have them …` |
+| a 2- or 5-element entry | `Region entry ('folded', 1) for chain 'A' has 2 elements. Use (kind, start, stop), or …` |
+
+The pre-rewrite override path accepted the first four of these silently and failed much later with
+something unrelated.
+
+#### What a preset assignment does and does not carry
+
+```python
+import dodo
+import numpy as np
+
+structure = dodo.read_structure("model.pdb")
+assignment = dodo.assign_regions_from_spec(structure, {
+    "A": [("idr", 1, 282), ("folded", 283, 912)],
+})[0]
+
+print(assignment.strategy.value)                 # 'preset' -- no metric was run
+print(np.isnan(assignment.threshold))            # True: nothing was thresholded
+print(bool(np.isnan(assignment.score).all()))    # True: nothing was scored
+print(int(assignment.folded_mask.sum()))         # 630 -- what you declared folded
+```
+
+`score` and `threshold` are `nan` rather than zero on purpose: a zero would read as a real
+measurement. `folded_mask`, by contrast, is a fact about your own spec and is filled in.
+
+If you want DODO's evidence for the boundaries you *didn't* dispute, start from its answer and edit
+the one you did. A `Span` is frozen, so replace it rather than mutating it:
+
+```python
+import dodo
+from dodo.structure import Span
 
 structure = dodo.read_structure("model.pdb")
 dodo.assign_regions(structure)                       # DODO's call, with its evidence
-structure.chains[0].domains[1].span                  # inspect, then edit as you like
-report = dodo.rebuild(structure, strategy="preset")   # build your version
+domain = structure.chains[0].domains[1]
+print(domain.span)                                   # inspect
+domain.span = Span(300, 400)                         # frozen: replace, don't mutate
+report = dodo.rebuild(structure, strategy="preset")  # build your version
 ```
 
-This replaces 1.x's `regions_dict=`, which took a separate description of the structure alongside
-the real one, so the two could disagree.
+#### Python only
+
+`strategy="preset"` builds region objects attached to the structure, and there is no command-line
+syntax for expressing them, so `dodo rebuild -s preset` is rejected — the CLI offers `auto`,
+`density`, `contact` and `plddt`. Manual specification is a Python API.
+
+This replaces 1.x's `regions_dict=`, which took a separate stringly-typed description of the
+structure alongside the real one, so the two could disagree.
 
 ### The structure object
 

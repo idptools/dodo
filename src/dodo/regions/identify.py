@@ -58,8 +58,10 @@ where the bugs lived. Improving the metric is what exposes them.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 import numpy as np
 
@@ -171,20 +173,25 @@ class RegionAssignment:
         return self.n_folded == 0
 
     def describe(self) -> str:
-        """Return a one-line human-readable summary, 1-based for display.
+        """Return a one-line human-readable summary in the input file's own numbering.
 
-        Output is 1-based because that is what users see in PDB files and papers, while
-        everything internal is 0-based positional. That conversion happens here and
-        nowhere else.
+        Every range names its first and last residue by ``residue_number`` (plus
+        insertion code), so the output can be checked against the input structure and
+        typed straight into a viewer. Everything internal is 0-based positional; that
+        conversion happens here and nowhere else.
+
+        Endpoints, not counts. A chain whose author numbering has gaps, restarts, or
+        runs negative is reported honestly as first-to-last, so the residues between
+        them are not guaranteed to be present and the span length is not
+        ``stop - start + 1``. Use ``len(domain)`` for a count.
         """
         parts = []
         for domain in self.domains:
             label = "FD" if domain.kind is DomainKind.FOLDED else "IDR"
-            start = domain.span.start + 1
-            stop = domain.span.stop
-            piece = f"{label} {start}-{stop}"
+            rid = domain.structure.residue_id
+            piece = f"{label} {rid(domain.span.start)}-{rid(domain.span.stop - 1)}"
             if domain.loops:
-                loops = ", ".join(f"{loop.start + 1}-{loop.stop}" for loop in domain.loops)
+                loops = ", ".join(f"{rid(lp.start)}-{rid(lp.stop - 1)}" for lp in domain.loops)
                 piece += f" (loops: {loops})"
             parts.append(piece)
         return f"chain {self.chain_id}: " + "; ".join(parts)
@@ -352,6 +359,7 @@ def _absorb_short_gaps(
     chain_start: int,
     chain_stop: int,
     min_idr_length: int,
+    label: Callable[[int], str],
 ) -> tuple[list[tuple[int, int]], list[str]]:
     """Extend folded blocks over disordered gaps too short to rebuild.
 
@@ -366,6 +374,11 @@ def _absorb_short_gaps(
 
     Returns the adjusted blocks and a note for each absorbed gap, since silently reclassifying
     residues is exactly the kind of invisible decision this package tries not to make.
+
+    ``label`` renders a residue index for those notes. Blocks are structure-wide indices, so a
+    note that printed them raw would name residues that appear nowhere in the user's file;
+    passing :meth:`Structure.residue_id` keeps the notes on the same axis as
+    :meth:`RegionAssignment.describe`.
     """
     if not blocks:
         return [], []
@@ -374,8 +387,8 @@ def _absorb_short_gaps(
 
     def note(start: int, stop: int, where: str) -> None:
         notes.append(
-            f"residues {start + 1}-{stop} ({stop - start} residue(s)) scored as disordered "
-            f"but are shorter than the {min_idr_length}-residue minimum, so they were "
+            f"residues {label(start)}-{label(stop - 1)} ({stop - start} residue(s)) scored as "
+            f"disordered but are shorter than the {min_idr_length}-residue minimum, so they were "
             f"absorbed into the adjacent folded domain ({where}) and keep their original "
             f"coordinates"
         )
@@ -606,6 +619,7 @@ def assign_regions(
             chain_start=chain.span.start,
             chain_stop=chain.span.stop,
             min_idr_length=min_idr_length,
+            label=structure.residue_id,
         )
         notes.extend(absorb_notes)
 
@@ -640,9 +654,126 @@ def assign_regions(
     return assignments
 
 
+def _residue_index_lookup(structure: Structure, chain: Chain) -> dict[str, int]:
+    """Map every residue label in a chain to its positional index.
+
+    Keyed on :meth:`Structure.residue_id`, so ``"142"`` and ``"142A"`` are distinct keys and
+    a chain numbered from -1, non-contiguously, or not from 1 at all needs no special case.
+    """
+    return {
+        structure.residue_id(index): index for index in range(chain.span.start, chain.span.stop)
+    }
+
+
+def _resolve_residue(
+    structure: Structure,
+    chain: Chain,
+    lookup: dict[str, int],
+    value: object,
+    *,
+    context: str,
+) -> int:
+    """Resolve one caller-supplied residue number to a positional index."""
+    key = str(value).strip()
+    if key in lookup:
+        return lookup[key]
+    first = structure.residue_id(chain.span.start)
+    last = structure.residue_id(chain.span.stop - 1)
+    raise InvalidRegionError(
+        f"Chain {chain.chain_id!r} has no residue {key!r} ({context}). Bounds are residue "
+        f"numbers as the input file numbers them -- the same numbering `dodo regions` prints -- "
+        f"and this chain's {len(chain.span)} residues run from {first} to {last}, not "
+        f"necessarily contiguously. Write an insertion code into the value as a string, "
+        f'e.g. "10A".'
+    )
+
+
+def _unpack_spec_entry(
+    chain_id: str, entry: Sequence[Any]
+) -> tuple[str, Any, Any, Sequence[Sequence[Any]]]:
+    """Split a spec entry into kind, bounds and loops, accepting the 3- and 4-element forms."""
+    if len(entry) == 3:
+        kind_name, start_id, stop_id = entry
+        return kind_name, start_id, stop_id, ()
+    if len(entry) == 4:
+        kind_name, start_id, stop_id, loops = entry
+        return kind_name, start_id, stop_id, tuple(loops)
+    raise InvalidRegionError(
+        f"Region entry {entry!r} for chain {chain_id!r} has {len(entry)} elements. Use "
+        f"(kind, start, stop), or (kind, start, stop, [(loop_start, loop_stop), ...]) to "
+        f"declare rebuildable loops inside a folded domain."
+    )
+
+
+def _spec_loops(
+    structure: Structure,
+    chain: Chain,
+    lookup: dict[str, int],
+    *,
+    kind: DomainKind,
+    kind_name: str,
+    start: int,
+    stop: int,
+    loop_bounds: Sequence[Sequence[Any]],
+) -> tuple[Span, ...]:
+    """Resolve a folded domain's declared loops, with the same contract the detector produces.
+
+    A loop must lie **strictly** inside its domain, because it is rebuilt between two fixed
+    anchor residues and so needs one on each side. A run touching either boundary is a tail,
+    which the IDR path already handles.
+    """
+    if not loop_bounds:
+        return ()
+    if kind is not DomainKind.FOLDED:
+        raise InvalidRegionError(
+            f"Region {kind_name} {structure.residue_id(start)}-{structure.residue_id(stop - 1)} "
+            f"of chain {chain.chain_id!r} declares loops, but only a folded domain can have "
+            f"them: an IDR is rebuilt in its entirety, so a loop inside it is not a distinct "
+            f"region."
+        )
+
+    loops: list[Span] = []
+    for bounds in loop_bounds:
+        if len(bounds) != 2:
+            raise InvalidRegionError(
+                f"Loop {bounds!r} in chain {chain.chain_id!r} must be a (start, stop) pair."
+            )
+        loop_start = _resolve_residue(
+            structure, chain, lookup, bounds[0], context="loop start bound"
+        )
+        loop_last = _resolve_residue(structure, chain, lookup, bounds[1], context="loop stop bound")
+        if loop_last < loop_start:
+            raise InvalidRegionError(
+                f"Loop {bounds[0]}-{bounds[1]} of chain {chain.chain_id!r} ends before it "
+                f"starts."
+            )
+        if loop_start <= start or loop_last >= stop - 1:
+            raise InvalidRegionError(
+                f"Loop {bounds[0]}-{bounds[1]} must lie strictly inside its folded domain "
+                f"{structure.residue_id(start)}-{structure.residue_id(stop - 1)} of chain "
+                f"{chain.chain_id!r}: a loop is rebuilt between two fixed residues, so it needs "
+                f"one on each side. A stretch reaching a domain boundary is a tail -- declare it "
+                f"as a separate idr region instead."
+            )
+        loops.append(
+            Span(loop_start, loop_last + 1, n_anchor=loop_start - 1, c_anchor=loop_last + 1)
+        )
+
+    loops.sort(key=lambda span: span.start)
+    for previous, nxt in zip(loops, loops[1:], strict=False):
+        if previous.stop > nxt.start:
+            raise InvalidRegionError(
+                f"Loops {structure.residue_id(previous.start)}-"
+                f"{structure.residue_id(previous.stop - 1)} and "
+                f"{structure.residue_id(nxt.start)}-{structure.residue_id(nxt.stop - 1)} of "
+                f"chain {chain.chain_id!r} overlap."
+            )
+    return tuple(loops)
+
+
 def assign_regions_from_spec(
     structure: Structure,
-    spec: dict[str, list[tuple[str, int, int]]],
+    spec: dict[str, Sequence[Sequence[Any]]],
 ) -> list[RegionAssignment]:
     """Assign regions from an explicit caller-supplied specification.
 
@@ -656,21 +787,37 @@ def assign_regions_from_spec(
         The structure to annotate.
     spec
         Chain id to a list of ``(kind, start, stop)`` tuples, where ``kind`` is ``"folded"``
-        or ``"idr"`` and the bounds are **1-based inclusive** residue positions, matching
-        what a user reads off a PDB file or a paper. They are converted to 0-based half-open
-        internally.
+        or ``"idr"``. A folded domain may declare rebuildable loops with an optional fourth
+        element::
+
+            {"A": [("idr", 1, 282),
+                   ("folded", 283, 432, [(383, 393)]),
+                   ("idr", 433, 473),
+                   ("folded", 474, 912)]}
+
+        Bounds are **inclusive residue numbers as the input file numbers them** -- the same
+        numbering :meth:`RegionAssignment.describe` and ``dodo regions`` print, so a boundary
+        can be copied from one straight into the other. They are converted to 0-based
+        half-open positional spans internally. Write an insertion code into the value as a
+        string, ``"10A"``.
+
+        This used to be a count from the start of the chain, which silently selected the wrong
+        residues on any chain not numbered contiguously from 1 -- which is to say on every
+        crystal structure, and on every chain after the first.
 
     Returns
     -------
     list[RegionAssignment]
-        One per specified chain.
+        One per specified chain, reporting ``strategy`` as :attr:`Strategy.PRESET` with a NaN
+        score and threshold: nothing was measured, and a zero would read as a measurement.
 
     Raises
     ------
     InvalidRegionError
-        If a chain id is unknown, a kind is unrecognized, bounds are out of range, or the
-        regions do not tile the chain without gaps or overlaps. All four were accepted
-        silently by the pre-rewrite code and surfaced much later as unrelated errors.
+        If a chain id is unknown, a kind is unrecognized, a bound names a residue the chain
+        does not have, a loop is not strictly inside its folded domain, or the regions do not
+        tile the chain without gaps or overlaps. All of these were accepted silently by the
+        pre-rewrite code and surfaced much later as unrelated errors.
     """
     by_id = {chain.chain_id: chain for chain in structure.chains}
     assignments: list[RegionAssignment] = []
@@ -682,22 +829,33 @@ def assign_regions_from_spec(
                 f"Chain {chain_id!r} is not in this structure. Available: {sorted(by_id)}."
             )
 
-        domains: list[Domain] = []
-        for kind_name, start_1based, stop_1based in sorted(entries, key=lambda e: e[1]):
+        lookup = _residue_index_lookup(structure, chain)
+        resolved: list[tuple[int, int, DomainKind, str, Sequence[Sequence[Any]]]] = []
+
+        for entry in entries:
+            kind_name, start_id, stop_id, loop_bounds = _unpack_spec_entry(chain_id, entry)
             try:
-                kind = DomainKind(kind_name.lower())
+                kind = DomainKind(str(kind_name).lower())
             except ValueError:
                 raise InvalidRegionError(
                     f"Unknown region kind {kind_name!r}. Use 'folded' or 'idr'."
                 ) from None
-            # 1-based inclusive -> 0-based half-open, offset into the structure.
-            start = chain.span.start + start_1based - 1
-            stop = chain.span.start + stop_1based
-            if start < chain.span.start or stop > chain.span.stop:
+
+            start = _resolve_residue(structure, chain, lookup, start_id, context="start bound")
+            last = _resolve_residue(structure, chain, lookup, stop_id, context="stop bound")
+            if last < start:
                 raise InvalidRegionError(
-                    f"Region {kind_name} {start_1based}-{stop_1based} lies outside chain "
-                    f"{chain_id!r}, which has {len(chain)} residues."
+                    f"Region {kind_name} {start_id}-{stop_id} of chain {chain_id!r} ends before "
+                    f"it starts."
                 )
+            resolved.append((start, last + 1, kind, str(kind_name), loop_bounds))
+
+        # Sort on the resolved index, not the caller's value: residue numbers may be strings,
+        # may restart, and may run negative, so their raw order means nothing.
+        resolved.sort(key=lambda item: item[0])
+
+        domains: list[Domain] = []
+        for start, stop, kind, kind_name, loop_bounds in resolved:
             domains.append(
                 Domain(
                     structure=structure,
@@ -708,19 +866,38 @@ def assign_regions_from_spec(
                         c_anchor=stop if stop < chain.span.stop else None,
                     ),
                     kind=kind,
+                    loops=_spec_loops(
+                        structure,
+                        chain,
+                        lookup,
+                        kind=kind,
+                        kind_name=kind_name,
+                        start=start,
+                        stop=stop,
+                        loop_bounds=loop_bounds,
+                    ),
                 )
             )
 
         chain.domains = domains
         chain.validate_domains()
+
+        folded = np.zeros(len(chain.span), dtype=bool)
+        for domain in domains:
+            if domain.kind is DomainKind.FOLDED:
+                offset = domain.span.start - chain.span.start
+                folded[offset : offset + len(domain.span)] = True
+
         assignments.append(
             RegionAssignment(
                 chain_id=chain_id,
                 domains=tuple(domains),
-                strategy=Strategy.CONTACT,
-                score=np.zeros(len(chain), dtype=np.float64),
+                strategy=Strategy.PRESET,
+                # Nothing was scored and no threshold was applied. NaN says that honestly; a
+                # zero would read as a real measurement.
+                score=np.full(len(chain.span), np.nan),
                 threshold=float("nan"),
-                folded_mask=np.zeros(len(chain), dtype=bool),
+                folded_mask=folded,
                 notes=("regions supplied explicitly by the caller; nothing was inferred",),
             )
         )

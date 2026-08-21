@@ -284,13 +284,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             structure = read_structure(args.structure)
             for note in structure.notes:
                 print(f"note: {note}", file=sys.stderr)
+            chain_starts = {chain.chain_id: chain.span.start for chain in structure.chains}
             for assignment in assign_regions(structure, strategy=args.strategy):
                 print(assignment.describe())
                 for note in assignment.notes:
                     print(f"  note: {note}", file=sys.stderr)
                 if args.scores:
+                    # The score profile is the evidence for the boundaries printed above, so it
+                    # is labelled on the same axis: the file's own residue numbering, not a
+                    # positional index. `score` is chain-length, hence the chain offset.
+                    offset = chain_starts[assignment.chain_id]
                     for index, value in enumerate(assignment.score):
-                        print(f"  {index + 1}\t{value:.3f}")
+                        print(f"  {structure.residue_id(offset + index)}\t{value:.3f}")
             return 0
 
         if args.command == "validate":

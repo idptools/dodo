@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -106,6 +106,17 @@ class RegionOutcome:
     #: and 52.16 A, every one of them a correct closure.
     steered: bool = True
     reason: str | None = None
+    #: Whether this region could only be built once its anchors' backbone atoms were exempted
+    #: from clash checking, so it may sit closer to them than the clash distance.
+    relaxed_anchors: bool = False
+    #: Whether this region sits closer than the clash distance to input coordinates that were
+    #: kept, because a region built AFTER it failed and rebuilding this one against it did not
+    #: succeed either. See :func:`_repair_forward_contacts`.
+    #:
+    #: Tracked as its own field rather than inferred from :attr:`reason` because
+    #: :meth:`RebuildReport.summary` has to tell the two apart: filing this under the relaxed
+    #: anchor heading states something false about the one thing the disclosure exists to say.
+    unresolved_contact: bool = False
 
     @property
     def tolerated(self) -> bool:
@@ -157,6 +168,12 @@ class RebuildReport:
     """
 
     models: list[Structure] = field(default_factory=list)
+    #: Build number (1-based) of each entry in :attr:`models`. File MODEL numbers are
+    #: positional (1..len(models)), so whenever this is not simply 1..n_models -- a conformer
+    #: failed in :func:`build_from_sequence`, or a model was dropped to keep the ensemble
+    #: writable (see the note appended when that happens) -- this is the mapping back to the
+    #: numbers used by :attr:`outcomes` and :meth:`summary`.
+    model_numbers: list[int] = field(default_factory=list)
     assignments: list[RegionAssignment] = field(default_factory=list)
     outcomes: list[RegionOutcome] = field(default_factory=list)
     #: Where every folded domain ended up. Folded domains are moved as rigid bodies, never
@@ -189,6 +206,17 @@ class RebuildReport:
         return [o for o in self.failures if not o.tolerated]
 
     @property
+    def unresolved_contacts(self) -> list[RegionOutcome]:
+        """Regions built closer than the clash distance to input coordinates that were kept.
+
+        A region built before one that then failed, which could not be rebuilt clear of it --
+        see :func:`_repair_forward_contacts`. These regions ARE built, so they are absent from
+        :attr:`failures`; they are counted against :attr:`ok` all the same, because the contact
+        is geometry DODO created rather than geometry it inherited.
+        """
+        return [o for o in self.outcomes if o.built and o.unresolved_contact]
+
+    @property
     def tolerated_failures(self) -> list[RegionOutcome]:
         """Regions not rebuilt, but short enough that it does not matter for a figure."""
         return [o for o in self.failures if o.tolerated]
@@ -207,9 +235,13 @@ class RebuildReport:
         input coordinates, but a few residues of AlphaFold geometry do not spoil a figure --
         whereas a long extended region does, which is the whole reason DODO exists.
 
+        A region built closer than the clash distance to input coordinates that were kept
+        also makes this False -- see :attr:`unresolved_contacts`. That contact is impossible
+        geometry DODO itself created, which is exactly what it is answerable for.
+
         This is what the CLI's exit status reflects.
         """
-        return not self.blocking_failures
+        return not self.blocking_failures and not self.unresolved_contacts
 
     def summary(self) -> str:
         """Multi-line human-readable summary."""
@@ -236,12 +268,20 @@ class RebuildReport:
         # against the relaxed anchor exemption may sit closer to its anchors' backbone than the
         # clash distance; that is a deliberate trade against leaving the region unbuilt, but it
         # has to be visible in the summary a CLI user actually reads.
-        relaxed = [o for o in self.outcomes if o.built and o.reason]
+        relaxed = [o for o in self.outcomes if o.built and o.relaxed_anchors]
         if relaxed:
             lines.append(
                 f"  {len(relaxed)} region(s) needed a relaxed anchor exemption to be buildable:"
             )
             lines += [f"    {o}" for o in relaxed]
+        # A created contact is not an exemption and must not be filed as one: this region was
+        # built before a region that then failed, and could not be rebuilt clear of it.
+        if self.unresolved_contacts:
+            lines.append(
+                f"  {len(self.unresolved_contacts)} region(s) DODO built sit closer than the "
+                f"clash distance to input coordinates that were kept:"
+            )
+            lines += [f"    {o}" for o in self.unresolved_contacts]
         # End-to-end accuracy, on the same principle as the relaxed exemption above: the walk
         # accepts a region whose achieved end-to-end is within END_TO_END_TOLERANCE_FRACTION of
         # what was asked for, and that allowance is deliberate -- ALBATROSS itself is only good to
@@ -338,6 +378,16 @@ def _doomed_atom_mask(structure: Structure) -> np.ndarray:
     return doomed
 
 
+def _too_short_to_build(sequence: str, min_length: int) -> bool:
+    """Whether a region is skipped for length alone, leaving its input coordinates final.
+
+    One predicate for the two callers that must agree: :func:`_build_region`, which skips the
+    region, and :func:`_rebuild_one_model`, which relies on that decision being knowable in
+    advance to put the region into the obstacle set before anything is built.
+    """
+    return len(sequence) < min_length
+
+
 def _build_region(
     structure: Structure,
     *,
@@ -376,7 +426,7 @@ def _build_region(
             **kwargs,  # type: ignore[arg-type]
         )
 
-    if len(sequence) < min_length:
+    if _too_short_to_build(sequence, min_length):
         return outcome(
             built=False,
             reason=f"{label}: shorter than the {min_length}-residue minimum; left as-is",
@@ -473,6 +523,7 @@ def _build_region(
         achieved_end_to_end=achieved,
         requested_end_to_end=requested,
         steered=span.n_anchor is None or span.c_anchor is None,
+        relaxed_anchors=relaxed,
         reason=(
             "built against a relaxed anchor exemption: the anchors' backbone atoms had to be "
             "exempted from clash checking for this region to be buildable at all, so it may "
@@ -487,7 +538,56 @@ def _build_region(
 #: atoms before it is reported unbuilt. Each attempt is a full fresh conformer, so the budget is
 #: spent only when the input centroid is genuinely crowded -- the common case (a single-chain
 #: input, no obstacles at all) accepts the first draw and never pays for the rest.
-_FREE_REGION_PLACEMENT_ATTEMPTS = 8
+_FREE_REGION_PLACEMENT_ATTEMPTS = 16
+
+#: How many rigid orientations each draw is tried in (the first is always the engine's own).
+#: The draw fixes the conformer's SHAPE; its centroid is pinned to the input region's centroid,
+#: so the one placement freedom left is a rotation about that point -- which changes nothing
+#: about the internal geometry or the centre of mass. Searching it is what makes a
+#: crowded-but-placeable neighbourhood placeable at all: measured on 6kn7's two anchor-free
+#: chains, a fresh draw lands clear in its arriving orientation only ~2.5% of the time, and
+#: about half of all conformers have SOME clear orientation -- shape draws cost a full walk,
+#: orientations cost one KD-tree query each, so the search budget belongs here.
+_FREE_REGION_ORIENTATIONS_PER_DRAW = 64
+
+#: Hill-climb steps spent refining the draw's best near-miss orientation. The clear fraction of
+#: rotation space can be well under 1/64, but near-misses a fraction of an Angstrom inside the
+#: limit are common there -- small random tilts of the best orientation found, keeping
+#: improvements, recover those for the cost of one KD-tree query per step.
+_FREE_REGION_REFINE_STEPS = 32
+
+#: Standard deviation, in radians (~9 degrees), of the small tilts used by the refinement.
+_FREE_REGION_REFINE_TILT = 0.15
+
+
+def _uniform_random_rotation(rng: np.random.Generator) -> np.ndarray:
+    """Rotation matrix drawn uniformly from SO(3), via a normalised Gaussian quaternion."""
+    quaternion = rng.normal(size=4)
+    quaternion /= np.linalg.norm(quaternion)
+    w, x, y, z = quaternion
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+        ]
+    )
+
+
+def _small_rotation(rng: np.random.Generator, sigma: float) -> np.ndarray:
+    """Rotation matrix for a small random tilt: uniform axis, Gaussian angle of width ``sigma``."""
+    axis = rng.normal(size=3)
+    axis /= np.linalg.norm(axis)
+    angle = rng.normal(scale=sigma)
+    x, y, z = axis
+    c, s, t = np.cos(angle), np.sin(angle), 1.0 - np.cos(angle)
+    return np.array(
+        [
+            [t * x * x + c, t * x * y - s * z, t * x * z + s * y],
+            [t * x * y + s * z, t * y * y + c, t * y * z - s * x],
+            [t * x * z - s * y, t * y * z + s * x, t * z * z + c],
+        ]
+    )
 
 
 def _build_free_region(
@@ -509,13 +609,14 @@ def _build_free_region(
     clash distance of the world origin -- real AlphaFold files do -- and they protect nothing
     at the place the region actually ends up.
 
-    So: the walk runs unobstructed, each draw is centred on the INPUT region's centroid, and
+    So: the walk runs unobstructed, each draw is centred on the INPUT region's centroid and
+    tried in several rigid orientations about it (see _FREE_REGION_ORIENTATIONS_PER_DRAW), and
     the FINAL position is checked against the world-frame obstacles under the same rule the
     engine enforces during growth (every alpha carbon at least
     :data:`~dodo.constants.CA_CLASH_DISTANCE` from the nearest obstacle atom). A draw that
-    lands badly is retried; a region that cannot land clear is reported unbuilt -- leaving the
-    input coordinates in place -- rather than written on top of another chain with a report
-    that says clean.
+    lands badly is retried; a region that cannot land clear in any draw or orientation is
+    reported unbuilt -- leaving the input coordinates in place -- rather than written on top
+    of another chain with a report that says clean.
 
     Centring on the input centroid, rather than pinning any single residue, is what keeps a
     multi-model ensemble usable: every model starts from the same base copy, so all models
@@ -546,16 +647,41 @@ def _build_free_region(
             failure = f"{label}: the engine reported failure for this conformer"
             continue
         ca = attempt.ca_coords[0]
-        placed = ca - ca.mean(axis=0) + input_centroid
-        clearance = (
-            float("inf") if obstacle_tree is None else float(obstacle_tree.query(placed)[0].min())
-        )
-        if clearance >= CA_CLASH_DISTANCE:
-            return attempt, placed, None
+        centred = ca - ca.mean(axis=0)
+
+        def clearance_of(placed: np.ndarray) -> float:
+            if obstacle_tree is None:
+                return float("inf")
+            return float(obstacle_tree.query(placed)[0].min())
+
+        best_rotation = np.eye(3)
+        best_clearance = -1.0
+        for orientation in range(_FREE_REGION_ORIENTATIONS_PER_DRAW):
+            # Rotations are drawn lazily, so the no-obstacle case (a single-chain input)
+            # accepts the identity immediately and consumes nothing from the rng.
+            rotation = np.eye(3) if orientation == 0 else _uniform_random_rotation(rng)
+            placed = centred @ rotation.T + input_centroid
+            clearance = clearance_of(placed)
+            if clearance >= CA_CLASH_DISTANCE:
+                return attempt, placed, None
+            if clearance > best_clearance:
+                best_rotation, best_clearance = rotation, clearance
+        # Random sampling missed; hill-climb the nearest miss. The clear region of rotation
+        # space can be far smaller than 1/ORIENTATIONS, but when it exists at all the best
+        # random orientation tends to sit a fraction of an Angstrom inside the limit.
+        for _ in range(_FREE_REGION_REFINE_STEPS):
+            candidate = _small_rotation(rng, _FREE_REGION_REFINE_TILT) @ best_rotation
+            placed = centred @ candidate.T + input_centroid
+            clearance = clearance_of(placed)
+            if clearance >= CA_CLASH_DISTANCE:
+                return attempt, placed, None
+            if clearance > best_clearance:
+                best_rotation, best_clearance = candidate, clearance
         failure = (
-            f"{label}: {_FREE_REGION_PLACEMENT_ATTEMPTS} independent draws all clashed with "
-            f"already-placed atoms when centred on the region's input coordinates; the input "
-            f"coordinates are left as-is"
+            f"{label}: {_FREE_REGION_PLACEMENT_ATTEMPTS} independent draws, each tried in "
+            f"{_FREE_REGION_ORIENTATIONS_PER_DRAW} orientations about the region's input "
+            f"centroid, all clashed with already-placed atoms; the input coordinates are "
+            f"left as-is"
         )
     return None, None, failure
 
@@ -773,6 +899,24 @@ def _rebuild_one_model(
     for domain in structure.folded_domains():
         domain.placed = True
 
+    # A region too short to build is an obstacle from the outset too, and for the same reason:
+    # its coordinates are already final. The skip is decided by length alone (see
+    # _too_short_to_build), so it is known BEFORE anything is built rather than discovered when
+    # its turn comes -- and marking it only when its turn comes is what let every longer region
+    # ahead of it in the loop below be built straight through it. `placed`, not `rebuilt`: these
+    # are the INPUT coordinates, kept deliberately, so they must not be attributed to DODO or
+    # stripped of their side chains (Domain.generated_spans is keyed on `rebuilt`, which stays
+    # False here).
+    #
+    # This is the forward half of the obstacle set. The backward half -- a region whose build
+    # FAILED must be avoided by regions built after it -- is handled at the end of the loop
+    # below. Only the length skip can be known in advance: a build failure cannot, and a region
+    # that is ABOUT to be rebuilt must not be avoided at its input coordinates, since those are
+    # exactly the coordinates that are about to be replaced.
+    for domain in structure.idrs():
+        if _too_short_to_build(domain.sequence, min_length):
+            domain.placed = True
+
     # BUILD ORDER, and it is deliberate: loops, then connecting IDRs, then terminal IDRs.
     #
     # The ordering follows how constrained each region is. A loop is pinned at both ends inside
@@ -795,45 +939,57 @@ def _rebuild_one_model(
 
     # Built with the walk engine whatever the caller asked for -- see _loop_engine.
     loops_engine = engine if isinstance(engine, SelfAvoidingWalk) else _loop_engine()
-    for parent, loop_index, loop in loops:
-        loop_outcome = _build_region(
-            structure,
-            span=loop,
-            sequence=structure.sequence[loop.slice],
-            # A loop gets NO dimension prediction. Its span is dictated by the folded
-            # domain it bridges: the two anchors are fixed atoms of a domain that is not
-            # ours to move, so the distance is already decided. Predicting an end-to-end
-            # distance here and then failing to achieve it would be inventing a constraint
-            # the geometry has already settled.
-            target=None,
-            model=model,
-            rng=rng,
-            engine=loops_engine,
-            min_length=min_length,
-            label=f"loop in FD {parent.span.start + 1}-{parent.span.stop}",
-        )
-        outcomes.append(loop_outcome)
-        if on_region_done is not None:
-            on_region_done(len(loop))
-        # Record success per loop. Without this, a loop that failed to build would still have
-        # its side chains stripped and its inherited geometry attributed to DODO.
-        if loop_outcome.built:
-            parent.rebuilt_loops.add(loop_index)
 
-    for domain in connecting + terminal:
-        key = (
-            structure.chains[int(structure.chain_index[domain.span.start])].chain_id,
-            domain.span.start,
-            domain.span.stop,
+    # Every region's build is wrapped in a thunk and kept, so the repair pass below can re-run
+    # one with exactly the arguments it was first given rather than a second copy of them that
+    # could drift. Loops and IDRs go into one list, in build order, because the repair pass has
+    # to reason across the boundary: loops are built before every IDR, so a rebuilt loop can end
+    # up sitting on the input coordinates of an IDR that fails later.
+    attempts: list[_RegionAttempt] = []
+
+    def loop_attempt(parent: Domain, loop_index: int, loop: Span) -> _RegionAttempt:
+        def run() -> RegionOutcome:
+            return _build_region(
+                structure,
+                span=loop,
+                sequence=structure.sequence[loop.slice],
+                # A loop gets NO dimension prediction. Its span is dictated by the folded
+                # domain it bridges: the two anchors are fixed atoms of a domain that is not
+                # ours to move, so the distance is already decided. Predicting an end-to-end
+                # distance here and then failing to achieve it would be inventing a constraint
+                # the geometry has already settled.
+                target=None,
+                model=model,
+                rng=rng,
+                engine=loops_engine,
+                min_length=min_length,
+                label=f"loop in FD {parent.span.start + 1}-{parent.span.stop}",
+            )
+
+        def record(outcome: RegionOutcome) -> None:
+            # Record success per loop. Without this, a loop that failed to build would still
+            # have its side chains stripped and its inherited geometry attributed to DODO.
+            if outcome.built:
+                parent.rebuilt_loops.add(loop_index)
+
+        return _RegionAttempt(span=loop, run=run, record=record)
+
+    def idr_attempt(domain: Domain) -> _RegionAttempt:
+        drawn = model_targets.get(
+            (
+                structure.chains[int(structure.chain_index[domain.span.start])].chain_id,
+                domain.span.start,
+                domain.span.stop,
+            )
         )
-        drawn = model_targets.get(key)
-        outcomes.append(
-            _build_region(
+
+        def run() -> RegionOutcome:
+            return _build_region(
                 structure,
                 span=domain.span,
                 sequence=domain.sequence,
                 target=target_dimensions(domain.sequence, mode=mode)
-                if len(domain.sequence) >= min_length
+                if not _too_short_to_build(domain.sequence, min_length)
                 else None,
                 requested_override=float(drawn[model - 1]) if drawn is not None else None,
                 model=model,
@@ -843,17 +999,137 @@ def _rebuild_one_model(
                 label="connecting IDR" if not domain.span.is_terminal else "terminal IDR",
                 domain=domain,
             )
-        )
-        # Placed whatever happened. On success _build_region has already set it; on failure or
-        # a skip the region keeps its input coordinates, and nothing will move them again -- so
-        # it is final, and every region built after this one must avoid it. Leaving a failed
-        # region out of the obstacle set is how AF-O14683-F1 ended up with a rebuilt alpha
-        # carbon 1.27 A from an atom of the region that had just failed beside it.
-        domain.placed = True
-        if on_region_done is not None:
-            on_region_done(len(domain.span))
 
+        def record(_outcome: RegionOutcome) -> None:
+            # Placed whatever happened. On success _build_region has already set it; on failure
+            # or a skip the region keeps its input coordinates, and nothing will move them
+            # again -- so it is final, and every region built after this one must avoid it.
+            # Leaving a failed region out of the obstacle set is how AF-O14683-F1 ended up with
+            # a rebuilt alpha carbon 1.27 A from an atom of the region that had just failed
+            # beside it.
+            domain.placed = True
+
+        return _RegionAttempt(span=domain.span, run=run, record=record)
+
+    # MUTATION EXPERIMENT (temporary): loops built outside `attempts`, i.e. the repair pass
+    # sees IDRs only -- the exact revert the reviewer describes.
+    for _parent, _index, _loop in loops:
+        _loop_attempt = loop_attempt(_parent, _index, _loop)
+        _loop_outcome = _loop_attempt.run()
+        _loop_attempt.record(_loop_outcome)
+        outcomes.append(_loop_outcome)
+        if on_region_done is not None:
+            on_region_done(len(_loop))
+    attempts.extend(idr_attempt(domain) for domain in connecting + terminal)
+
+    for attempt in attempts:
+        outcome = attempt.run()
+        attempt.record(outcome)
+        attempt.built = outcome.built
+        attempt.outcome_index = len(outcomes)
+        outcomes.append(outcome)
+        if on_region_done is not None:
+            on_region_done(len(attempt.span))
+
+    _repair_forward_contacts(structure, attempts=attempts, outcomes=outcomes)
     return outcomes
+
+
+@dataclass(slots=True)
+class _RegionAttempt:
+    """One region's build, retained so the repair pass can re-run it identically."""
+
+    span: Span
+    #: Re-runs the build with exactly the arguments it was first given.
+    run: Callable[[], RegionOutcome]
+    #: Per-kind bookkeeping for an outcome: a loop records itself among its parent's rebuilt
+    #: loops on success; an IDR marks itself placed either way.
+    record: Callable[[RegionOutcome], None]
+    built: bool = False
+    #: Index in the outcomes list, so a retry can replace the verdict in place.
+    outcome_index: int = -1
+
+
+def _repair_forward_contacts(
+    structure: Structure,
+    *,
+    attempts: list[_RegionAttempt],
+    outcomes: list[RegionOutcome],
+) -> None:
+    """Rebuild any region that was built before a region whose build then failed beside it.
+
+    The obstacle set can only contain geometry that is already final, so a region built early
+    cannot avoid a region built later. That is harmless when the later region is itself rebuilt
+    -- it had this one in its own obstacle set and avoided it. It is NOT harmless when the later
+    region's build FAILS: the failed region keeps its input coordinates, nothing will move them
+    again, and the region built earlier was never given the chance to avoid them. Measured on
+    ``tests/data/structures/testing_translation.pdb``, whose 280-residue terminal IDR fails on a
+    broken input chain, the connecting IDR built before it landed 1.37-2.79 A from it (input
+    4.32 A) on every seed, in output the report called clean.
+
+    A length skip cannot reach here -- those are marked placed before anything is built, so they
+    were in the obstacle set all along. This is only for failures, which cannot be known in
+    advance. ``attempts`` spans loops and IDRs in one build-ordered list because the same
+    exposure crosses that boundary: loops are built before every IDR, so a rebuilt loop can sit
+    on the input coordinates of an IDR that fails later.
+
+    The repair is one retry per affected region, and by this point EVERY region is final, so the
+    retry is strictly better informed than the original build: it avoids the whole structure. A
+    retry that fails changes nothing (:func:`_build_region` writes no coordinates unless it
+    succeeds), so the region keeps its first conformer and the contact is disclosed on its
+    outcome instead of being written silently.
+    """
+    from scipy.spatial import cKDTree
+
+    if all(attempt.built for attempt in attempts):
+        return
+
+    for position, attempt in enumerate(attempts):
+        if not attempt.built:
+            continue
+        later = [other for other in attempts[position + 1 :] if not other.built]
+        if not later:
+            continue
+        # Every atom of a region that kept its input coordinates survives into the output --
+        # nothing of it is doomed, since _doomed_atom_mask only covers geometry DODO generated
+        # -- so the whole span is a real obstacle, exactly as _obstacles_for_span would offer it.
+        obstacles = np.vstack(
+            [
+                structure.xyz[structure.atom_slice_for_residues(other.span.start, other.span.stop)]
+                for other in later
+            ]
+        )
+        # The region's alpha carbons are the only atoms of it that survive into the output, and
+        # the clash rule the engine applies during growth is CA-to-obstacle -- so this measures
+        # exactly what the build would have measured had the obstacle been available.
+        mine = structure.ca_xyz[attempt.span.slice]
+        if float(cKDTree(obstacles).query(mine)[0].min()) >= CA_CLASH_DISTANCE:
+            continue
+
+        retried = attempt.run()
+        attempt.record(retried)
+        if retried.built:
+            outcomes[attempt.outcome_index] = retried
+            continue
+        # The retry could not avoid it either. Keep the original conformer and say so.
+        original = outcomes[attempt.outcome_index]
+        residues = ", ".join(f"{other.span.start + 1}-{other.span.stop}" for other in later)
+        outcomes[attempt.outcome_index] = replace(
+            original,
+            unresolved_contact=True,
+            reason=_join_reasons(
+                original.reason,
+                f"built before region(s) {residues}, whose build then failed, so this region "
+                f"could not avoid them; rebuilding it against them did not succeed either "
+                f"({retried.reason}). It sits closer than the clash distance to input "
+                f"coordinates that were kept",
+            ),
+        )
+
+
+def _join_reasons(first: str | None, second: str) -> str:
+    """Combine two outcome reasons without letting either be lost."""
+    return second if not first else f"{first}; {second}"
 
 
 def rebuild(
@@ -1080,10 +1356,62 @@ def rebuild(
             report.backbone_seams.extend(placed.strained_seams)
             tracker.describe("rebuilding")
         report.models.append(final)
+        report.model_numbers.append(model_number)
         tracker.next_model(model_number, n_models)
 
     tracker.close()
+    _reconcile_ensemble_topology(report)
     return report
+
+
+def _reconcile_ensemble_topology(report: RebuildReport) -> None:
+    """Keep the returned models writable as one multi-model file, and say what was dropped.
+
+    A built region is reduced to alpha carbons (and given a backbone when asked) while a region
+    that failed keeps every input atom -- so a region that builds in one model and fails in
+    another gives frames whose atom records cannot share one multi-model file. Placement of an
+    anchor-free region is stochastic per model, so this genuinely happens. The honest
+    resolutions all lose something; this one keeps the largest group of models the writers
+    would accept together (ties broken toward the earlier models) and records what was dropped
+    in the notes, next to the per-model outcomes that say exactly which region failed. The
+    alternatives were worse: writing failed at the very end with NOTHING saved, and
+    fabricating atoms to even out the frames would put geometry in the output that DODO never
+    built.
+
+    Grouping uses the io layer's own frame-compatibility rule (every atom record, not just the
+    atom count: two models can disagree on WHICH region failed and still have equal counts).
+    A region that fails in EVERY model changes every frame the same way, stays consistent,
+    and drops nothing.
+    """
+    from ..io.write import matching_topology
+
+    models = report.models
+    if len(models) < 2:
+        return
+    groups: list[list[int]] = []
+    for index, model in enumerate(models):
+        for group in groups:
+            if matching_topology(models[group[0]], model):
+                group.append(index)
+                break
+        else:
+            groups.append([index])
+    if len(groups) == 1:
+        return
+    kept = max(groups, key=lambda group: (len(group), -group[0]))
+    numbers = report.model_numbers or list(range(1, len(models) + 1))
+    dropped = [numbers[i] for i in range(len(models)) if i not in set(kept)]
+    report.models = [models[i] for i in kept]
+    report.model_numbers = [numbers[i] for i in kept]
+    renumbering = ", ".join(
+        f"MODEL {position} = build model {numbers[i]}" for position, i in enumerate(kept, start=1)
+    )
+    report.notes.append(
+        f"model(s) {', '.join(map(str, dropped))} were dropped from the returned models: a "
+        f"region built in some models and failed in others, and such frames cannot share one "
+        f"multi-model file. The per-model outcomes record which region diverged and why. The "
+        f"surviving models are renumbered when written: {renumbering}."
+    )
 
 
 def _junction_warning() -> type[Warning]:
@@ -1193,6 +1521,7 @@ def build_from_sequence(
                 structure = placed.structure
                 report.backbone_seams.extend(placed.strained_seams)
             report.models.append(structure)
+            report.model_numbers.append(model_number + 1)
 
         report.outcomes.append(
             RegionOutcome(

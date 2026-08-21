@@ -17,11 +17,16 @@ import numpy as np
 import pytest
 
 from dodo.cli import main
-from dodo.constants import C_O_BOND_LENGTH, CA_C_BOND_LENGTH, N_CA_BOND_LENGTH
+from dodo.constants import (
+    C_O_BOND_LENGTH,
+    CA_C_BOND_LENGTH,
+    CA_CLASH_DISTANCE,
+    N_CA_BOND_LENGTH,
+)
 from dodo.construct.pipeline import build_from_sequence, rebuild
 from dodo.geometry.metrics import end_to_end, validate_ca_trace
 from dodo.io import read_structure
-from dodo.structure import DomainKind, Structure
+from dodo.structure import DomainKind, Span, Structure
 from dodo.validate import find_impossible_pairs, validate_bonds, validate_clashes
 
 FIXTURES = Path(__file__).resolve().parents[1] / "data" / "structures"
@@ -637,6 +642,394 @@ class TestFreeRegionPlacementRespectsObstacles:
         assert np.allclose(report.models[0].ca_xyz[b], structure.ca_xyz[b])
 
 
+def _min_built_to_kept_input(model: Structure, report: object) -> float:
+    """Closest approach between DODO-generated alpha carbons and geometry it left as input.
+
+    The guarantee under test: a region DODO built must clear every region that kept its input
+    coordinates by at least CA_CLASH_DISTANCE. Hydrogens are excluded, matching the rule
+    ``validate_clashes`` applies. Returns ``inf`` when the model has nothing of one kind.
+    """
+    from scipy.spatial import cKDTree
+
+    generated: list[np.ndarray] = []
+    kept: list[np.ndarray] = []
+    heavy = ~np.isin(np.char.upper(model.element.astype("<U2")), ["H", "D"])
+    for domain in model.domains:
+        atoms = model.atom_slice_for_residues(domain.span.start, domain.span.stop)
+        if domain.kind is DomainKind.IDR and domain.rebuilt:
+            generated.append(model.ca_xyz[domain.span.slice])
+        elif domain.kind is DomainKind.IDR:
+            keep = np.flatnonzero(heavy[atoms]) + atoms.start
+            if keep.size:
+                kept.append(model.xyz[keep])
+    if not generated or not kept:
+        return float("inf")
+    tree = cKDTree(np.vstack(kept))
+    return float(min(tree.query(block)[0].min() for block in generated))
+
+
+class TestForwardObstacleVisibility:
+    """A region built early must still avoid regions whose coordinates stay as they arrived.
+
+    The obstacle set can only hold geometry that is already final, so a region built early
+    cannot see one built later. That is harmless when the later region is itself rebuilt -- it
+    avoided this one. It is a defect when the later region keeps its input coordinates, because
+    then nothing ever moves out of the way.
+    """
+
+    def test_a_short_region_is_an_obstacle_before_anything_is_built(self) -> None:
+        # A region under the length minimum is skipped, so its input coordinates are final
+        # before the first build starts. It must therefore be in the obstacle set of every
+        # region, including ones built ahead of it in the loop.
+        import dodo.construct.pipeline as pipeline
+        from dodo.regions import assign_regions
+
+        source = read_structure(DNMT3A)
+        assign_regions(source)
+        idr_spans = [
+            d.span for chain in source.chains for d in chain.domains if d.kind is DomainKind.IDR
+        ]
+        assert idr_spans, "fixture must have IDRs for this test to mean anything"
+
+        original = pipeline._build_region
+        seen: list[tuple[Span, np.ndarray]] = []
+
+        def spy(structure: Structure, **kwargs: object) -> object:
+            span = kwargs["span"]
+            seen.append((span, structure.placed_atom_mask().copy()))  # type: ignore[arg-type]
+            return original(structure, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatched = pipeline._build_region
+        pipeline._build_region = spy  # type: ignore[assignment]
+        try:
+            # min_length high enough that the SHORTEST IDR is skipped while a longer one builds.
+            lengths = sorted(len(s) for s in idr_spans)
+            if len(lengths) < 2 or lengths[0] == lengths[-1]:
+                pytest.skip("fixture needs IDRs of differing lengths")
+            rebuild(
+                DNMT3A,
+                n_models=1,
+                seed=0,
+                backbone=False,
+                progress=False,
+                min_length=lengths[0] + 1,
+            )
+        finally:
+            pipeline._build_region = monkeypatched  # type: ignore[assignment]
+
+        short = [s for s in idr_spans if len(s) == lengths[0]]
+        assert short, "no short region to check"
+        # Every region's obstacle mask -- including regions built before the short one's own
+        # turn -- must already cover the short region's atoms.
+        for span, mask in seen:
+            if span in short:
+                continue
+            for short_span in short:
+                atoms = source.atom_slice_for_residues(short_span.start, short_span.stop)
+                assert mask[atoms].all(), (
+                    f"region {span.start}-{span.stop} was built without the skipped region "
+                    f"{short_span.start}-{short_span.stop} in its obstacle set"
+                )
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_a_failed_region_does_not_keep_an_earlier_build_on_top_of_it(self, seed: int) -> None:
+        # testing_translation.pdb has a 280-residue terminal IDR whose build fails on a broken
+        # input chain, and a connecting IDR that is built BEFORE it. Without the repair pass the
+        # connecting IDR landed 1.37-2.79 A from it, in output the report called built.
+        report = rebuild(
+            FIXTURES / "testing_translation.pdb",
+            n_models=1,
+            seed=seed,
+            backbone=False,
+            progress=False,
+        )
+        assert report.failures, "fixture must have a failed region for this to mean anything"
+        closest = _min_built_to_kept_input(report.models[0], report)
+        assert closest >= CA_CLASH_DISTANCE, (
+            f"a built region sits {closest:.2f} A from a region that kept its input "
+            f"coordinates (limit {CA_CLASH_DISTANCE})"
+        )
+
+    def test_a_clean_structure_pays_for_no_retries(self) -> None:
+        # The repair pass must cost nothing when there is nothing to repair: one build attempt
+        # per region, no second pass.
+        import dodo.construct.pipeline as pipeline
+
+        original = pipeline._build_region
+        calls: list[Span] = []
+
+        def spy(structure: Structure, **kwargs: object) -> object:
+            calls.append(kwargs["span"])  # type: ignore[arg-type]
+            return original(structure, **kwargs)  # type: ignore[arg-type]
+
+        pipeline._build_region = spy  # type: ignore[assignment]
+        try:
+            report = rebuild(DNMT3A, n_models=1, seed=0, backbone=False, progress=False)
+        finally:
+            pipeline._build_region = original  # type: ignore[assignment]
+
+        assert not report.failures, "fixture must build cleanly for this test to mean anything"
+        assert len(calls) == len(set(calls)), (
+            f"a region was built twice with nothing to repair: "
+            f"{[s for s in calls if calls.count(s) > 1]}"
+        )
+
+
+class TestRepairPassMechanism:
+    """The repair pass is kind-agnostic: loops and IDRs go through one build-ordered list.
+
+    That matters because loops are built before every IDR, so a rebuilt loop can end up on the
+    input coordinates of an IDR that fails later -- the same exposure, across the kind boundary.
+    These drive the mechanism directly, since no committed fixture happens to pair a rebuilt loop
+    with a region that kept its input.
+    """
+
+    def _pair(self, separation: float) -> tuple[Structure, list[object], list[object]]:
+        """Two 2-residue regions ``separation`` apart: the first built, the second kept as input."""
+        from dodo.construct.pipeline import RegionOutcome, _RegionAttempt
+
+        xyz = np.array(
+            [[0.0, 0.0, 0.0], [3.81, 0.0, 0.0], [0.0, separation, 0.0], [3.81, separation, 0.0]]
+        )
+        structure = Structure.from_atom_records(
+            xyz=xyz,
+            atom_name=["CA"] * 4,
+            element=["C"] * 4,
+            residue_name=["GLY"] * 4,
+            residue_number=[1, 2, 3, 4],
+            chain_id=["A"] * 4,
+            source="synthetic repair pair",
+        )
+        outcomes = [
+            RegionOutcome(model=1, chain_id="A", residues=(1, 2), n_residues=2, built=True),
+            RegionOutcome(
+                model=1,
+                chain_id="A",
+                residues=(3, 4),
+                n_residues=2,
+                built=False,
+                reason="engine failed",
+            ),
+        ]
+        retry_outcome = RegionOutcome(
+            model=1, chain_id="A", residues=(1, 2), n_residues=2, built=True, reason="retried"
+        )
+        calls: list[str] = []
+
+        def run_built() -> object:
+            calls.append("retry")
+            return retry_outcome
+
+        attempts = [
+            _RegionAttempt(
+                span=Span(0, 2),
+                run=run_built,  # type: ignore[arg-type]
+                record=lambda _outcome: calls.append("record"),
+                built=True,
+                outcome_index=0,
+            ),
+            _RegionAttempt(
+                span=Span(2, 4),
+                run=lambda: outcomes[1],  # type: ignore[arg-type,return-value]
+                record=lambda _outcome: None,
+                built=False,
+                outcome_index=1,
+            ),
+        ]
+        return structure, attempts, [outcomes, calls]  # type: ignore[list-item]
+
+    def test_a_contact_with_a_later_kept_region_triggers_one_retry(self) -> None:
+        from dodo.construct.pipeline import _repair_forward_contacts
+
+        structure, attempts, (outcomes, calls) = self._pair(separation=1.0)  # type: ignore[misc]
+        _repair_forward_contacts(structure, attempts=attempts, outcomes=outcomes)  # type: ignore[arg-type]
+        assert calls == ["retry", "record"], "the region was not rebuilt exactly once"
+        assert outcomes[0].reason == "retried", "the retry's outcome did not replace the original"
+
+    def test_a_clear_separation_triggers_nothing(self) -> None:
+        from dodo.construct.pipeline import _repair_forward_contacts
+
+        structure, attempts, (outcomes, calls) = self._pair(separation=25.0)  # type: ignore[misc]
+        _repair_forward_contacts(structure, attempts=attempts, outcomes=outcomes)  # type: ignore[arg-type]
+        assert calls == [], "a region well clear of everything was rebuilt anyway"
+        assert outcomes[0].reason is None
+
+    def test_a_failed_retry_keeps_the_conformer_and_discloses(self) -> None:
+        from dodo.construct.pipeline import RegionOutcome, _repair_forward_contacts
+
+        structure, attempts, (outcomes, _calls) = self._pair(separation=1.0)  # type: ignore[misc]
+        attempts[0].run = lambda: RegionOutcome(  # type: ignore[assignment]
+            model=1,
+            chain_id="A",
+            residues=(1, 2),
+            n_residues=2,
+            built=False,
+            reason="no candidate survived",
+        )
+        _repair_forward_contacts(structure, attempts=attempts, outcomes=outcomes)  # type: ignore[arg-type]
+        kept = outcomes[0]
+        assert kept.built, "a failed retry must not mark the region unbuilt"
+        assert "could not avoid" in (kept.reason or ""), kept.reason
+        assert "3-4" in (kept.reason or ""), "the disclosure must name the region it sits on"
+
+
+class TestReportDistinguishesItsNotes:
+    """A built region can carry a note for two unrelated reasons. The summary must not conflate.
+
+    ``summary()`` used to bucket every built-with-a-reason outcome under "needed a relaxed anchor
+    exemption". When the repair pass began attaching a created-contact disclosure to a built
+    outcome, that heading started stating something false about the one thing the disclosure
+    exists to say.
+    """
+
+    def _outcome(self, **kwargs: object) -> object:
+        from dodo.construct.pipeline import RegionOutcome
+
+        base: dict[str, object] = {
+            "model": 1,
+            "chain_id": "A",
+            "residues": (1, 40),
+            "n_residues": 40,
+            "built": True,
+        }
+        base.update(kwargs)
+        return RegionOutcome(**base)  # type: ignore[arg-type]
+
+    def test_a_created_contact_is_not_filed_as_an_anchor_exemption(self) -> None:
+        from dodo.construct.pipeline import RebuildReport
+
+        report = RebuildReport(
+            outcomes=[
+                self._outcome(unresolved_contact=True, reason="sits on kept input coordinates")
+            ]
+        )
+        text = report.summary()
+        assert "relaxed anchor exemption" not in text, text
+        assert "closer than the clash distance to input coordinates that were kept" in text
+        assert report.unresolved_contacts
+
+    def test_a_relaxed_build_is_still_reported_as_one(self) -> None:
+        from dodo.construct.pipeline import RebuildReport
+
+        report = RebuildReport(
+            outcomes=[self._outcome(relaxed_anchors=True, reason="built against a relaxed ...")]
+        )
+        text = report.summary()
+        assert "relaxed anchor exemption" in text
+        assert not report.unresolved_contacts
+        assert report.ok, "a relaxed build is a deliberate trade, not a failure"
+
+    def test_an_unresolved_contact_makes_the_run_not_ok(self) -> None:
+        # The hole this closes: the neighbouring failed region is short enough to be tolerated,
+        # so nothing else made the run unsuccessful, and DODO exited 0 having written a contact
+        # it created itself.
+        from dodo.construct.pipeline import RebuildReport
+
+        tolerated = self._outcome(
+            residues=(41, 47), n_residues=7, built=False, reason="engine failed"
+        )
+        assert tolerated.tolerated, "fixture must be a tolerated failure for this to mean anything"
+        report = RebuildReport(
+            outcomes=[
+                self._outcome(unresolved_contact=True, reason="sits on kept input coordinates"),
+                tolerated,
+            ]
+        )
+        assert not report.blocking_failures, "only the contact should make this run not-ok"
+        assert not report.ok
+
+
+class TestEnsembleTopologyReconciliation:
+    """Mixed built/failed regions across models must not make the ensemble unwritable.
+
+    A region that builds in some models and fails in others gives frames with different atom
+    counts, which cannot be written into one multi-model file. rebuild() must return a writable
+    majority and disclose the dropped models -- not crash the write with nothing saved.
+    """
+
+    def _model_with(self, n_atoms: int, first_atom: str = "CA") -> Structure:
+        return Structure.from_atom_records(
+            xyz=np.arange(n_atoms * 3, dtype=float).reshape(n_atoms, 3),
+            atom_name=[first_atom] + ["CA"] * (n_atoms - 1),
+            element=["C"] * n_atoms,
+            residue_name=["GLY"] * n_atoms,
+            residue_number=list(range(1, n_atoms + 1)),
+            chain_id=["A"] * n_atoms,
+            source="synthetic",
+        )
+
+    def test_the_minority_topology_is_dropped_and_disclosed(self) -> None:
+        from dodo.construct.pipeline import RebuildReport, _reconcile_ensemble_topology
+
+        report = RebuildReport(
+            models=[self._model_with(10), self._model_with(12), self._model_with(10)],
+            model_numbers=[1, 2, 3],
+        )
+        _reconcile_ensemble_topology(report)
+        assert [m.n_atoms for m in report.models] == [10, 10]
+        assert report.model_numbers == [1, 3]
+        assert any("model(s) 2" in note for note in report.notes)
+        assert any("MODEL 2 = build model 3" in note for note in report.notes)
+
+    def test_equal_atom_counts_with_different_records_still_diverge(self) -> None:
+        # Two identical anchor-free chains can swap which one fails between models: the
+        # frames then have EQUAL atom counts but different atom records, which the writers
+        # reject just the same. Reconciliation must group on the writers' full rule.
+        from dodo.construct.pipeline import RebuildReport, _reconcile_ensemble_topology
+
+        report = RebuildReport(
+            models=[
+                self._model_with(10),
+                self._model_with(10, first_atom="N"),
+                self._model_with(10),
+            ],
+            model_numbers=[1, 2, 3],
+        )
+        _reconcile_ensemble_topology(report)
+        assert report.model_numbers == [1, 3]
+        assert any("model(s) 2" in note for note in report.notes)
+
+    def test_the_kept_group_is_what_the_writer_accepts(self) -> None:
+        from dodo.construct.pipeline import RebuildReport, _reconcile_ensemble_topology
+        from dodo.io.write import _require_matching_topology
+
+        report = RebuildReport(
+            models=[
+                self._model_with(10),
+                self._model_with(12),
+                self._model_with(10, first_atom="N"),
+                self._model_with(10),
+            ],
+            model_numbers=[1, 2, 3, 4],
+        )
+        _reconcile_ensemble_topology(report)
+        _require_matching_topology(report.models)  # must not raise
+        assert report.model_numbers == [1, 4]
+
+    def test_a_tie_keeps_the_earlier_models(self) -> None:
+        from dodo.construct.pipeline import RebuildReport, _reconcile_ensemble_topology
+
+        report = RebuildReport(
+            models=[self._model_with(12), self._model_with(10)], model_numbers=[1, 2]
+        )
+        _reconcile_ensemble_topology(report)
+        assert [m.n_atoms for m in report.models] == [12]
+        assert report.model_numbers == [1]
+        assert any("model(s) 2" in note for note in report.notes)
+
+    def test_a_consistent_ensemble_is_untouched(self) -> None:
+        from dodo.construct.pipeline import RebuildReport, _reconcile_ensemble_topology
+
+        report = RebuildReport(
+            models=[self._model_with(10), self._model_with(10)], model_numbers=[1, 2]
+        )
+        _reconcile_ensemble_topology(report)
+        assert len(report.models) == 2
+        assert report.model_numbers == [1, 2]
+        assert not report.notes
+
+
 class TestCli:
     def test_help_exits_cleanly(self, capsys: pytest.CaptureFixture[str]) -> None:
         assert main([]) == 0
@@ -649,6 +1042,45 @@ class TestCli:
     def test_regions_subcommand(self, capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["regions", str(DNMT3A)]) == 0
         assert "chain A" in capsys.readouterr().out
+
+    @staticmethod
+    def _ca_only_pdb(path: Path, *, first_residue_number: int, n: int = 30) -> Path:
+        """Write a straight CA-only chain under an author numbering of our choosing."""
+        lines = [
+            f"ATOM  {i + 1:>5}  CA  ALA A{first_residue_number + i:>4}    "
+            f"{i * 3.81:>8.3f}{0.0:>8.3f}{0.0:>8.3f}  1.00 50.00           C"
+            for i in range(n)
+        ]
+        path.write_text("\n".join(lines) + "\nEND\n")
+        return path
+
+    def test_regions_reports_the_files_own_numbering(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A chain numbered from 100 must be reported as 100-129, not 1-30."""
+        pdb = self._ca_only_pdb(tmp_path / "from100.pdb", first_residue_number=100)
+        assert main(["regions", str(pdb)]) == 0
+        assert capsys.readouterr().out.strip() == "chain A: IDR 100-129"
+
+    def test_regions_scores_share_the_axis_of_the_region_line(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The score profile is the evidence for the boundaries, so it uses their numbering.
+
+        A profile labelled 1..30 against a region line reading 100-129 would be an audit
+        trail a reader cannot line up against either the region line or the input file.
+        """
+        pdb = self._ca_only_pdb(tmp_path / "from100.pdb", first_residue_number=100)
+        assert main(["regions", str(pdb), "--scores"]) == 0
+        lines = capsys.readouterr().out.splitlines()
+
+        assert lines[0] == "chain A: IDR 100-129"
+        labels = [line.split("\t")[0].strip() for line in lines[1:]]
+        assert labels == [str(n) for n in range(100, 130)]
+
+    def test_regions_exits_one_on_an_unreadable_file(self, tmp_path: Path) -> None:
+        """`regions` is scriptable, so a read failure must not look like a clean run."""
+        assert main(["regions", str(tmp_path / "does-not-exist.pdb")]) == 1
 
     @pytest.mark.slow
     def test_rebuild_subcommand_writes_a_file(self, tmp_path: Path) -> None:

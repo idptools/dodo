@@ -1234,3 +1234,50 @@ class TestRealStructures:
         assert reloaded.n_atoms == original.n_atoms, "not one atom may be dropped"
         assert np.allclose(reloaded.xyz[0] * 10.0, original.xyz, atol=1e-3)
         assert reloaded.topology.n_residues == original.n_residues
+
+
+class TestMatchingTopology:
+    """matching_topology must agree exactly with what _require_matching_topology enforces.
+
+    The pipeline uses it to decide WHICH models to return as one ensemble, so any drift
+    between the two re-opens the failure it exists to prevent: a group that passes the
+    check here and then aborts at write time with nothing saved.
+    """
+
+    def _structure(self, **overrides: object) -> Structure:
+        n = 4
+        fields: dict[str, object] = {
+            "xyz": np.arange(n * 3, dtype=float).reshape(n, 3),
+            "atom_name": ["CA"] * n,
+            "element": ["C"] * n,
+            "residue_name": ["GLY"] * n,
+            "residue_number": list(range(1, n + 1)),
+            "chain_id": ["A"] * n,
+            "source": "synthetic",
+        }
+        fields.update(overrides)
+        return Structure.from_atom_records(**fields)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"atom_name": ["N", "CA", "CA", "CA"]},
+            {"residue_name": ["ALA", "GLY", "GLY", "GLY"]},
+            {"residue_number": [2, 3, 4, 5]},
+            {"chain_id": ["B", "B", "B", "B"]},
+        ],
+    )
+    def test_agreement_on_divergent_frames(self, overrides: dict) -> None:
+        from dodo.io.write import _require_matching_topology, matching_topology
+
+        first, second = self._structure(), self._structure(**overrides)
+        assert not matching_topology(first, second)
+        with pytest.raises(StructureFileError):
+            _require_matching_topology([first, second])
+
+    def test_agreement_on_identical_frames(self) -> None:
+        from dodo.io.write import _require_matching_topology, matching_topology
+
+        first, second = self._structure(), self._structure()
+        assert matching_topology(first, second)
+        _require_matching_topology([first, second])  # must not raise

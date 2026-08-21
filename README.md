@@ -62,6 +62,10 @@ dodo regions AF-P04637-F1-model_v6.pdb
 
 ### Shared flags
 
+Shared by the commands that build — `rebuild`, `fetch`, `sequence`. `regions` takes only
+`-s/--strategy` and `--scores`; `validate` takes only `--max-findings`, `--no-clashes` and
+`--no-bonds`. Neither accepts `-o` or any of the build flags below.
+
 | Flag | Default | Meaning |
 |---|---|---|
 | `-o`, `--out` | *required* | Output path. The format follows the extension: `.cif`/`.mmcif` write mmCIF, anything else writes PDB. See [multi-model output](#multi-model-output-is-now-a-spread-of-conformers) for which to use in which viewer |
@@ -107,9 +111,10 @@ silently serving predictions from a different network.
 dropped first once it is reached. Nothing you do in normal use will approach that; the cap is
 there so no workload, however unusual, can grow the file without bound.
 
-**To turn it off:** `--no-cache` on any command, or `DODO_NO_CACHE=1` in the environment. Both
-disable prediction caching and structure caching together. DODO still works exactly the same — it
-is only slower.
+**To turn it off:** `--no-cache` on the commands that predict — `rebuild`, `fetch`, `sequence` — or
+`DODO_NO_CACHE=1` in the environment. Both disable prediction caching and structure caching
+together. DODO still works exactly the same — it is only slower. `regions` and `validate` never call
+the predictor, so they reject `--no-cache` rather than accept a flag that would do nothing.
 
 Exit status is `0` on success, `2` if a region of 10 residues or more could not be rebuilt, `1` on
 error. A shorter region that could not be rebuilt is reported and left as it arrived, and does not
@@ -154,7 +159,7 @@ from dodo.construct import target_dimensions
 
 structure = read_structure("model.cif")          # PDB or mmCIF, gzip fine
 assignment = assign_regions(structure, strategy=Strategy.PLDDT)[0]
-print(assignment.describe())                     # chain A: IDR 1-31; FD 32-290; ...
+print(assignment.describe())                     # one line per chain, as `dodo regions` prints
 print(assignment.score, assignment.threshold)    # the evidence behind every boundary
 
 target = target_dimensions("GSGSGSGS" * 18, mode="compact")
@@ -223,47 +228,164 @@ Four strategies behind one flag:
   residue, thresholded at 480. **This is the method DODO was built and validated on**.
 - **`contact`** — a CA-only alternative. Composition-free (every residue has exactly one CA)
   and invariant to whether side chains are modelled, which the density score is not. Useful for
-  comparison and for CA-only input, but it is not the validated method.
+  comparison and for input without side chains, but it is not the validated method.
 - **`plddt`** — AlphaFold's own per-residue confidence, from the B-factor column. Cheap, but
   density is DODO's validated default, so this is an explicit opt-in.
-- **`auto`** (default) — `density` for all-atom input, `contact` for CA-only input (where a
-  pair count can't be compared against the tuned threshold). It never picks pLDDT on its own,
-  and it tells you what it chose.
+- **`auto`** (default) — `density` for all-atom input, `contact` when the input has no side
+  chains at all, CA-only or full-backbone alike (a pair count can't be compared against a
+  threshold tuned on packed cores). It never picks pLDDT on its own, and it says so whenever it
+  picks anything other than `density`; on all-atom input, the expected case, it stays quiet.
 
 Every assignment keeps its score profile and threshold, so a boundary you disagree with can be
 audited rather than just re-run with different numbers.
 
-### Overriding the regions yourself
+### Checking the call before you rebuild
 
-If you disagree with a boundary, say so and DODO will build exactly what you asked for:
+`dodo regions` runs region identification and stops: it reads the structure, prints what it found,
+and writes nothing. Nothing is predicted, so sparrow — and torch behind it — is never imported, and
+the whole command takes about a third of a second on a 912-residue model. Speed is not really the
+point; seeing what DODO will treat as disordered *before* it rebuilds anything is.
+
+The files below are the regression fixtures in `tests/data/structures/`, so reproducing these lines
+needs a git clone rather than a `pip install`. Output is shown as `#` comments.
+
+```bash
+dodo regions tests/data/structures/dnmt3a.pdb
+# chain A: IDR 1-282; FD 283-432 (loops: 383-393); IDR 433-473; FD 474-912
+```
+
+One line per chain, tiling it with nothing left over. `383-393` is reported *inside* `FD 283-432`
+rather than as a region of its own because it is a loop — an IDR tethered at both ends within that
+one domain. Ranges are the input file's own residue numbers, so they can be read straight off
+against the structure or typed into a viewer.
+
+Region lines go to **stdout** and `note:` lines to **stderr**, which is what makes the command
+scriptable: `2>/dev/null` leaves pasteable region lines, `2>&1` keeps the explanation with them.
+
+```bash
+dodo regions tests/data/structures/p300.pdb
+# chain A: IDR 1-334; FD 335-417; IDR 418-568; FD 569-650; IDR 651-1048; FD 1049-1527; IDR 1528-1577; FD 1578-1831 (loops: 1710-1719); IDR 1832-2414
+#   note: 1 short stretch (19 residues) scored as folded but came in under the 25-residue minimum for a folded domain, so it is treated as disordered
+```
+
+A note is where a tuned minimum changed what will be rebuilt: 25 residues is the shortest run that
+may become a folded domain, so p300's 19-residue stretch is called disordered instead — and is
+therefore rebuilt. The [guide](docs/guide.md#reading-the-notes) lists what each note means.
+
+**The same structure under all four strategies** — the comparison the command exists for. The
+`chain A: ` prefix is dropped from each row:
+
+| `-s` | Cutoff | Regions in `dnmt3a.pdb` |
+|---|---|---|
+| `auto`, resolving to `density` here | 480 | `IDR 1-282; FD 283-432 (loops: 383-393); IDR 433-473; FD 474-912` |
+| `contact` | 10 | `IDR 1-174; FD 175-221; IDR 222-279; FD 280-434 (loops: 383-393); IDR 435-467; FD 468-912` |
+| `plddt` | 70 | `IDR 1-282; FD 283-430 (loops: 383-393); IDR 431-473; FD 474-912` |
+
+Three different scores, so the cutoffs do not compare across strategies — only the boundaries do.
+pLDDT lands within two residues of density here; `contact` does not, promoting a 47-residue stretch
+(`175-221`) that density calls disordered. When they disagree, `--scores` prints the per-residue
+profile behind whichever one you ran, as `residue<TAB>score` under the region line and on the same
+numbering, which is the audit trail for a boundary you doubt.
+
+Once you have picked one, the same `-s` goes to `rebuild`:
+
+```bash
+dodo rebuild tests/data/structures/dnmt3a.pdb -s plddt -o dnmt3a_dodo.pdb
+```
+
+`dodo regions` exits 0, or 1 if the structure cannot be read.
+
+### Specifying the regions yourself
+
+The metrics above are a convenience, not a requirement. If you already know where your domains are
+— from a paper, a UniProt annotation, or your own judgement — you can state them and DODO will
+build exactly that, running no metric at all.
+
+Give each chain a list of `(kind, start, stop)` regions, then rebuild with `strategy="preset"`,
+which means *identify nothing, build what is already there*:
 
 ```python
 import dodo
 
 structure = dodo.read_structure("model.pdb")
-dodo.assign_regions_from_spec(structure, {"A": [("idr", 1, 40), ("folded", 41, 912)]})
-report = dodo.rebuild(structure, strategy="preset")
+dodo.assign_regions_from_spec(structure, {
+    "A": [
+        ("idr",     1, 282),      # rebuilt
+        ("folded", 283, 912),     # moved as a rigid body, never regenerated
+    ],
+})
+report = dodo.rebuild(structure, strategy="preset", seed=0)
+dodo.write_pdb(report.models, "my_regions.pdb")
 ```
 
-`strategy="preset"` means *identify nothing, build what is already there*. Bounds are **1-based
-inclusive**, matching what you read off a PDB file, and the regions must **tile the whole chain** —
-every residue belongs to exactly one. Overlaps, gaps and out-of-range bounds are rejected with an
-explanation naming the offending residue, where v1 accepted all of them silently and failed later
-with something unrelated.
+Three rules, and the first is the one people trip over:
 
-This replaces v1's `regions_dict=` parameter. That took a separate, stringly-typed description of
-the structure alongside the real one, so the two could disagree; here there is one representation,
-it is already validated, and it carries the score profile that produced it. You can equally start
-from DODO's own answer and adjust it:
+1. **The regions must tile the chain.** Every residue belongs to exactly one region — no gaps, no
+   overlaps, and the first and last must reach the chain's ends. A gap is rejected, not silently
+   filled.
+2. **Bounds are inclusive residue numbers, exactly as the input file numbers them** — the same
+   numbering `dodo regions` prints, so you can copy a boundary from one straight into the other.
+   A residue distinguished by an insertion code is named as a string, `"10A"`.
+3. **`folded` is a promise, not a request.** A folded region's atoms are never regenerated; it is
+   only translated and rotated as a rigid body. Everything you mark `idr` is rebuilt from scratch.
+
+A folded domain can carry **rebuildable loops** — stretches inside it that you do want regenerated
+— as an optional fourth element. This is how you say *"283 to 912 is one domain, and the piece in
+the middle is a loop within it, not a linker between two domains"*:
 
 ```python
 import dodo
+
+structure = dodo.read_structure("model.pdb")
+assignment = dodo.assign_regions_from_spec(structure, {
+    "A": [("idr", 1, 282), ("folded", 283, 912, [(433, 473)])],
+})[0]
+print(assignment.describe())
+# chain A: IDR 1-282; FD 283-912 (loops: 433-473)
+```
+
+A loop must lie **strictly inside** its folded domain, since it is rebuilt between two fixed anchor
+residues and needs one on each side. A stretch that reaches a domain boundary is a tail — make it
+its own `idr` region instead.
+
+Every rejection names the residue you typed and what was wrong with it, so a bad spec fails
+immediately rather than surfacing later as unrelated geometry:
+
+```python
+import dodo
+from dodo.exceptions import InvalidRegionError
+
+structure = dodo.read_structure("model.pdb")
+try:
+    dodo.assign_regions_from_spec(structure, {"A": [("idr", 1, 282), ("folded", 300, 912)]})
+except InvalidRegionError as error:
+    print(error)
+# Chain 'A' has unassigned residues 283-299.
+```
+
+You can equally start from DODO's own answer and adjust the part you disagree with, which keeps its
+score profile and threshold as evidence for the boundaries you did not touch:
+
+```python
+import dodo
+from dodo.structure import Span
 
 structure = dodo.read_structure("model.pdb")
 dodo.assign_regions(structure)                       # DODO's call, with its evidence
-structure.chains[0].domains[1].span                  # inspect, then edit as you like
+domain = structure.chains[0].domains[1]
+print(domain.span)                                   # inspect
+domain.span = Span(300, 400)                         # a Span is frozen: replace, don't mutate
 report = dodo.rebuild(structure, strategy="preset")  # build your version
 ```
+
+A spec, by contrast, carries no evidence — nothing was measured, so its score and threshold are
+`nan` rather than a zero that would read as a measurement.
+
+This is a Python-only path: `strategy="preset"` needs region objects, and there is no command-line
+syntax for them, so `dodo rebuild -s preset` is not accepted. It replaces v1's `regions_dict=`,
+which took a parallel stringly-typed description of the structure that could disagree with the real
+one. The [guide](docs/guide.md#overriding-the-regions) covers multi-chain specs, the full error
+list, and what a preset assignment does and does not carry.
 
 ## Multi-model output is now a spread of conformers
 

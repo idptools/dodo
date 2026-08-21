@@ -337,32 +337,59 @@ class Chain:
         if not self.domains:
             raise InvalidRegionError(f"Chain {self.chain_id!r} has no domains assigned.")
 
+        # Report residues the way the caller wrote them and the way `dodo regions` prints
+        # them. These messages used to name raw positional indices, which appear neither in
+        # the user's input nor anywhere in their file.
+        #
+        # Every labeller here is bounds-checked, because several of these branches exist
+        # precisely to report a span that runs off the end of the structure -- an error path
+        # that raises IndexError while formatting its own message is worse than the bug it
+        # was trying to describe.
+        n_residues = self.structure.n_residues
+
+        def label(index: int) -> str:
+            if 0 <= index < n_residues:
+                return self.structure.residue_id(index)
+            return f"index {index}"
+
+        def span_label(span: Span) -> str:
+            if 0 <= span.start < n_residues and 0 < span.stop <= n_residues:
+                return f"{label(span.start)}-{label(span.stop - 1)}"
+            return (
+                f"positional {span.start}-{span.stop}, outside this structure's "
+                f"{n_residues} residues"
+            )
+
         ordered = sorted(self.domains, key=lambda d: d.span.start)
         if ordered[0].span.start != self.span.start:
             raise InvalidRegionError(
                 f"Chain {self.chain_id!r} domains start at residue "
-                f"{ordered[0].span.start} but the chain starts at {self.span.start}."
+                f"{label(ordered[0].span.start)} but the chain starts at "
+                f"{label(self.span.start)}."
             )
         if ordered[-1].span.stop != self.span.stop:
             raise InvalidRegionError(
                 f"Chain {self.chain_id!r} domains end at residue "
-                f"{ordered[-1].span.stop} but the chain ends at {self.span.stop}."
+                f"{label(ordered[-1].span.stop - 1)} but the chain ends at "
+                f"{label(self.span.stop - 1)}."
             )
         for previous, nxt in pairwise(ordered):
             if previous.span.stop < nxt.span.start:
                 raise InvalidRegionError(
                     f"Chain {self.chain_id!r} has unassigned residues "
-                    f"{previous.span.stop}-{nxt.span.start}."
+                    f"{label(previous.span.stop)}-{label(nxt.span.start - 1)}."
                 )
             if previous.span.stop > nxt.span.start:
                 raise InvalidRegionError(
-                    f"Chain {self.chain_id!r} has overlapping domains: {previous!r} and {nxt!r}."
+                    f"Chain {self.chain_id!r} has overlapping domains: "
+                    f"{span_label(previous.span)} and {span_label(nxt.span)}."
                 )
         for domain in self.domains:
             for loop in domain.loops:
                 if loop.start < domain.span.start or loop.stop > domain.span.stop:
                     raise InvalidRegionError(
-                        f"Loop {loop.start}-{loop.stop} lies outside its domain {domain!r}."
+                        f"Loop {span_label(loop)} lies outside its domain "
+                        f"{span_label(domain.span)} of chain {self.chain_id!r}."
                     )
 
 
@@ -530,6 +557,15 @@ class Structure:
             [ATOMIC_MASSES.get(str(e).upper(), ATOMIC_MASSES["C"]) for e in self.element],
             dtype=np.float64,
         )
+
+    def residue_id(self, residue_index: int) -> str:
+        """Residue number with its insertion code, e.g. ``"142"`` or ``"142A"``.
+
+        The file's own numbering, for output a user will compare against the input
+        structure or type into a viewer. Distinct from :meth:`residue_label`, which
+        prepends chain and residue name and is meant for error messages.
+        """
+        return f"{int(self.residue_number[residue_index])}{self.insertion_code[residue_index]!s}"
 
     def residue_label(self, residue_index: int) -> str:
         """Human-readable residue label, e.g. ``"A:GLU142"``. For error messages."""

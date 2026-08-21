@@ -263,7 +263,13 @@ def _atom_shell(n_atoms: int, radius: float = 1.5) -> np.ndarray:
 
 
 def make_two_domain_structure(
-    fd1: int = 40, idr: int = 60, fd2: int = 40, *, seed: int = 0, all_atom: bool = False
+    fd1: int = 40,
+    idr: int = 60,
+    fd2: int = 40,
+    *,
+    seed: int = 0,
+    all_atom: bool = False,
+    first_residue_number: int = 1,
 ) -> Structure:
     """Build a structure with two compact blobs joined by an extended linker.
 
@@ -272,6 +278,9 @@ def make_two_domain_structure(
     With ``all_atom`` every residue carries phenylalanine's eleven heavy atoms instead of a
     lone CA, on the same alpha-carbon layout. That is what the density strategy needs to be
     exercised at all: it counts all-atom pairs against a threshold tuned on packed cores.
+
+    ``first_residue_number`` shifts the author numbering the way a crystal structure does,
+    which is what separates a real residue number from a positional index.
     """
     rng = np.random.default_rng(seed)
     coords = []
@@ -294,7 +303,7 @@ def make_two_domain_structure(
             atom_name=["CA"] * n,
             element=["C"] * n,
             residue_name=["ALA"] * n,
-            residue_number=list(range(1, n + 1)),
+            residue_number=list(range(first_residue_number, first_residue_number + n)),
             chain_id=["A"] * n,
             b_factor=per_residue_b,
             source="synthetic-two-domain",
@@ -310,7 +319,9 @@ def make_two_domain_structure(
         atom_name=list(PHE_ATOMS) * n,
         element=elements * n,
         residue_name=["PHE"] * (n * len(PHE_ATOMS)),
-        residue_number=[i for i in range(1, n + 1) for _ in PHE_ATOMS],
+        residue_number=[
+            i for i in range(first_residue_number, first_residue_number + n) for _ in PHE_ATOMS
+        ],
         chain_id=["A"] * (n * len(PHE_ATOMS)),
         b_factor=[b for b in per_residue_b for _ in PHE_ATOMS],
         source="synthetic-two-domain-all-atom",
@@ -479,7 +490,11 @@ class TestAssignRegions:
         ``min_idr_length``, and for genuinely distant terminal residues.
         """
         blocks, notes = _absorb_short_gaps(
-            [(3, 40), (60, 100)], chain_start=0, chain_stop=102, min_idr_length=4
+            [(3, 40), (60, 100)],
+            chain_start=0,
+            chain_stop=102,
+            min_idr_length=4,
+            label=lambda i: str(i + 1),
         )
         # 3-residue N-terminal tail and 2-residue C-terminal tail both absorbed;
         # the 20-residue interior gap is left alone as a real IDR.
@@ -490,7 +505,11 @@ class TestAssignRegions:
 
     def test_absorption_leaves_rebuildable_gaps_alone(self) -> None:
         blocks, notes = _absorb_short_gaps(
-            [(0, 40), (60, 100)], chain_start=0, chain_stop=100, min_idr_length=4
+            [(0, 40), (60, 100)],
+            chain_start=0,
+            chain_stop=100,
+            min_idr_length=4,
+            label=lambda i: str(i + 1),
         )
         assert blocks == [(0, 40), (60, 100)]
         assert notes == []
@@ -505,11 +524,73 @@ class TestAssignRegions:
         assert len(matching) == 1, assignment.notes
         assert "treated as disordered" in matching[0]
 
-    def test_describe_is_one_based(self) -> None:
-        """Display is 1-based; internals are 0-based positional. Converted in one place."""
+    def test_describe_uses_the_files_own_numbering(self) -> None:
+        """Display is the file's ``residue_number``; internals are 0-based positional."""
         structure = make_two_domain_structure()
         assignment = assign_regions(structure, strategy=Strategy.CONTACT)[0]
         assert assignment.describe().startswith("chain A: FD 1-")
+
+    def test_describe_follows_an_offset_author_numbering(self) -> None:
+        """The reported range is the file's numbering, not a positional index.
+
+        describe() used to print ``span.start + 1``, so a structure numbered from
+        anything but 1 was reported wrong -- and silently, because the string still
+        looked plausible. Renumbering the same coordinates must move the output by
+        exactly the offset.
+        """
+        offset = 19
+        plain = assign_regions(make_two_domain_structure(), strategy=Strategy.CONTACT)[0]
+        shifted = assign_regions(
+            make_two_domain_structure(first_residue_number=1 + offset), strategy=Strategy.CONTACT
+        )[0]
+
+        # Identical coordinates, so identical positional spans: only the numbering moved.
+        assert [(d.kind, d.span.start, d.span.stop) for d in shifted.domains] == [
+            (d.kind, d.span.start, d.span.stop) for d in plain.domains
+        ]
+        assert plain.describe() == "chain A: FD 1-41; IDR 42-99; FD 100-140"
+        assert shifted.describe() == "chain A: FD 20-60; IDR 61-118; FD 119-159"
+
+    def test_describe_numbers_each_chain_from_its_own_numbering(self) -> None:
+        """Chain B must not continue chain A's count.
+
+        Both chains here are numbered 1..50, so both must report 1..50. The positional
+        version reported chain B as 51-100, which is neither a PDB number nor a valid
+        ``assign_regions_from_spec`` bound.
+        """
+        rng = np.random.default_rng(3)
+        n_per = 50
+        structure = Structure.from_atom_records(
+            xyz=np.concatenate(
+                [rng.normal(0.0, 5.0, (n_per, 3)), rng.normal(200.0, 5.0, (n_per, 3))]
+            ),
+            atom_name=["CA"] * 2 * n_per,
+            element=["C"] * 2 * n_per,
+            residue_name=["ALA"] * 2 * n_per,
+            residue_number=list(range(1, n_per + 1)) * 2,
+            chain_id=["A"] * n_per + ["B"] * n_per,
+        )
+        described = [a.describe() for a in assign_regions(structure, strategy=Strategy.CONTACT)]
+        assert described == [f"chain A: FD 1-{n_per}", f"chain B: FD 1-{n_per}"]
+
+    def test_describe_carries_insertion_codes(self) -> None:
+        """``residue_number`` alone does not identify a residue when 10 and 10A coexist."""
+        n = 6
+        structure = Structure.from_atom_records(
+            xyz=np.arange(n * 3, dtype=float).reshape(n, 3) * 4.0,
+            atom_name=["CA"] * n,
+            element=["C"] * n,
+            residue_name=["ALA"] * n,
+            residue_number=[10, 10, 10, 11, 12, 13],
+            insertion_code=["", "A", "B", "", "", ""],
+            chain_id=["A"] * n,
+        )
+        assignment = assign_regions(structure, strategy=Strategy.CONTACT)[0]
+        assert assignment.describe() == "chain A: IDR 10-13"
+
+        # The insertion-coded residue is reachable as an endpoint, not silently collapsed.
+        assert structure.residue_id(1) == "10A"
+        assert structure.residue_id(2) == "10B"
 
     def test_score_and_threshold_are_retained_for_audit(self) -> None:
         structure = make_two_domain_structure()
@@ -572,7 +653,7 @@ class TestManualSpec:
             DomainKind.IDR,
             DomainKind.FOLDED,
         ]
-        # 1-based inclusive input -> 0-based half-open internally.
+        # Inclusive residue numbers in -> 0-based half-open positional spans internally.
         assert assignment.domains[0].span.start == 0
         assert assignment.domains[0].span.stop == 40
         assert assignment.domains[1].span.start == 40
@@ -588,8 +669,9 @@ class TestManualSpec:
             assign_regions_from_spec(structure, {"A": [("squishy", 1, 10)]})
 
     def test_out_of_range_is_rejected(self) -> None:
+        """Now a "no such residue" error: bounds name residues, so 50 does not exist here."""
         structure = make_structure(10, all_atom=False)
-        with pytest.raises(InvalidRegionError, match="outside chain"):
+        with pytest.raises(InvalidRegionError, match="has no residue '50'"):
             assign_regions_from_spec(structure, {"A": [("folded", 1, 50)]})
 
     def test_gap_in_the_spec_is_rejected(self) -> None:
@@ -602,3 +684,149 @@ class TestManualSpec:
         structure = make_structure(100, all_atom=False)
         with pytest.raises(InvalidRegionError, match="overlapping"):
             assign_regions_from_spec(structure, {"A": [("folded", 1, 60), ("folded", 40, 100)]})
+
+    def test_bounds_are_the_files_residue_numbers(self) -> None:
+        """Bounds name residues, not offsets from the chain start.
+
+        They used to be a count from the chain start, so on a chain numbered from 20 the
+        spec ``("idr", 1, 40)`` silently selected file residues 20-59 -- wrong residues, no
+        error, and no way for the caller to tell.
+        """
+        structure = make_structure(100, all_atom=False, first_residue_number=20)
+        assignment = assign_regions_from_spec(
+            structure, {"A": [("idr", 20, 59), ("folded", 60, 119)]}
+        )[0]
+
+        assert assignment.describe() == "chain A: IDR 20-59; FD 60-119"
+        # Resolved against the file's numbering, so the positional spans start at 0.
+        assert (assignment.domains[0].span.start, assignment.domains[0].span.stop) == (0, 40)
+        assert (assignment.domains[1].span.start, assignment.domains[1].span.stop) == (40, 100)
+
+    def test_a_residue_the_chain_does_not_have_is_rejected(self) -> None:
+        """The old code accepted any in-range offset; a residue number can simply not exist."""
+        structure = make_structure(100, all_atom=False, first_residue_number=20)
+        with pytest.raises(InvalidRegionError, match="has no residue '1'"):
+            assign_regions_from_spec(structure, {"A": [("idr", 1, 40), ("folded", 41, 119)]})
+
+    def test_each_chain_uses_its_own_numbering(self) -> None:
+        """Two chains both numbered 1..50 take the same bounds, not 1-50 and 51-100."""
+        rng = np.random.default_rng(3)
+        n_per = 50
+        structure = Structure.from_atom_records(
+            xyz=np.concatenate(
+                [rng.normal(0.0, 5.0, (n_per, 3)), rng.normal(200.0, 5.0, (n_per, 3))]
+            ),
+            atom_name=["CA"] * 2 * n_per,
+            element=["C"] * 2 * n_per,
+            residue_name=["ALA"] * 2 * n_per,
+            residue_number=list(range(1, n_per + 1)) * 2,
+            chain_id=["A"] * n_per + ["B"] * n_per,
+        )
+        spec = {
+            "A": [("idr", 1, 10), ("folded", 11, 50)],
+            "B": [("idr", 1, 10), ("folded", 11, 50)],
+        }
+        described = [a.describe() for a in assign_regions_from_spec(structure, spec)]
+        assert described == ["chain A: IDR 1-10; FD 11-50", "chain B: IDR 1-10; FD 11-50"]
+        # Chain B's domains must land in chain B's half of the structure.
+        chain_b = structure.chains[1]
+        assert all(d.span.start >= chain_b.span.start for d in chain_b.domains)
+
+    def test_insertion_codes_are_addressable(self) -> None:
+        """A residue number alone cannot name 10A, so bounds accept the label as a string."""
+        n = 6
+        structure = Structure.from_atom_records(
+            xyz=np.arange(n * 3, dtype=float).reshape(n, 3) * 4.0,
+            atom_name=["CA"] * n,
+            element=["C"] * n,
+            residue_name=["ALA"] * n,
+            residue_number=[10, 10, 10, 11, 12, 13],
+            insertion_code=["", "A", "B", "", "", ""],
+            chain_id=["A"] * n,
+        )
+        assignment = assign_regions_from_spec(
+            structure, {"A": [("idr", "10", "10B"), ("folded", 11, 13)]}
+        )[0]
+        assert assignment.describe() == "chain A: IDR 10-10B; FD 11-13"
+        assert (assignment.domains[0].span.start, assignment.domains[0].span.stop) == (0, 3)
+
+    def test_declared_loops_survive_the_round_trip(self) -> None:
+        """A describe() -> spec -> describe() round trip used to silently drop loops.
+
+        The spec had no syntax for a loop, so a folded domain's loop became ordinary folded
+        interior and ``strategy="preset"`` would not rebuild it.
+        """
+        structure = make_two_domain_structure(fd1=40, idr=60, fd2=40)
+        assignment = assign_regions_from_spec(
+            structure,
+            {"A": [("folded", 1, 40, [(10, 25)]), ("idr", 41, 100), ("folded", 101, 140)]},
+        )[0]
+
+        loops = assignment.domains[0].loops
+        assert len(loops) == 1
+        # Same contract the detector produces: half-open, and anchored on both sides.
+        assert (loops[0].start, loops[0].stop) == (9, 25)
+        assert (loops[0].n_anchor, loops[0].c_anchor) == (8, 25)
+        assert "(loops: 10-25)" in assignment.describe()
+
+    def test_a_loop_must_lie_strictly_inside_its_domain(self) -> None:
+        """A loop is rebuilt between two fixed residues, so it needs one on each side."""
+        structure = make_two_domain_structure(fd1=40, idr=60, fd2=40)
+        with pytest.raises(InvalidRegionError, match="strictly inside"):
+            assign_regions_from_spec(
+                structure,
+                {"A": [("folded", 1, 40, [(1, 25)]), ("idr", 41, 100), ("folded", 101, 140)]},
+            )
+
+    def test_an_idr_cannot_declare_loops(self) -> None:
+        structure = make_two_domain_structure(fd1=40, idr=60, fd2=40)
+        with pytest.raises(InvalidRegionError, match="only a folded domain"):
+            assign_regions_from_spec(
+                structure,
+                {"A": [("folded", 1, 40), ("idr", 41, 100, [(50, 60)]), ("folded", 101, 140)]},
+            )
+
+    def test_overlapping_loops_are_rejected(self) -> None:
+        structure = make_two_domain_structure(fd1=40, idr=60, fd2=40)
+        with pytest.raises(InvalidRegionError, match="overlap"):
+            assign_regions_from_spec(
+                structure,
+                {
+                    "A": [
+                        ("folded", 1, 40, [(5, 20), (15, 30)]),
+                        ("idr", 41, 100),
+                        ("folded", 101, 140),
+                    ]
+                },
+            )
+
+    def test_a_malformed_entry_says_what_the_forms_are(self) -> None:
+        structure = make_structure(100, all_atom=False)
+        with pytest.raises(InvalidRegionError, match="has 2 elements"):
+            assign_regions_from_spec(structure, {"A": [("folded", 1)]})
+
+    def test_reversed_bounds_are_rejected(self) -> None:
+        structure = make_structure(100, all_atom=False)
+        with pytest.raises(InvalidRegionError, match="ends before it starts"):
+            assign_regions_from_spec(structure, {"A": [("folded", 100, 1)]})
+
+    def test_a_spec_assignment_reports_no_evidence(self) -> None:
+        """Nothing was measured, so score and threshold must not read as measurements."""
+        structure = make_structure(100, all_atom=False)
+        assignment = assign_regions_from_spec(
+            structure, {"A": [("idr", 1, 40), ("folded", 41, 100)]}
+        )[0]
+
+        assert assignment.strategy is Strategy.PRESET
+        assert np.isnan(assignment.threshold)
+        assert np.isnan(assignment.score).all()
+        # folded_mask, by contrast, is a fact about what the caller declared.
+        assert int(assignment.folded_mask.sum()) == 60
+
+    def test_tiling_errors_name_residues_the_caller_can_find(self) -> None:
+        """The messages used to quote internal positional indices, which appear nowhere."""
+        structure = make_structure(100, all_atom=False, first_residue_number=20)
+        with pytest.raises(InvalidRegionError, match=r"unassigned residues 60-79"):
+            assign_regions_from_spec(
+                structure, {"A": [("folded", 20, 59), ("folded", 80, 119)]}
+            )

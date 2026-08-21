@@ -522,6 +522,20 @@ class TestChainDomainValidation:
         with pytest.raises(InvalidRegionError, match="outside its domain"):
             chain.validate_domains()
 
+    def test_an_out_of_bounds_span_is_reported_not_crashed_on(
+        self, structure: Structure
+    ) -> None:
+        """The message must survive formatting a span that runs off the end.
+
+        These branches exist to report exactly that, and labelling residues by their file
+        numbering means indexing the residue arrays -- so an unguarded labeller turns the
+        intended InvalidRegionError into an IndexError from inside the error path.
+        """
+        chain = structure.chains[0]
+        chain.domains = [Domain(structure, Span(0, 10), DomainKind.FOLDED, loops=(Span(8, 99),))]
+        with pytest.raises(InvalidRegionError, match="outside this structure's 10 residues"):
+            chain.validate_domains()
+
     def test_domain_lookup_by_residue(self, structure: Structure) -> None:
         chain = structure.chains[0]
         folded = Domain(structure, Span(0, 5), DomainKind.FOLDED)

@@ -26,33 +26,46 @@ ANGLE_HI = 160.0
 ANGLE_PENALTY = 1.0e5
 
 
+# Constructs a right-handed orthonormal coordinate frame
+# aligned along the vector connecting point a to point b. 
+# The importance here is that this creates a local reference frame
+# we can use for tranformations, etc, 
 @nb.njit(cache=True, fastmath=False, inline="always")
 def _frame(ax, ay, az, bx, by, bz):
+    # compute displacement
     ux = bx - ax
     uy = by - ay
     uz = bz - az
+    # normalize
     n = math.sqrt(ux * ux + uy * uy + uz * uz)
     ux /= n
     uy /= n
     uz /= n
+    # if u is ~ aligned with z-axis, switch to y-axis
+    # for second orthogonal vector. Otherwise use z.
     if abs(uz) > 0.9:
         sx, sy, sz = 0.0, 1.0, 0.0
     else:
         sx, sy, sz = 0.0, 0.0, 1.0
+    # project s on to u
     d = sx * ux + sy * uy + sz * uz
+    # Subtracts the parallel component to obtain the orthogonal rejection vector
     fx = sx - d * ux
     fy = sy - d * uy
     fz = sz - d * uz
+    # f normalization
     fn = math.sqrt(fx * fx + fy * fy + fz * fz)
     fx /= fn
     fy /= fn
     fz /= fn
+    # compute vector cross product. 
     gx = uy * fz - uz * fy
     gy = uz * fx - ux * fz
     gz = ux * fy - uy * fx
     return ux, uy, uz, fx, fy, fz, gx, gy, gz
 
 
+# calculate angle from 3 sets of 3D coordinates (a to b to c)
 @nb.njit(cache=True, fastmath=False, inline="always")
 def _angle(ax, ay, az, bx, by, bz, cx, cy, cz):
     u1 = ax - bx
@@ -100,6 +113,7 @@ def _dihedral(p0x, p0y, p0z, p1x, p1y, p1z, p2x, p2y, p2z, p3x, p3y, p3z):
     return math.degrees(math.atan2(cx * wx + cy * wy + cz * wz, vx * wx + vy * wy + vz * wz))
 
 
+# place C and N based on two consecutive alpha carbons and psi
 @nb.njit(cache=True, fastmath=False, inline="always")
 def _place(ca_a, ca_b, psi):
     ux, uy, uz, fx, fy, fz, gx, gy, gz = _frame(
@@ -123,6 +137,7 @@ def _place(ca_a, ca_b, psi):
     return Cx, Cy, Cz, Nx, Ny, Nz
 
 
+# place oxygen based on CA, C, and N
 @nb.njit(cache=True, fastmath=False, inline="always")
 def _oxy(cax, cay, caz, Cx, Cy, Cz, Nx, Ny, Nz):
     ax = cax - Cx

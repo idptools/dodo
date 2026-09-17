@@ -21,6 +21,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Sequence
 
+    from .regions import RegionAssignment
+    from .structure import Structure
+
 #: Modes, duplicated here as strings so ``--help`` needs no heavy import. Validated for real
 #: against :data:`dodo.constants.MODES` once a command runs.
 _MODE_CHOICES = (
@@ -34,6 +37,39 @@ _MODE_CHOICES = (
 )
 _STRATEGY_CHOICES = ("auto", "density", "contact", "plddt")
 _ENGINE_CHOICES = ("walk",)
+#: Rigid-unit modes. Duplicated as strings for the same reason as the modes above: ``--help``
+#: must not import the pipeline. ``test_cli`` asserts these stay in step with ``_UNIT_MODES``.
+_UNIT_CHOICES = ("auto", "predicted", "experimental", "none")
+
+#: Interface defaults, duplicated into the help text for the same reason. Asserted equal to the
+#: real constants by the test suite.
+_INTERFACE_CONTACT_RADIUS = 5.0
+_INTERFACE_MIN_RESIDUE_PAIRS = 3
+
+
+def _add_missing_residue_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add reference-sequence options shared by rebuild and its units preview."""
+    parser.add_argument(
+        "--fasta",
+        metavar="PATH",
+        help=(
+            "FASTA giving the full-length sequence of each chain. Any residue the reference "
+            "says is there and the structure does not model is treated as disordered, inserted "
+            "and rebuilt -- which is what makes a crystal or cryo-EM structure usable, since "
+            "what those leave out is usually the disordered region. Headers may name chains the "
+            "RCSB way ('|Chains A[auth X]|') or simply as '>X'; a chain the headers do not name "
+            "is matched on its sequence instead"
+        ),
+    )
+    parser.add_argument(
+        "--fill-missing",
+        action="store_true",
+        help=(
+            "for chains no --fasta record covers, fall back to the sequence the file itself "
+            "declares (SEQRES, or mmCIF _entity_poly). Off by default because it changes what "
+            "gets built for any file carrying a SEQRES record"
+        ),
+    )
 
 
 def _add_common_build_arguments(parser: argparse.ArgumentParser) -> None:
@@ -168,6 +204,29 @@ def _build_parser() -> argparse.ArgumentParser:
             "explicit opt-in (default: auto)"
         ),
     )
+    _add_missing_residue_arguments(rebuild_parser)
+    rebuild_parser.add_argument(
+        "--units",
+        default="auto",
+        choices=_UNIT_CHOICES,
+        help=(
+            "which folded domains must move together, so a multi-chain complex survives the "
+            "rebuild. 'predicted' repositions domains joined by a linker (an AlphaFold model's "
+            "inter-domain arrangement is arbitrary) while holding contacts across chains; "
+            "'experimental' moves nothing that arrived with coordinates and rebuilds only the "
+            "disordered regions; 'auto' picks between them from the file's declared method and "
+            "whether residues had to be filled in, and says which it chose; 'none' keeps only "
+            "the covalent rules (default: auto)"
+        ),
+    )
+    rebuild_parser.add_argument(
+        "--lock-intra-chain-interfaces",
+        action="store_true",
+        help=(
+            "also hold together two folded domains of the SAME chain that touch. Off by "
+            "default: that arrangement is what folded-domain repositioning exists to re-sample"
+        ),
+    )
     _add_common_build_arguments(rebuild_parser)
 
     fetch_parser = subparsers.add_parser(
@@ -218,6 +277,50 @@ def _build_parser() -> argparse.ArgumentParser:
     regions_parser.add_argument(
         "--scores", action="store_true", help="also print the per-residue score profile"
     )
+    regions_parser.add_argument(
+        "-q", "--quiet", action="store_true", help="suppress the progress indicator"
+    )
+
+    units_parser = subparsers.add_parser(
+        "units",
+        help="report which folded domains DODO will hold rigid together, without rebuilding",
+        description=(
+            "Print the rigid units and the interfaces behind them. Worth running before a "
+            "complex rebuild: unit detection is a judgement call on real data, and this is how "
+            "you see and correct the grouping before spending a build on it."
+        ),
+    )
+    units_parser.add_argument("structure", help="path to a PDB or mmCIF file")
+    units_parser.add_argument(
+        "-s", "--strategy", default="auto", choices=_STRATEGY_CHOICES, help="(default: auto)"
+    )
+    units_parser.add_argument(
+        "--units", default="auto", choices=_UNIT_CHOICES, help="(default: auto)"
+    )
+    _add_missing_residue_arguments(units_parser)
+    units_parser.add_argument(
+        "--lock-intra-chain-interfaces", action="store_true", help="see 'dodo rebuild --help'"
+    )
+    units_parser.add_argument(
+        "--min-residue-pairs",
+        type=int,
+        default=_INTERFACE_MIN_RESIDUE_PAIRS,
+        metavar="N",
+        help=(
+            f"residue-residue contacts at which two folded domains are locked together "
+            f"(default: {_INTERFACE_MIN_RESIDUE_PAIRS})"
+        ),
+    )
+    units_parser.add_argument(
+        "--contact-radius",
+        type=float,
+        default=_INTERFACE_CONTACT_RADIUS,
+        metavar="A",
+        help=f"heavy-atom contact distance in Angstroms (default: {_INTERFACE_CONTACT_RADIUS})",
+    )
+    units_parser.add_argument(
+        "-q", "--quiet", action="store_true", help="suppress the progress indicator"
+    )
 
     validate_parser = subparsers.add_parser(
         "validate",
@@ -243,6 +346,34 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def _read_and_assign(
+    path: str, *, strategy: str, quiet: bool
+) -> tuple[Structure, list[RegionAssignment]]:
+    """Read a structure and identify its regions, under the same progress indicator.
+
+    ``dodo regions`` and ``dodo units`` are the commands you run to look at a structure before
+    committing to a build, so they are the ones most likely to be pointed at something enormous.
+    They used to do a two-minute read and a whole-structure scoring pass in silence.
+    """
+    from pathlib import Path as _Path
+
+    from .construct.pipeline import _progress_bar
+    from .io import read_structure
+    from .regions import assign_regions
+
+    tracker = _progress_bar(False if quiet else None)
+    try:
+        tracker.stage(f"reading {_Path(path).name}", unit="records")
+        structure = read_structure(path, on_progress=tracker.batched(20_000))
+        tracker.stage("identifying regions", total=len(structure.chains), unit="chains")
+        assignments = assign_regions(
+            structure, strategy=strategy, on_chain_done=tracker.advance
+        )
+    finally:
+        tracker.close()
+    return structure, assignments
 
 
 def _report(report: object, *, quiet: bool) -> int:
@@ -279,13 +410,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "regions":
             from .io import read_structure
-            from .regions import assign_regions
 
-            structure = read_structure(args.structure)
+            structure, assignments = _read_and_assign(
+                args.structure, strategy=args.strategy, quiet=args.quiet
+            )
             for note in structure.notes:
                 print(f"note: {note}", file=sys.stderr)
             chain_starts = {chain.chain_id: chain.span.start for chain in structure.chains}
-            for assignment in assign_regions(structure, strategy=args.strategy):
+            for assignment in assignments:
                 print(assignment.describe())
                 for note in assignment.notes:
                     print(f"  note: {note}", file=sys.stderr)
@@ -296,6 +428,51 @@ def main(argv: Sequence[str] | None = None) -> int:
                     offset = chain_starts[assignment.chain_id]
                     for index, value in enumerate(assignment.score):
                         print(f"  {structure.residue_id(offset + index)}\t{value:.3f}")
+            return 0
+
+        if args.command == "units":
+            from .construct.assembly import find_rigid_units
+            from .construct.pipeline import (
+                _UNIT_MODES,
+                RebuildReport,
+                _insert_reference_residues,
+                _prepare_unit_mode,
+                _reference_sequences,
+            )
+
+            structure, assignments = _read_and_assign(
+                args.structure, strategy=args.strategy, quiet=args.quiet
+            )
+            for note in structure.notes:
+                print(f"note: {note}", file=sys.stderr)
+            preview = RebuildReport()
+            reference = _reference_sequences(
+                structure, fasta=args.fasta, sequences=None, report=preview
+            )
+            if reference or args.fill_missing:
+                structure, assignments = _insert_reference_residues(
+                    structure,
+                    assignments,
+                    reference=reference,
+                    fill_missing=args.fill_missing,
+                    report=preview,
+                )
+            chosen, assignments = _prepare_unit_mode(
+                structure, assignments, units=args.units, report=preview
+            )
+            for note in preview.notes:
+                print(f"note: {note}", file=sys.stderr)
+            assert isinstance(chosen, str)
+            lock_interfaces, lock_chains = _UNIT_MODES[chosen]
+            assembly = find_rigid_units(
+                structure,
+                contact_radius=args.contact_radius,
+                min_residue_pairs=args.min_residue_pairs,
+                lock_intra_chain_interfaces=args.lock_intra_chain_interfaces,
+                lock_interfaces=lock_interfaces,
+                lock_chains=lock_chains,
+            )
+            print(assembly.summary())
             return 0
 
         if args.command == "validate":
@@ -352,6 +529,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.structure,
                 strategy=args.strategy,
                 progress=progress,
+                fasta=args.fasta,
+                fill_missing=args.fill_missing,
+                units=args.units,
+                lock_intra_chain_interfaces=args.lock_intra_chain_interfaces,
                 **common,
             )
         elif args.command == "fetch":
@@ -396,6 +577,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         status = _report(report, quiet=args.quiet)
         if report.models:
+            if not args.quiet:
+                atoms = sum(model.n_atoms for model in report.models)
+                print(
+                    f"writing {len(report.models)} model(s), {atoms} atoms, to {args.out}",
+                    file=sys.stderr,
+                )
             write_structure(
                 report.models,
                 args.out,

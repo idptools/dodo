@@ -916,6 +916,11 @@ def _terminal_oxygen(ca: np.ndarray, c: np.ndarray, ca_prev: np.ndarray) -> np.n
     return placed
 
 
+def _same_chain(structure: Structure, first: int, second: int) -> bool:
+    """Whether two residue indices belong to one polymer chain, and so can be bonded."""
+    return bool(structure.chain_index[first] == structure.chain_index[second])
+
+
 def _existing_atom(structure: Structure, residue: int, name: str) -> np.ndarray | None:
     """Coordinates of a named atom already present in a residue, or None if it has none."""
     atoms = structure.atom_slice_for_residues(residue, residue + 1)
@@ -1127,7 +1132,13 @@ def _polish_coupled_clashes(
     units = [
         u
         for u in range(n_res - 1)
-        if u in rebuilt and (u + 1) in rebuilt and u in placed and (u + 1) in placed
+        if (
+            u in rebuilt
+            and (u + 1) in rebuilt
+            and u in placed
+            and (u + 1) in placed
+            and structure.chain_index[u] == structure.chain_index[u + 1]
+        )
     ]
     if not units:
         return 0
@@ -1166,6 +1177,7 @@ def _polish_coupled_clashes(
     row = {key: len(fixed_xyz) + i for i, key in enumerate(mov_keys)}
     all_xyz = np.vstack([fixed_xyz, np.array([placed[r][nm] for r, nm in mov_keys])])
     all_res = np.concatenate([fixed_res, np.array([r for r, _ in mov_keys], dtype=fixed_res.dtype)])
+    all_chain = structure.chain_index[all_res]
     all_elem = np.concatenate([fixed_elem, np.array([nm for _, nm in mov_keys], dtype=object)])
     all_name = np.concatenate([fixed_name, np.array([nm for _, nm in mov_keys], dtype=object)])
 
@@ -1191,7 +1203,12 @@ def _polish_coupled_clashes(
         return safe, oxygen
 
     def _too_close_covalently(
-        name_a: str, residue_a: int, names_b: np.ndarray, residues_b: np.ndarray
+        name_a: str,
+        residue_a: int,
+        chain_index_a: int,
+        names_b: np.ndarray,
+        residues_b: np.ndarray,
+        chains_b: np.ndarray,
     ) -> np.ndarray:
         """Report where a pair is close for covalent reasons rather than colliding.
 
@@ -1202,17 +1219,74 @@ def _polish_coupled_clashes(
         chain_b, oxy_b = _chain_and_oxygen(names_b, residues_b)
         offset_a = chain_offset.get(name_a, -1)
         residues_b = np.asarray(residues_b, dtype=np.int64)
+        same_chain: np.ndarray = np.asarray(chains_b, dtype=np.int64) == chain_index_a
         if offset_a < 0:
-            near: np.ndarray = np.abs(residues_b - residue_a) <= 1
+            near: np.ndarray = same_chain & (np.abs(residues_b - residue_a) <= 1)
             return near
-        chain_a = 3 * residue_a + offset_a
+        chain_position_a = 3 * residue_a + offset_a
         oxy_a = 1 if name_a == "O" else 0
-        separation = np.abs(chain_a - chain_b) + oxy_a + oxy_b
+        separation = np.abs(chain_position_a - chain_b) + oxy_a + oxy_b
         backbone_b = np.array([str(nm) in chain_offset for nm in names_b], dtype=bool)
         excluded: np.ndarray = np.where(
             backbone_b, separation <= 4, np.abs(residues_b - residue_a) <= 1
         )
-        return excluded
+        result: np.ndarray = same_chain & excluded
+        return result
+
+    # ONE spatial index over the whole cloud, rebuilt only when the cloud actually changes.
+    #
+    # try_polish used to build its own, over `all_xyz` with this group's three-to-six moved atoms
+    # masked out of the INPUT. Correct, and quadratic in the wrong thing: the mask, four array
+    # copies (two of them object arrays) and a fresh cKDTree were paid once per clash group per
+    # round. MEASURED at nuclear-pore scale, 5,795,040 points: 2,190 ms for the tree plus 58 ms of
+    # masking, 2.25 s per group -- hours of a two-hour run, spent rebuilding the same index. The
+    # moved atoms are a handful, so dropping them from the query RESULTS is the same answer for
+    # the cost of an isin().
+    #
+    # Lazy rather than hoisted to the top of the round: `place_into` writes accepted positions
+    # into all_xyz, so a group must see the moves the groups before it made. The candidate search
+    # works on `trial = all_xyz.copy()` and leaves all_xyz alone, so only an ACCEPTED move
+    # invalidates -- which is the rare case, and the one where a rebuild is genuinely owed.
+    # The cloud splits cleanly in two, and only one half ever moves. `all_xyz` is
+    # `vstack([fixed_xyz, the placed N/C/O])`, and `place_into` only ever writes rows at
+    # `row[(u, ...)]`, every one of which is past `n_fixed`. So the first n_fixed rows -- every
+    # folded-domain atom and every rebuilt alpha carbon, 4.94M of the 5.80M at nuclear-pore scale
+    # -- are constant for the whole pass. Indexing them once and never again is where the time
+    # comes back.
+    n_fixed = len(fixed_xyz)
+    fixed_tree = cKDTree(all_xyz[:n_fixed])
+
+    cloud: list[cKDTree | None] = [None]
+    moving: list[cKDTree | None] = [None]
+
+    def cloud_tree() -> cKDTree:
+        """Return an index over the whole cloud.
+
+        Only the round-level clash search needs it, so it is built at most once per round rather
+        than once per clash group.
+        """
+        if cloud[0] is None:
+            cloud[0] = cKDTree(all_xyz)
+        return cloud[0]
+
+    def moving_tree() -> cKDTree:
+        """Return an index over just the placed N/C/O -- the only part a move can invalidate."""
+        if moving[0] is None:
+            moving[0] = cKDTree(all_xyz[n_fixed:])
+        return moving[0]
+
+    def neighbours_within(anchor: np.ndarray, radius: float) -> np.ndarray:
+        """Every atom of the cloud within ``radius`` of ``anchor``, as global indices, sorted.
+
+        Two queries against two indexes rather than one against a freshly built whole-cloud
+        index. The union is the same set; sorting makes the order independent of how either tree
+        was built, which matters because the overlap below is a running float sum.
+        """
+        near_fixed = np.asarray(fixed_tree.query_ball_point(anchor, radius), dtype=np.int64)
+        near_moving = np.asarray(moving_tree().query_ball_point(anchor, radius), dtype=np.int64)
+        found = np.concatenate([near_fixed, near_moving + n_fixed])
+        found.sort()
+        return found
 
     def unit_of(index: int) -> int | None:
         if index < len(fixed_xyz):
@@ -1255,11 +1329,7 @@ def _polish_coupled_clashes(
             )
         ]
         moved = [r for r, _, _ in moved_specs]
-        static = np.ones(len(all_xyz), dtype=bool)
-        static[moved] = False
-        txyz, tres, telem = all_xyz[static], all_res[static], all_elem[static]
-        tname = all_name[static]
-        static_tree = cKDTree(txyz)
+        excluded = np.asarray(moved, dtype=np.int64)
 
         # Precompute each moved atom's static neighbours ONCE for the whole group search, not with a
         # ``query_ball_point`` per atom per candidate. The static cloud is fixed here and the shell
@@ -1271,17 +1341,24 @@ def _polish_coupled_clashes(
         for r_idx, anchor, reach in moved_specs:
             residue = int(all_res[r_idx])
             element = str(all_elem[r_idx])
-            found = np.asarray(
-                static_tree.query_ball_point(anchor, query_r + reach), dtype=np.int64
-            )
+            found = neighbours_within(anchor, query_r + reach)
+            if found.size:
+                # The group's own moved atoms are not part of the static cloud. They used to be
+                # removed from the tree's input; removing them from its output is the same set.
+                found = found[~np.isin(found, excluded)]
             if found.size:
                 found = found[
                     ~_too_close_covalently(
-                        str(all_name[r_idx]), residue, tname[found], tres[found]
+                        str(all_name[r_idx]),
+                        residue,
+                        int(all_chain[r_idx]),
+                        all_name[found],
+                        all_res[found],
+                        all_chain[found],
                     )
                 ]
-            nbr_xyz[r_idx] = txyz[found]
-            nbr_lim[r_idx] = np.array([limit(element, str(telem[j])) for j in found])
+            nbr_xyz[r_idx] = all_xyz[found]
+            nbr_lim[r_idx] = np.array([limit(element, str(all_elem[j])) for j in found])
 
         # Overlap AMONG the group's own moved atoms -- excluded from the static cloud, but exactly
         # the clash a joint search is trying to clear. Their element pairs and residues are fixed,
@@ -1293,8 +1370,10 @@ def _polish_coupled_clashes(
                 if _too_close_covalently(
                     str(all_name[ia]),
                     int(all_res[ia]),
+                    int(all_chain[ia]),
                     all_name[ib : ib + 1],
                     all_res[ib : ib + 1],
+                    all_chain[ib : ib + 1],
                 )[0]:
                     continue
                 inter_pairs.append((ia, ib, limit(str(all_elem[ia]), str(all_elem[ib]))))
@@ -1405,14 +1484,21 @@ def _polish_coupled_clashes(
         for u, z in zip(unit_group, best_choice, strict=True):
             place_into(u, z, all_xyz)
             azimuth[u] = ((z + 180.0) % 360.0) - 180.0
+        # The cloud moved. Only the moving half can have changed, so only its index and the
+        # whole-cloud one are stale; fixed_tree stands for the life of the pass.
+        cloud[0] = None
+        moving[0] = None
         return True
 
     moves = 0
     for _ in range(rounds):
-        tree = cKDTree(all_xyz)
+        tree = cloud_tree()
         groups: set[tuple[int, ...]] = set()
         for i, j in tree.query_pairs(query_r, output_type="ndarray"):
-            if abs(int(all_res[i]) - int(all_res[j])) <= 1:
+            if (
+                all_chain[i] == all_chain[j]
+                and abs(int(all_res[i]) - int(all_res[j])) <= 1
+            ):
                 continue
             distance = float(np.linalg.norm(all_xyz[i] - all_xyz[j]))
             if distance >= limit(str(all_elem[i]), str(all_elem[j])):
@@ -1533,7 +1619,14 @@ def add_backbone_to_rebuilt(
         # Both ends are fixed by construction against the REAL neighbour rather than a predicted
         # one: the outgoing C onto the next residue's existing N, and the incoming N onto the
         # previous residue's existing C.
-        if stop < structure.n_residues:
+        # Residue index stop-1 and residue index stop are consecutive in the ARRAY, which is not
+        # the same as being consecutive in a CHAIN. Across a chain boundary they are two separate
+        # molecules and there is no peptide bond to close. Without this check a region ending at
+        # a chain's C terminus had its carbonyl aimed at the first nitrogen of the next chain:
+        # measured on a five-chain nuclear-pore subset, two such "seams" came out at 71.0 and
+        # 149.6 A and were reported as strained peptide bonds rather than as the chain breaks
+        # they are.
+        if stop < structure.n_residues and _same_chain(structure, stop - 1, stop):
             neighbour_n = _existing_atom(structure, stop, "N")
             if neighbour_n is not None:
                 anchor_ca = structure.ca_xyz[stop - 1]
@@ -1604,7 +1697,7 @@ def add_backbone_to_rebuilt(
                 # fallback) makes well-defined -- it sits off the CA->N axis -- so O lands *trans*
                 # to the neighbour's nitrogen rather than on an arbitrary axis.
                 placed[stop - 1]["O"] = _place_carbonyl_oxygen(anchor_ca, seam, neighbour_n)
-        if start > 0:
+        if start > 0 and _same_chain(structure, start - 1, start):
             neighbour_c = _existing_atom(structure, start - 1, "C")
             if neighbour_c is not None:
                 first_ca = structure.ca_xyz[start]
@@ -1770,7 +1863,15 @@ def add_backbone_to_rebuilt(
             f"Placing a backbone changed the residue count from {structure.n_residues} to "
             f"{rebuilt.n_residues}, which it must never do."
         )
+    # from_atom_records knows nothing about provenance, so carry it. Which residues DODO
+    # inserted from a reference sequence is a property of the residue, and losing it here would
+    # make the finished model unable to say which of its residues the input never showed.
+    rebuilt.inserted = structure.inserted.copy()
+    rebuilt.experimental_method = structure.experimental_method
+    rebuilt.notes = list(structure.notes)
     for source_chain, target_chain in zip(structure.chains, rebuilt.chains, strict=True):
+        target_chain.uniprot_id = source_chain.uniprot_id
+        target_chain.full_sequence = source_chain.full_sequence
         target_chain.domains = [
             replace(domain, structure=rebuilt, rebuilt_loops=set(domain.rebuilt_loops))
             for domain in source_chain.domains

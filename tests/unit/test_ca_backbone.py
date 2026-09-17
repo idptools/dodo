@@ -312,6 +312,64 @@ class TestAddBackboneToRebuilt:
         assert [d.kind for d in result.domains] == [d.kind for d in structure.domains]
         assert [d.span for d in result.domains] == [d.span for d in structure.domains]
 
+    def test_structure_metadata_survives_the_rebuild(self) -> None:
+        import dodo
+        from dodo.construct.ca_backbone import add_backbone_to_rebuilt
+
+        structure = dodo.build_from_sequence("GRNQNGG", seed=0, backbone=False).models[0]
+        structure.experimental_method = "X-RAY DIFFRACTION"
+        structure.notes = ["source note"]
+        result = add_backbone_to_rebuilt(structure, refine=False).structure
+        assert result.experimental_method == structure.experimental_method
+        assert result.notes == structure.notes
+        assert result.notes is not structure.notes
+
+    def test_global_polish_does_not_join_two_chains(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import dodo.construct.backbone_refine as refine_module
+        from dodo.construct.ca_backbone import add_backbone_to_rebuilt
+        from dodo.regions import assign_regions_from_spec
+        from dodo.structure import Structure
+
+        n = 4
+        xyz = np.vstack(
+            [
+                np.column_stack([np.arange(n) * 3.81, np.zeros(n), np.zeros(n)]),
+                np.column_stack([100.0 + np.arange(n) * 3.81, np.zeros(n), np.zeros(n)]),
+            ]
+        )
+        structure = Structure.from_atom_records(
+            xyz=xyz,
+            atom_name=["CA"] * (2 * n),
+            element=["C"] * (2 * n),
+            residue_name=["ALA"] * (2 * n),
+            residue_number=[1, 2, 3, 4, 1, 2, 3, 4],
+            chain_id=["A"] * n + ["B"] * n,
+            source="two-chain polish probe",
+        )
+        assign_regions_from_spec(
+            structure,
+            {"A": [("idr", 1, 4)], "B": [("idr", 1, 4)]},
+        )
+        for domain in structure.domains:
+            domain.rebuilt = True
+
+        original = refine_module._azimuth_frame
+        seen: list[tuple[np.ndarray, np.ndarray]] = []
+
+        def spy(first: np.ndarray, second: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            seen.append((first.copy(), second.copy()))
+            return original(first, second)
+
+        monkeypatch.setattr(refine_module, "_azimuth_frame", spy)
+        add_backbone_to_rebuilt(structure, refine=True)
+        chain_break = (structure.ca_xyz[3], structure.ca_xyz[4])
+        assert not any(
+            np.array_equal(first, chain_break[0]) and np.array_equal(second, chain_break[1])
+            for first, second in seen
+        )
+
     def test_atoms_are_in_n_ca_c_o_order(self) -> None:
         """Viewers and the CONECT writer both assume the conventional within-residue order."""
         import dodo

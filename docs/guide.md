@@ -68,10 +68,32 @@ Neither cache can change a result: predictions are deterministic per sequence, a
 the sparrow version so an upgrade that changes the network invalidates them rather than serving
 stale values.
 
-A progress bar is shown on stderr when stderr is a terminal, weighted by residues rather than by
-region, because region lengths span two orders of magnitude and a per-region bar sits still through
-the slowest part. It is suppressed automatically when output is piped, and by `-q`. From the Python
-API, pass `progress=True` or `progress=False` to override.
+### The progress indicator
+
+One line on stderr, relabelled as the rebuild moves through its stages:
+
+```text
+reading 7R5J-assembly1.cif: 4.21M records [01:43]
+identifying regions:  62%|██████    | 503/808 chains [00:55]
+filling in unmodelled residues:  88%|████████▊ | 711/808 chains [01:24]
+finding rigid units: 9.4k domain pairs [00:02]
+positioning folded domains:  41%|████      | 760/1841 steps [00:28]
+rebuilding (model 2/5):  17%|█▋        | 41.0k/241k res [03:12]
+```
+
+Every stage is covered, including reading the file, which on a large assembly is the longest
+single wait — measured on the 597 MB, 4.9-million-atom nuclear pore, 125 s of the run happens
+before region identification even starts. Every stage also *advances*, not just announces
+itself: a bar only redraws when something moves, so a stage that sets a label and then works
+silently leaves a frozen line, which is worse than no line at all.
+
+Within the rebuild stage the count is weighted by residues rather than by region, because region
+lengths span two orders of magnitude and a per-region bar sits still through the slowest part.
+
+It is shown when stderr is a terminal, suppressed automatically when output is piped, and
+suppressed by `-q`. From the Python API, pass `progress=True` or `progress=False` to override.
+`dodo regions` and `dodo units` show it too — they are the commands you point at a large
+structure first.
 
 ### Build modes
 
@@ -598,6 +620,231 @@ syntax for expressing them, so `dodo rebuild -s preset` is rejected — the CLI 
 
 This replaces 1.x's `regions_dict=`, which took a separate stringly-typed description of the
 structure alongside the real one, so the two could disagree.
+
+## Complexes
+
+### Rigid units: what may move, and what may not
+
+Step 3 of DODO's algorithm moves folded domains so each linker IDR can reach its predicted
+end-to-end distance. On one chain that is the point of the whole package. On a complex, applied
+naively, it is a disaster: the domains of two chains that pack against each other were put there
+by a prediction or an experiment, and pulling them apart to satisfy a linker prediction dismantles
+the thing you handed DODO.
+
+So folded domains are grouped into **rigid units**. A unit is a set of folded domains — possibly
+from different chains — whose relative positions and orientations DODO will not change. A unit
+moves as one rigid body or it does not move at all, and the invariant is exact: two atoms in the
+same unit are the same distance apart in the output as in the input, to 1e-6 Å.
+
+Domains rather than chains, deliberately. A chain in a complex routinely has some domains inside
+the assembly and some dangling off a long linker; locking whole chains would forfeit step 3 for
+every chain that touches another, while locking domains keeps it for exactly the domains that are
+free to move.
+
+Three things put two domains in one unit:
+
+1. **Covalent continuity.** Two folded domains of one chain with no residues between them are
+   bonded across the boundary. This is not a judgement call.
+2. **A link that will not be rebuilt.** Residues between two folded domains that DODO will skip —
+   anything under `min_length` — keep their input coordinates, so they are a rigid link and their
+   neighbours are one unit.
+3. **An interface.** Two domains in contact, by default only across chains. This is the only one
+   of the three that is a judgement call; see the threshold discussion below.
+
+### Looking before you build
+
+```bash
+dodo units complex.cif
+```
+
+```
+3 rigid unit(s) over 6 folded domain(s); 1 hold more than one
+  unit 0: A:193-222, A:473-912, B:193-222, B:473-912 [interface (344 residue contacts)]
+  unit 1: A:281-433
+  unit 2: B:281-433
+  3/7 contact(s) locked
+    A:193-222 .. A:473-912: 2 residue contact(s), 8 atom contact(s) -- NOT locked
+    A:193-222 .. B:473-912: 344 residue contact(s), 5540 atom contact(s) -- locked
+```
+
+Every measured contact is listed, locked or not, because a contact DODO is prepared to break is
+exactly what you need to see. Adjust with `--min-residue-pairs` and `--contact-radius`, or name the
+units yourself in Python.
+
+### Predicted or experimental
+
+The choice is not really about units, it is about the input: is the arrangement of the folded
+domains a guess DODO may improve on, or a measurement it must not touch? DODO's whole premise —
+that a predicted inter-domain arrangement across a long linker is arbitrary — is a statement about
+*predictions*. It is not true of a cryo-EM map.
+
+| Setting | What it holds together |
+|---|---|
+| `--units predicted` | covalent continuity, plus contacts **across chains**. Domains joined by a linker are repositioned. |
+| `--units experimental` | everything that arrived with coordinates. Nothing moves; only the disordered regions are rebuilt. |
+| `--units auto` (default) | resolves to one of the two, from the file, and says which |
+| `--units none` | covalent continuity only — the behaviour before rigid units existed |
+| `--lock-intra-chain-interfaces` | under `predicted`, also hold two touching folded domains of the *same* chain |
+
+`auto` decides on two facts about the file rather than on a guess about the science:
+
+1. the file declares an experimental method — `EXPDTA` in a PDB, `_exptl.method` in an mmCIF.
+   Measured across every fixture class present: AlphaFold DB models and AlphaFold 3 server output
+   declare nothing at all, while 6kn7 and 7R5J declare `ELECTRON MICROSCOPY` in both formats.
+   `THEORETICAL MODEL` is the PDB's own marker for a computed structure and does *not* count;
+2. residues were filled in from a reference sequence. A prediction models every residue it was
+   given, so having unmodelled residues is itself a property of an experiment.
+
+Either one means experimental. The resolution is written into `report.notes` every time, because
+a default that silently decides whether someone's measured domains may move is one they need to be
+able to see and override.
+
+```python
+report = dodo.rebuild("model.pdb", seed=0, progress=False)
+print([n for n in report.notes if "units=auto" in n][0])
+```
+
+`--units chains` is accepted as a literal-minded alias for `experimental`: holding every chain
+rigid is exactly what "do not move anything that was in the input" comes to, because a linker only
+ever joins two domains of the same chain.
+
+The default interface threshold is three residue-residue contacts within 5 Å, and it is
+deliberately low. The two errors are not symmetric. Locking a pair that did not need it costs only
+that the pair stays where the input put it; *not* locking a pair that needed it takes a real
+complex apart. Measured over five AlphaFold 3 complexes, 95 inter-chain folded-domain pairs are in
+contact at all and the distribution is strongly bimodal — 7 pairs touch at exactly one residue pair
+and 3 more at two, then the next value is 3 and the median is 37.
+
+In Python, name the units outright when you know better than the heuristic:
+
+```python
+import dodo
+
+report = dodo.rebuild(
+    "complex.pdb",
+    units=[[("A", 300), ("B", 300)]],   # any residue inside each folded domain to be held
+    seed=0,
+    progress=False,
+)
+for unit in report.rigid_units:
+    print(unit)
+```
+
+### What the report tells you
+
+`RebuildReport` gains four things on a complex:
+
+```python
+report.units                 # every rigid unit: what it holds, whether it moved, how far off
+report.rigid_units           # the subset holding more than one folded domain
+report.linkers               # every connecting IDR: predicted span against what it got
+report.interfaces            # every measured contact, locked or not
+report.unbridgeable_linkers  # flanking domains further apart than the residues can span
+```
+
+A linker whose two flanking domains are in one unit did not have its span set by DODO, and says so
+rather than quietly reporting a prediction it never used. An unbridgeable linker counts against
+`report.ok`: it is a property of the input and of the locking decision, knowable before any region
+is attempted, and reporting it as a generic build failure would hide that.
+
+### Placing a unit held by more than one linker
+
+A unit reached by a single linker is placed the way DODO has always placed a domain: sample a
+direction, put the attachment alpha carbon at the predicted separation along it, turn the unit so
+its body extends away from the domain it connects back to, perturb, reject on clash.
+
+A unit reached by two or more cannot be placed by choosing one direction, and in a complex that is
+common rather than exotic — a heterodimer whose two chains each contribute a domain to each of two
+units produces it immediately. Those are placed by projecting each attachment point onto the sphere
+its own constraint defines, superposing onto the result, and iterating. The same step swept over a
+whole component is what closes a cycle, and it is skipped entirely when the spanning-tree placement
+already satisfies every constraint — which is every acyclic component, and therefore every
+single-chain input.
+
+## Structures with unresolved residues
+
+A crystal or cryo-EM structure contains what could be resolved. What could not be resolved is,
+overwhelmingly, disordered — which is to say it is exactly what DODO exists to rebuild, and it is
+not in the file. Give DODO the full-length sequence and it fills it in.
+
+```bash
+dodo rebuild 7R5J.cif --fasta 7R5J_chain_sequences.fasta -o filled.cif
+```
+
+```python
+import dodo
+
+report = dodo.rebuild("model.pdb", sequences={"A": "MSKGEELFT..."}, seed=0, progress=False)
+print(report.insertions.summary())
+```
+
+### Matching the FASTA to the chains
+
+The format is trivial; the mapping is not. A FASTA from the RCSB names each chain twice — the
+mmCIF `label_asym_id` and the author's `auth_asym_id` — and a biological assembly renames every
+chain again for each symmetry copy:
+
+```text
+>7R5J_11|Chains TA[auth I0], UA[auth I1], VA[auth I2], WA[auth I3]|Nucleoporin p58/p45|Homo sapiens
+```
+
+DODO keys chains on the author id, so `I0` is the name that wins. Matching runs four passes,
+cheapest and most certain first: the id verbatim; the id with a biological assembly's `-2`/`-3`
+copy suffix stripped; the chain's observed sequence being a subsequence of exactly one record (or
+of several records that all carry the *same* sequence, since identical entities are
+interchangeable); and finally, nothing — which is reported rather than guessed at. A hand-written
+`>A` or `>A some description` works too.
+
+`--fill-missing` falls back to the sequence the file itself declares — `SEQRES` in a PDB,
+`_entity_poly` in an mmCIF — for chains no FASTA record covers. It is off by default because it
+changes what gets built for any file carrying a `SEQRES` record, which is most experimental
+structures.
+
+### Where the inserted residues go
+
+Insertion happens **after** region identification, and that ordering is load-bearing. An inserted
+residue has no coordinates; it gets a placeholder alpha carbon so the arrays stay well-formed, and
+that placeholder is fiction. Burial is scored from coordinates, so letting region identification
+see the placeholders would let fiction decide which residues are folded — a straight line drawn
+through a protein core scores as buried, and the region you most wanted rebuilt would come out
+classified as structure.
+
+Regions are therefore decided on the observed geometry, and the inserted residues spliced into that
+decision by where they fall:
+
+- strictly inside a folded domain — an unresolved surface loop — becomes a **loop** of that domain,
+  rebuilt between two fixed anchors. The domain stays one domain, which is what stops its two
+  halves being pulled apart;
+- inside or against a disordered region extends that region;
+- between two folded domains with nothing between them becomes a new connecting IDR;
+- past either end of the chain extends, or creates, a terminal IDR.
+
+Two folded domains whose connecting linker was **inserted** rather than observed are held rigid.
+A linker nobody ever saw says nothing about where those domains sit relative to each other, but
+their own coordinates do, and moving them apart to satisfy a prediction for residues nobody
+observed would replace a measurement with a guess.
+
+### What is refused rather than guessed
+
+- A reference that disagrees with more than 10% of a chain's modelled residues is a different
+  protein; the chain is left alone and the report says so.
+- A gap whose flanking residues are further apart than the missing residues can physically span
+  has no solution. It is reported before anything is inserted, not attempted.
+- A region that fails to build has its placeholder residues **removed from the output**. Every
+  other region DODO fails to build keeps its input coordinates, which is honest because they came
+  from the input; here there is nothing to keep, so writing the placeholder would mean writing a
+  straight line and calling it a structure.
+
+Residue numbering is preserved: an inserted residue takes the number the file's own numbering gap
+left free. When the author numbering has no room — which means the numbering disagrees with the
+sequence — the whole chain is renumbered from the reference and the report says so, rather than
+producing a file whose numbering quietly disagrees with itself. Inserted residues are marked on the
+model, so you can always tell which is which:
+
+```python
+model = report.models[0]
+model.inserted            # (n_residues,) bool: True where DODO added the residue
+```
 
 ### The structure object
 

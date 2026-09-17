@@ -26,6 +26,7 @@ __all__ = [
     "rotation_between_vectors",
     "rotation_between_vectors_batch",
     "rotation_from_axis_angle",
+    "superpose",
 ]
 
 #: Vector norm at or below which a vector is treated as having no direction.
@@ -480,3 +481,77 @@ def apply(
         centre = _as_vector3(about, "about")
         rotated = (array - centre) @ matrix.T + centre
     return rotated.reshape(3) if single_point else rotated
+
+
+def superpose(
+    moving: np.ndarray,
+    target: np.ndarray,
+    *,
+    weights: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Least-squares rigid transform taking ``moving`` onto ``target``: the Kabsch algorithm.
+
+    Returns ``(rotation, translation)`` minimising ``sum(w_i |R m_i + t - g_i|^2)``, so a caller
+    applies it as ``coords @ rotation.T + translation``.
+
+    Used to place a rigid unit against several linker constraints at once. Each constraint says
+    "this attachment point must sit on this sphere"; projecting the current points onto their
+    spheres gives a target set, and this returns the rigid motion that comes closest to hitting
+    all of them. Iterating the two steps converges on a placement satisfying every constraint it
+    can.
+
+    Parameters
+    ----------
+    moving, target
+        ``(n, 3)`` corresponding point sets, ``n >= 1``.
+    weights
+        Optional ``(n,)`` non-negative weights.
+
+    Notes
+    -----
+    **The reflection case is handled, and it is not hypothetical here.** The bare SVD solution
+    ``V U^T`` minimises the residual over all orthogonal matrices, and when the points are
+    coplanar -- which two or three attachment points always are -- the best orthogonal map is
+    often a reflection. Applying one would mirror a folded domain: every internal distance
+    preserved, chirality inverted, and nothing downstream able to tell. Negating the last
+    singular direction gives the best *proper* rotation instead.
+
+    With fewer than three points the rotation is underdetermined and this returns the minimal
+    one -- for a single point, the identity and a pure translation. That is deliberate: the
+    remaining freedom belongs to the caller, who spends it on avoiding clashes.
+    """
+    moving = np.atleast_2d(np.asarray(moving, dtype=np.float64))
+    target = np.atleast_2d(np.asarray(target, dtype=np.float64))
+    if moving.shape != target.shape or moving.shape[1] != 3:
+        raise GeometryError(
+            f"superpose needs two matching (n, 3) point sets, got {moving.shape} and "
+            f"{target.shape}."
+        )
+    if moving.shape[0] == 0:
+        raise GeometryError("superpose needs at least one point pair.")
+
+    if weights is None:
+        weight = np.ones(moving.shape[0], dtype=np.float64)
+    else:
+        weight = np.asarray(weights, dtype=np.float64).ravel()
+        if weight.shape[0] != moving.shape[0]:
+            raise GeometryError(
+                f"superpose got {weight.shape[0]} weights for {moving.shape[0]} points."
+            )
+        if np.any(weight < 0):
+            raise GeometryError("superpose weights must be non-negative.")
+    total = float(weight.sum())
+    if total <= 0:
+        raise GeometryError("superpose weights sum to zero, so no centroid is defined.")
+
+    moving_centre = (weight[:, None] * moving).sum(axis=0) / total
+    target_centre = (weight[:, None] * target).sum(axis=0) / total
+    if moving.shape[0] == 1:
+        return _IDENTITY.copy(), target_centre - moving_centre
+
+    covariance = (weight[:, None] * (moving - moving_centre)).T @ (target - target_centre)
+    u, _, vt = np.linalg.svd(covariance)
+    correction = np.eye(3)
+    correction[2, 2] = np.sign(np.linalg.det(vt.T @ u.T)) or 1.0
+    rotation = vt.T @ correction @ u.T
+    return rotation, target_centre - rotation @ moving_centre

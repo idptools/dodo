@@ -85,7 +85,7 @@ Shared by the commands that build — `rebuild`, `fetch`, `sequence`. `regions` 
 | `--ca-only` | off | Alpha carbons only, folded domains included |
 | `-b`, `--annotate-regions` | off | Encode region type in the B-factor column, for colouring |
 | `--no-conect` | off | Omit CONECT records — **not recommended**, see [below](#why-conect-records-matter) |
-| `-q`, `--quiet` | off | Suppress the per-region report and the progress bar |
+| `-q`, `--quiet` | off | Suppress the per-region report and the progress indicator |
 | `--cache-structures` (`fetch` only) | off | Keep the downloaded AlphaFold model on disk; otherwise it is deleted when the command exits |
 
 ### Caching
@@ -395,6 +395,83 @@ which took a parallel stringly-typed description of the structure that could dis
 one. The [guide](docs/guide.md#overriding-the-regions) covers multi-chain specs, the full error
 list, and what a preset assignment does and does not carry.
 
+## Complexes, and structures with unresolved residues
+
+Two things a multi-chain structure needs that a single chain does not.
+
+### The complex has to survive the rebuild
+
+DODO moves folded domains so each linker can reach its predicted end-to-end distance. On one
+chain that is the whole point. Across chains it would take the complex apart — so folded domains
+that pack against each other are grouped into a **rigid unit**, and a unit moves as one body or
+not at all. Two atoms in the same unit are the same distance apart in the output as in the input,
+exactly.
+
+Check the grouping before you spend a build on it:
+
+```bash
+dodo units complex.cif
+```
+
+```
+3 rigid unit(s) over 6 folded domain(s); 1 hold more than one
+  unit 0: A:193-222, A:473-912, B:193-222, B:473-912 [interface (344 residue contacts)]
+  unit 1: A:281-433
+  unit 2: B:281-433
+  3/7 contact(s) locked
+```
+
+### Predicted or experimental
+
+The real question behind all of this is whether the arrangement of the folded domains is a guess
+DODO may improve on or a measurement it must not touch, so that is what `--units` names:
+
+| `--units` | What it does |
+|---|---|
+| `predicted` | An AlphaFold model. Domains joined by a linker are repositioned to the linker's predicted end-to-end distance; domains in contact **across chains** move together, so a predicted complex stays a complex. |
+| `experimental` | A crystal or cryo-EM structure. **Nothing that arrived with coordinates moves at all** — only the disordered regions are rebuilt, including any filled in from a FASTA. |
+| `auto` (default) | Picks from the file, and says which it chose. |
+| `none` | Covalent rules only — the pre-2.1 behaviour. |
+
+`auto` uses two facts about the file, not a guess about the science: a declared experimental
+method (`EXPDTA`, or mmCIF `_exptl.method`) means experimental, and so does having had residues
+filled in from a reference. AlphaFold DB models and AlphaFold 3 server output declare no method
+and are complete, so they come out `predicted`. The decision is always in the report:
+
+```
+note: units=auto resolved to 'experimental': the file declares an experimental method
+(ELECTRON MICROSCOPY), so the arrangement of its folded domains is a measurement and nothing
+that arrived with coordinates is moved.
+```
+
+Two folded domains of the *same* chain that touch are not held by default under `predicted` —
+re-sampling that arrangement is what DODO is for — and `--lock-intra-chain-interfaces` opts in.
+
+Single-chain output is unaffected: with one folded domain per unit this is the same code doing
+the same thing, and the output is byte-for-byte what it was.
+
+### Residues the structure never modelled
+
+A crystal or cryo-EM structure contains what could be resolved, and what could not be resolved is
+usually the disordered region you wanted rebuilt. Give DODO the full-length sequence and it treats
+every residue the reference says is there and the file does not show as disordered, inserts it,
+and builds it:
+
+```bash
+dodo rebuild 7R5J.cif --fasta 7R5J.fasta -o filled.pdb
+```
+
+The FASTA can name chains the way the RCSB does (`|Chains A[auth X], B[auth Y]|`) or simply as
+`>X`; a chain no header names is matched on its own sequence, which is what makes a biological
+assembly work after every chain has been renamed. `--fill-missing` falls back to the sequence the
+file itself declares in `SEQRES` or `_entity_poly` for chains the FASTA does not cover.
+
+Where an inserted run lands decides how it is built: strictly inside a folded domain it becomes a
+**loop**, rebuilt between two fixed anchors, so the domain stays one rigid body; anywhere else it
+extends or creates a disordered region. A gap whose flanking residues are further apart than the
+missing residues can physically span is reported rather than attempted, and a region that fails to
+build has its placeholder residues left *out* of the output rather than written as a straight line.
+
 ## Multi-model output is now a spread of conformers
 
 `-n 10` writes ten conformers as MODEL/ENDMDL frames. The folded domains are positioned once
@@ -482,9 +559,11 @@ records still declare the chain explicitly rather than leaving it to each viewer
    want it. Note the backbone-carbon-only limitation does NOT apply to
    the regions DODO leaves alone, which keep every atom.
 
-3. **Assembly rebuilding is not implemented.** Multi-chain structures are read and written
-   correctly, and regions are identified per chain, but rebuilding unmodelled regions of an EM
-   assembly against the deposited sequence isn't wired up yet.
+3. **Complexes are protein-only.** Multi-chain structures are read, written, held rigid and
+   rebuilt against a reference sequence — see *Complexes, and structures with unresolved
+   residues* above. But a protein–nucleic-acid complex cannot be read at all: nucleotides arrive
+   as polymer residues with no alpha carbon. Ligands and metals are dropped by the reader, so a
+   zinc at an interface is not in the output.
 
 4. **Cis-peptide bonds are not modelled.** DODO builds every virtual CA–CA bond at 3.81 Å, 
    the trans value. A cis peptide — in practice almost always X–Pro — sits near 2.9 Å, and 
@@ -612,14 +691,16 @@ Multi-word protein names now need quoting: `dodo fetch "human p53"`.
 | functions returned `None` and printed | functions return a `RebuildReport` |
 | `except dodoException` | `except DodoError` |
 
-```python
-# 1.x
+```text
+# 1.x -- shown for comparison; this API no longer exists
 import dodo
 dodo.build.pdb_from_pdb("in.pdb", out_path="out.pdb", mode="expanded", num_models=10)
+```
 
+```python
 # 2.0
 import dodo
-report = dodo.rebuild("in.pdb", mode="expanded", n_models=10, seed=0)
+report = dodo.rebuild("model.pdb", mode="expanded", n_models=10, seed=0)
 print(report.summary())          # what happened, per region
 dodo.write_pdb(report.models, "out.pdb")
 ```

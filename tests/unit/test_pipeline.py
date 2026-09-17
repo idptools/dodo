@@ -873,6 +873,57 @@ class TestRepairPassMechanism:
         assert "could not avoid" in (kept.reason or ""), kept.reason
         assert "3-4" in (kept.reason or ""), "the disclosure must name the region it sits on"
 
+    def test_scheduler_gives_loops_to_the_repair_pass(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import dodo.construct.pipeline as pipeline
+        from dodo.regions import assign_regions
+
+        structure = read_structure(DNMT3A)
+        assign_regions(structure)
+        loops = [loop for domain in structure.folded_domains() for loop in domain.loops]
+        assert loops, "fixture must contain a rebuildable loop"
+        seen: list[Span] = []
+
+        def fake_build(
+            structure: Structure, *, model: int, span: Span, **_kwargs: object
+        ) -> object:
+            residue = span.start
+            chain = structure.chains[int(structure.chain_index[residue])]
+            return pipeline.RegionOutcome(
+                model=model,
+                chain_id=chain.chain_id,
+                residues=(
+                    int(structure.residue_number[span.start]),
+                    int(structure.residue_number[span.stop - 1]),
+                ),
+                n_residues=len(span),
+                built=False,
+                reason="probe",
+            )
+
+        def capture(
+            _structure: Structure,
+            *,
+            attempts: list[object],
+            outcomes: list[object],
+        ) -> None:
+            del outcomes
+            seen.extend(attempt.span for attempt in attempts)  # type: ignore[attr-defined]
+
+        monkeypatch.setattr(pipeline, "_build_region", fake_build)
+        monkeypatch.setattr(pipeline, "_repair_forward_contacts", capture)
+        pipeline._rebuild_one_model(
+            structure,
+            model=1,
+            mode="predicted",
+            engine=object(),
+            rng=np.random.default_rng(0),
+            min_length=structure.n_residues + 1,
+            model_targets={},
+        )
+        assert all(loop in seen for loop in loops)
+
 
 class TestReportDistinguishesItsNotes:
     """A built region can carry a note for two unrelated reasons. The summary must not conflate.
@@ -938,6 +989,32 @@ class TestReportDistinguishesItsNotes:
         )
         assert not report.blocking_failures, "only the contact should make this run not-ok"
         assert not report.ok
+
+    def test_a_clashing_folded_unit_makes_the_run_not_ok(self) -> None:
+        from dodo.construct.pipeline import RebuildReport
+        from dodo.construct.place import DomainPlacement, UnitPlacement
+
+        report = RebuildReport(
+            models=[object()],  # type: ignore[list-item]
+            placements=[
+                DomainPlacement(chain_id="A", residues=(1, 10), moved=True, clashing=True)
+            ],
+            units=[
+                UnitPlacement(
+                    index=0,
+                    chains=("A",),
+                    domains=("A:1-10",),
+                    n_atoms=10,
+                    moved=True,
+                    clashing=True,
+                    clashing_atoms=2,
+                )
+            ],
+        )
+        assert not report.ok
+        from dodo.cli import _report
+
+        assert _report(report, quiet=True) == 2
 
 
 class TestEnsembleTopologyReconciliation:
@@ -1081,6 +1158,33 @@ class TestCli:
     def test_regions_exits_one_on_an_unreadable_file(self, tmp_path: Path) -> None:
         """`regions` is scriptable, so a read failure must not look like a clean run."""
         assert main(["regions", str(tmp_path / "does-not-exist.pdb")]) == 1
+
+    def test_units_uses_experimental_rebuild_preprocessing(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        path = FIXTURES / "6kn7.pdb"
+        assert main(["units", str(path), "--units", "experimental", "-q"]) == 0
+        assert "over 29 folded domain(s)" in capsys.readouterr().out
+
+    def test_units_accepts_the_same_fasta_as_rebuild(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data = FIXTURES.parent / "complexes_missing_residues"
+        assert (
+            main(
+                [
+                    "units",
+                    str(data / "7R5J_subset.cif"),
+                    "--fasta",
+                    str(data / "7R5J_chain_sequences.fasta"),
+                    "-q",
+                ]
+            )
+            == 0
+        )
+        captured = capsys.readouterr()
+        assert "over 6 folded domain(s)" in captured.out
+        assert "2686 inserted residue(s)" in captured.err
 
     @pytest.mark.slow
     def test_rebuild_subcommand_writes_a_file(self, tmp_path: Path) -> None:
@@ -1810,3 +1914,505 @@ class TestBackboneIsFirstClass:
         assert np.array_equal(model.xyz, again.xyz), (
             f"{name} seed {seed}: --backbone output is not reproducible"
         )
+
+
+class TestComplexes:
+    """Multi-chain input, through the whole pipeline.
+
+    The invariant is stated on the finished model rather than on the placement step, because
+    that is what a user gets: two atoms DODO held rigid together are the same distance apart in
+    the output as in the input, and a complex that arrives intact leaves intact.
+    """
+
+    DIMER = FIXTURES / "dnmt3a_dimer.pdb"
+
+    @staticmethod
+    def _interface_pairs(structure, cutoff: float = 5.0):
+        from scipy.spatial import cKDTree
+
+        chain_of = np.repeat(structure.chain_index, np.diff(structure.residue_atom_offsets))
+        pairs = np.array(sorted(cKDTree(structure.xyz).query_pairs(cutoff)), dtype=np.int64)
+        return pairs[chain_of[pairs[:, 0]] != chain_of[pairs[:, 1]]]
+
+    def test_the_interface_survives_a_full_rebuild(self) -> None:
+        from dodo.construct.assembly import find_rigid_units
+        from dodo.io import read_structure
+        from dodo.regions.identify import assign_regions
+
+        original = read_structure(self.DIMER)
+        probe = read_structure(self.DIMER)
+        assign_regions(probe)
+        assembly = find_rigid_units(probe)
+
+        report = rebuild(self.DIMER, seed=0, n_models=1, progress=False)
+        model = report.models[0]
+
+        # Folded atoms are never regenerated, so they can be matched by identity. Loops inside a
+        # folded domain ARE rebuilt, so they are excluded: they are not part of the rigid body.
+        def index(structure):
+            out = {}
+            for atom in range(structure.n_atoms):
+                residue = structure.residue_index[atom]
+                out[
+                    (
+                        int(structure.chain_index[residue]),
+                        int(structure.residue_number[residue]),
+                        str(structure.atom_name[atom]),
+                    )
+                ] = atom
+            return out
+
+        before_index, after_index = index(original), index(model)
+        worst = 0.0
+        counted = 0
+        for unit in assembly.units:
+            if len(unit) < 2:
+                continue
+            keys = []
+            for domain in unit.domains:
+                loop_residues = {r for loop in domain.loops for r in range(loop.start, loop.stop)}
+                atoms = probe.atom_slice_for_residues(domain.span.start, domain.span.stop)
+                for atom in range(atoms.start, atoms.stop):
+                    residue = probe.residue_index[atom]
+                    if int(residue) in loop_residues:
+                        continue
+                    key = (
+                        int(probe.chain_index[residue]),
+                        int(probe.residue_number[residue]),
+                        str(probe.atom_name[atom]),
+                    )
+                    if key in before_index and key in after_index:
+                        keys.append(key)
+            if len(keys) < 2:
+                continue
+            before = original.xyz[[before_index[k] for k in keys]]
+            after = model.xyz[[after_index[k] for k in keys]]
+            from scipy.spatial import cKDTree
+
+            pairs = cKDTree(before).query_pairs(5.0, output_type="ndarray")
+            if pairs.size == 0:
+                continue
+            d0 = np.linalg.norm(before[pairs[:, 0]] - before[pairs[:, 1]], axis=1)
+            d1 = np.linalg.norm(after[pairs[:, 0]] - after[pairs[:, 1]], axis=1)
+            worst = max(worst, float(np.abs(d1 - d0).max()))
+            counted += len(pairs)
+        assert counted > 10_000, "the fixture has no interface to check"
+        assert worst < 1e-9, f"a rigid unit's internal geometry moved by {worst:.2e} A"
+
+    def test_units_none_reproduces_the_old_behaviour(self) -> None:
+        """Check the escape hatch actually escapes."""
+        locked = rebuild(self.DIMER, seed=0, n_models=1, backbone=False, progress=False)
+        loose = rebuild(
+            self.DIMER, units="none", seed=0, n_models=1, backbone=False, progress=False
+        )
+        assert len(locked.rigid_units) == 1
+        assert loose.rigid_units == []
+        assert not np.array_equal(locked.models[0].xyz, loose.models[0].xyz)
+
+    def test_experimental_moves_nothing(self) -> None:
+        report = rebuild(
+            self.DIMER, units="experimental", seed=0, n_models=1, backbone=False, progress=False
+        )
+        assert not [p for p in report.placements if p.moved]
+
+    def test_predicted_repositions_linker_connected_domains(self) -> None:
+        report = rebuild(
+            self.DIMER, units="predicted", seed=0, n_models=1, backbone=False, progress=False
+        )
+        assert [p for p in report.placements if p.moved]
+        # ...but not at the cost of the interface: the units holding it did not move.
+        assert all(not u.moved for u in report.rigid_units)
+
+    def test_an_unknown_units_mode_is_refused(self) -> None:
+        from dodo.exceptions import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="Unknown units"):
+            rebuild(self.DIMER, units="everything", n_models=1, progress=False)
+
+    def test_no_peptide_bond_is_invented_across_a_chain_break(self) -> None:
+        """No peptide bond is invented across a chain break.
+
+        A region ending at a chain's C terminus used to have its carbonyl aimed at the first
+        nitrogen of the NEXT chain, producing "seams" of 71 and 149 A that were reported as
+        strained peptide bonds rather than as the chain breaks they are.
+        """
+        report = rebuild(self.DIMER, seed=0, n_models=1, progress=False)
+        assert report.backbone_seams
+        assert max(seam.bond_length for seam in report.backbone_seams) < 10.0
+
+
+class TestUnmodelledResidues:
+    """Rebuilding what a structure never modelled, from a reference sequence."""
+
+    @staticmethod
+    def _carved():
+        from dodo.io import read_structure
+
+        full = read_structure(FIXTURES / "dnmt3a.pdb")
+        drop = np.zeros(full.n_residues, dtype=bool)
+        for start, stop in ((0, 40), (440, 460), (600, 612), (887, 912)):
+            drop[start:stop] = True
+        return full.select_residues(~drop), full.sequence
+
+    def test_the_missing_residues_are_built(self) -> None:
+        partial, reference = self._carved()
+        report = rebuild(
+            partial, sequences={"A": reference}, seed=0, n_models=1, progress=False
+        )
+        model = report.models[0]
+        assert model.sequence == reference
+        assert int(model.inserted.sum()) == 97
+        assert report.insertions is not None
+        assert report.insertions.n_inserted == 97
+
+    def test_inserted_residues_get_real_geometry(self) -> None:
+        """An inserted alpha carbon must not still sit on the line it was parked on."""
+        partial, reference = self._carved()
+        report = rebuild(
+            partial,
+            sequences={"A": reference},
+            seed=0,
+            n_models=1,
+            backbone=False,
+            progress=False,
+        )
+        model = report.models[0]
+        ca = model.ca_xyz
+        bonds = np.linalg.norm(np.diff(ca, axis=0), axis=1)
+        touching = model.inserted[1:] | model.inserted[:-1]
+        assert touching.any()
+        assert float(bonds[touching].min()) > 3.5
+        assert float(bonds[touching].max()) < 4.1
+
+    def test_the_provenance_flag_survives_to_the_model(self) -> None:
+        partial, reference = self._carved()
+        report = rebuild(
+            partial, sequences={"A": reference}, seed=0, n_models=1, progress=False
+        )
+        assert int(report.models[0].inserted.sum()) == 97
+
+    def test_nothing_happens_without_a_reference(self) -> None:
+        partial, _ = self._carved()
+        report = rebuild(partial, seed=0, n_models=1, progress=False)
+        assert report.insertions is None
+        assert int(report.models[0].inserted.sum()) == 0
+
+    def test_a_fasta_file_works_end_to_end(self, tmp_path: Path) -> None:
+        partial, reference = self._carved()
+        path = tmp_path / "reference.fasta"
+        path.write_text(f">A dnmt3a\n{reference}\n")
+        report = rebuild(partial, fasta=path, seed=0, n_models=1, progress=False)
+        assert report.models[0].sequence == reference
+
+    def test_fill_missing_uses_the_deposited_sequence(self) -> None:
+        """A chain with SEQRES carries its own reference; fill_missing opts into using it."""
+        partial, reference = self._carved()
+        partial.chains[0].full_sequence = reference
+        off = rebuild(partial, seed=0, n_models=1, progress=False)
+        on = rebuild(partial, fill_missing=True, seed=0, n_models=1, progress=False)
+        assert off.models[0].n_residues < on.models[0].n_residues
+        assert on.models[0].sequence == reference
+
+
+class TestInputKind:
+    """``units="auto"`` has to tell a measurement from a prediction, and say which it chose."""
+
+    def test_a_prediction_resolves_to_predicted(self) -> None:
+        """AlphaFold DB models and AlphaFold 3 server output declare no experimental method."""
+        report = rebuild(FIXTURES / "dnmt3a.pdb", seed=0, n_models=1, progress=False)
+        note = next(n for n in report.notes if "units=auto" in n)
+        assert "'predicted'" in note
+        assert [p for p in report.placements if p.moved]
+
+    def test_a_declared_experimental_method_resolves_to_experimental(self) -> None:
+        """6kn7 declares ELECTRON MICROSCOPY in both formats; nothing measured may move."""
+        from dodo.io import read_structure
+
+        original = read_structure(FIXTURES / "6kn7.pdb")
+        report = rebuild(FIXTURES / "6kn7.pdb", seed=0, n_models=1, backbone=False, progress=False)
+        note = next(n for n in report.notes if "units=auto" in n)
+        assert "'experimental'" in note and "ELECTRON MICROSCOPY" in note
+        assert not [p for p in report.placements if p.moved]
+        # Every folded-domain atom is exactly where the file put it. Rebuilt loops inside a
+        # folded domain are excluded: those residues are regenerated by design.
+        from dodo.regions.identify import assign_regions
+        from dodo.structure import DomainKind
+
+        assign_regions(original)
+        model = report.models[0]
+        rigid = np.zeros(original.n_atoms, dtype=bool)
+        for domain in original.domains:
+            if domain.kind is not DomainKind.FOLDED:
+                continue
+            rigid[domain.atom_slice] = True
+            for loop in domain.loops:
+                rigid[original.atom_slice_for_residues(loop.start, loop.stop)] = False
+        kept = {
+            (
+                int(model.chain_index[model.residue_index[a]]),
+                int(model.residue_number[model.residue_index[a]]),
+                str(model.atom_name[a]),
+            ): a
+            for a in range(model.n_atoms)
+        }
+        checked = 0
+        for atom in np.flatnonzero(rigid)[::97]:  # a spread sample; the full set is 61,511
+            residue = original.residue_index[atom]
+            key = (
+                int(original.chain_index[residue]),
+                int(original.residue_number[residue]),
+                str(original.atom_name[atom]),
+            )
+            if key in kept:
+                assert np.array_equal(model.xyz[kept[key]], original.xyz[atom])
+                checked += 1
+        assert checked > 500
+
+    def test_filling_in_residues_resolves_to_experimental(self) -> None:
+        """Only a structure that did not model everything has residues to fill in."""
+        partial, reference = TestUnmodelledResidues._carved()
+        report = rebuild(
+            partial, sequences={"A": reference}, seed=0, n_models=1, progress=False
+        )
+        note = next(n for n in report.notes if "units=auto" in n)
+        assert "'experimental'" in note
+        assert not [p for p in report.placements if p.moved]
+
+    def test_an_explicit_mode_overrides_the_detection(self) -> None:
+        partial, reference = TestUnmodelledResidues._carved()
+        report = rebuild(
+            partial,
+            sequences={"A": reference},
+            units="predicted",
+            seed=0,
+            n_models=1,
+            progress=False,
+        )
+        assert not [n for n in report.notes if "units=auto" in n]
+
+    def test_a_theoretical_model_is_not_experimental(self) -> None:
+        """``EXPDTA THEORETICAL MODEL`` is the PDB's own marker for a computed structure."""
+        from dodo.structure import classify_experimental_method
+
+        assert classify_experimental_method("THEORETICAL MODEL") is None
+        assert classify_experimental_method(None) is None
+        assert classify_experimental_method("?") is None
+        assert classify_experimental_method("X-RAY DIFFRACTION") == "X-RAY DIFFRACTION"
+        assert classify_experimental_method("  electron   microscopy ") == "ELECTRON MICROSCOPY"
+
+
+class TestProgressStages:
+    """Progress has to cover the whole rebuild, not just the region loop.
+
+    The bar used to be created after the file was read and sized only for the regions, so on a
+    597 MB assembly the first two minutes -- and then region identification, filling in
+    unmodelled residues, finding rigid units and positioning them -- were silent. A stage that
+    sets a label and then works without advancing is no better: tqdm only redraws when something
+    moves, so a frozen line is exactly the thing this is meant to prevent. Hence the assertion
+    is that every stage's counter *reaches its total*, not merely that a stage was announced.
+    """
+
+    class _Spy:
+        """A tracker that records what each stage counted, in place of a real bar."""
+
+        def __init__(self) -> None:
+            self.stages: list[tuple[str, int, int | None]] = []
+            self._label = "start"
+            self._total: int | None = None
+            self._n = 0
+
+        def stage(self, label: str, total: int | None = None, unit: str = "") -> None:
+            self.stages.append((self._label, self._n, self._total))
+            self._label, self._total, self._n = label, total, 0
+
+        def batched(self, batch: int):
+            return self.advance
+
+        def advance(self, amount: int = 1) -> None:
+            self._n += amount
+
+        def describe(self, text: str) -> None:
+            return
+
+        def next_model(self, done: int, total: int) -> None:
+            return
+
+        def close(self) -> None:
+            self.stages.append((self._label, self._n, self._total))
+
+    def _run(self, monkeypatch: pytest.MonkeyPatch, **kwargs: object):
+        from dodo.construct import pipeline as pipeline_module
+
+        spy = self._Spy()
+        monkeypatch.setattr(pipeline_module, "_progress_bar", lambda requested: spy)
+        report = rebuild(progress=True, seed=0, n_models=1, **kwargs)  # type: ignore[arg-type]
+        return spy, report
+
+    def test_every_stage_of_a_complex_rebuild_is_covered(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spy, _ = self._run(monkeypatch, source=FIXTURES / "dnmt3a_dimer.pdb")
+        labels = [label for label, _n, _total in spy.stages]
+        assert any(label.startswith("reading") for label in labels)
+        for expected in (
+            "identifying regions",
+            "finding rigid units",
+            "positioning folded domains",
+            "rebuilding",
+        ):
+            assert expected in labels, f"no progress stage for {expected!r}; labels were {labels}"
+
+    def test_reading_is_a_stage_of_its_own(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The single longest silent stretch on a large file, and it used to have no bar at all."""
+        spy, _ = self._run(monkeypatch, source=FIXTURES / "dnmt3a_dimer.pdb")
+        label, counted, _total = next(
+            entry for entry in spy.stages if entry[0].startswith("reading")
+        )
+        assert "dnmt3a_dimer.pdb" in label
+        assert counted == 14292, "the reader reported a different number of records than it read"
+
+    def test_every_measured_stage_reaches_its_total(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spy, _ = self._run(monkeypatch, source=FIXTURES / "dnmt3a_dimer.pdb")
+        for label, counted, total in spy.stages:
+            if total is None:
+                continue
+            assert counted == total, f"stage {label!r} stopped at {counted} of {total}"
+
+    def test_filling_in_residues_is_its_own_stage(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        partial, reference = TestUnmodelledResidues._carved()
+        spy, _ = self._run(monkeypatch, source=partial, sequences={"A": reference})
+        labels = [label for label, _n, _total in spy.stages]
+        assert "filling in unmodelled residues" in labels
+
+    def test_a_structure_passed_in_memory_has_no_reading_stage(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from dodo.io import read_structure
+
+        structure = read_structure(FIXTURES / "dnmt3a.pdb")
+        spy, _ = self._run(monkeypatch, source=structure)
+        assert not [label for label, _n, _total in spy.stages if label.startswith("reading")]
+
+    def test_progress_false_costs_nothing(self) -> None:
+        """The no-op tracker must answer every call the real one does."""
+        from dodo.construct.pipeline import _NoProgress, _Progress, _progress_bar
+
+        tracker = _progress_bar(False)
+        assert isinstance(tracker, _NoProgress)
+        tracker.stage("x", total=3, unit="y")
+        tracker.batched(10)(5)
+        tracker.advance(1)
+        tracker.describe("z")
+        tracker.next_model(1, 2)
+        tracker.close()
+        assert set(_NoProgress.__slots__ or ()) == set()
+        assert {name for name in dir(_Progress) if not name.startswith("_")} <= {
+            name for name in dir(_NoProgress) if not name.startswith("_")
+        }
+
+
+class TestObservedResiduesAreStatic:
+    """In an experimental structure, a resolved residue stays put -- however few there are.
+
+    The rule, in Ryan's words: a residue resolved in the map is "sufficiently static to be
+    resolved", so it is left exactly where the experiment put it. It is not a claim that those
+    residues form a folded domain. What is missing is what is dynamic, and that is what gets
+    built.
+
+    This class exists because the opposite happened. Region identification needs
+    MIN_FOLDED_DOMAIN_LENGTH residues before it calls anything folded, so a chain with 19
+    residues resolved got NO folded domain, the whole chain became one anchor-free region, and
+    DODO regenerated it and landed it on a centroid computed from placeholder coordinates.
+    Measured on the 7R5J nuclear pore: 48 of the 56 Nup98 copies model only 19 residues each,
+    and every one was flung up to 855 A out of the pore -- 38 detached islands in the output,
+    visible as free-floating IDRs in ChimeraX.
+    """
+
+    @staticmethod
+    def _sparse_chain():
+        """dnmt3a with 19 residues resolved, and the full-length sequence to restore."""
+        from dodo.io import read_structure
+
+        full = read_structure(FIXTURES / "dnmt3a.pdb")
+        keep = np.zeros(full.n_residues, dtype=bool)
+        keep[596:615] = True
+        return full.select_residues(keep), full.sequence
+
+    def test_the_observed_residues_do_not_move_at_all(self) -> None:
+        partial, reference = self._sparse_chain()
+        before = partial.ca_xyz.copy()
+        report = rebuild(
+            partial, sequences={"A": reference}, seed=0, n_models=1, progress=False
+        )
+        model = report.models[0]
+        observed = np.flatnonzero(~model.inserted)
+        assert observed.size == 19
+        assert np.abs(model.ca_xyz[observed] - before).max() == 0.0
+
+    def test_too_few_to_be_a_domain_still_anchors_the_chain(self) -> None:
+        """19 residues is below MIN_FOLDED_DOMAIN_LENGTH, and that must not matter here."""
+        from dodo.constants import MIN_FOLDED_DOMAIN_LENGTH
+        from dodo.structure import DomainKind
+
+        partial, reference = self._sparse_chain()
+        assert MIN_FOLDED_DOMAIN_LENGTH > 19
+        report = rebuild(
+            partial, sequences={"A": reference}, seed=0, n_models=1, progress=False
+        )
+        domains = report.models[0].chains[0].domains
+        folded = [d for d in domains if d.kind is DomainKind.FOLDED]
+        assert len(folded) == 1 and len(folded[0].span) == 19
+        # ...and the missing residues hang off it as anchored regions, not as a free chain.
+        assert [d.kind for d in domains].count(DomainKind.IDR) == 2
+
+    def test_nothing_floats(self) -> None:
+        """The symptom itself: one spatially connected piece, not two."""
+        from scipy.sparse import coo_matrix
+        from scipy.sparse.csgraph import connected_components
+        from scipy.spatial import cKDTree
+
+        partial, reference = self._sparse_chain()
+        report = rebuild(
+            partial, sequences={"A": reference}, seed=0, n_models=1, progress=False
+        )
+        ca = report.models[0].ca_xyz
+        pairs = cKDTree(ca).query_pairs(6.0, output_type="ndarray")
+        rows = np.concatenate([np.arange(len(ca) - 1), pairs[:, 0]])
+        cols = np.concatenate([np.arange(1, len(ca)), pairs[:, 1]])
+        count, _ = connected_components(
+            coo_matrix((np.ones(len(rows)), (rows, cols)), shape=(len(ca), len(ca))),
+            directed=False,
+        )
+        assert count == 1
+
+    def test_the_chain_comes_out_continuous(self) -> None:
+        partial, reference = self._sparse_chain()
+        report = rebuild(
+            partial,
+            sequences={"A": reference},
+            seed=0,
+            n_models=1,
+            backbone=False,
+            progress=False,
+        )
+        bonds = np.linalg.norm(np.diff(report.models[0].ca_xyz, axis=0), axis=1)
+        assert bonds.min() > 3.5 and bonds.max() < 4.1
+
+    def test_predicted_mode_is_untouched_by_the_rule(self) -> None:
+        """The rule is about measurements. A prediction models everything and re-samples freely."""
+        report = rebuild(FIXTURES / "dnmt3a.pdb", seed=0, n_models=1, progress=False)
+        assert not [n for n in report.notes if "experimental input" in n]
+        assert report.n_built > 0
+
+    def test_an_experimental_file_with_nothing_missing_says_so(self) -> None:
+        """Following the rule to its end: if everything was observed, there is nothing to build."""
+        report = rebuild(
+            FIXTURES / "6kn7.pdb", seed=0, n_models=1, backbone=False, progress=False
+        )
+        assert report.n_built == 0
+        assert any("nothing was rebuilt" in note for note in report.notes)
+        assert any("--fasta" in note for note in report.notes)

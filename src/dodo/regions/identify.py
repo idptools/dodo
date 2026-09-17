@@ -77,7 +77,13 @@ from ..constants import (
 )
 from ..exceptions import InvalidRegionError
 from ..structure import Chain, Domain, DomainKind, Span, Structure
-from .contact import contact_profile, density_profile, is_loop_like, loop_contact_counts
+from .contact import (
+    ContactProfile,
+    contact_profile,
+    density_profile,
+    is_loop_like,
+    loop_contact_counts,
+)
 
 __all__ = [
     "RegionAssignment",
@@ -94,8 +100,8 @@ class Strategy(str, Enum):
 
     #: DODO's original all-atom density score. The default, and the method the package was
     #: built and validated on -- it is specifically good at capturing the boundaries with
-    #: high accuracy such that you avoid small parts of the IDR not being regenerated at 
-    #: an IDR-folded domain boundary. 
+    #: high accuracy such that you avoid small parts of the IDR not being regenerated at
+    #: an IDR-folded domain boundary.
     DENSITY = "density"
     #: Alternative CA-only burial score: composition-free and invariant to whether side chains
     #: are modelled, but not the validated method. Available for comparison.
@@ -289,19 +295,17 @@ def merge_blocks(blocks: list[tuple[int, int]], *, max_gap: int) -> list[tuple[i
 
 
 def _folded_mask_from_density(
-    structure: Structure, chain: Chain, threshold: float
+    structure: Structure, chain: Chain, threshold: float, profile: ContactProfile
 ) -> tuple[np.ndarray, np.ndarray]:
     """Score with DODO's original all-atom density metric. Returns (score, folded_mask)."""
-    profile = density_profile(structure)
     score = profile.smoothed[chain.span.slice]
     return score, score >= threshold
 
 
 def _folded_mask_from_contact(
-    structure: Structure, chain: Chain, threshold: float
+    structure: Structure, chain: Chain, threshold: float, profile: ContactProfile
 ) -> tuple[np.ndarray, np.ndarray]:
     """Score by geometric burial. Returns (score, folded_mask) for the chain's residues."""
-    profile = contact_profile(structure)
     score = profile.smoothed[chain.span.slice]
     return score, score >= threshold
 
@@ -484,6 +488,7 @@ def assign_regions(
     min_loop_length: int = MIN_LOOP_LENGTH,
     min_idr_length: int = MIN_IDR_LENGTH,
     min_seed_run: int = MIN_FOLDED_SEED_RUN,
+    on_chain_done: Callable[[int], None] | None = None,
 ) -> list[RegionAssignment]:
     """Assign folded domains, IDRs and loops to every chain of a structure.
 
@@ -513,6 +518,10 @@ def assign_regions(
         coordinates, and that is recorded in the assignment's notes.
     min_seed_run
         Consecutive above-threshold residues needed to seed a candidate block.
+    on_chain_done
+        Called with ``1`` after each chain, for a caller showing progress. An assembly can have
+        hundreds of chains and the whole-structure scoring pass in front of them is the slowest
+        single step, so the count starting to move is what says the pass has finished.
 
     Returns
     -------
@@ -558,6 +567,8 @@ def assign_regions(
                     notes=("regions supplied by the caller; none were identified",),
                 )
             )
+            if on_chain_done is not None:
+                on_chain_done(1)
         return assignments
 
     # One structure-wide contact pass, reused across chains. Burial is inherently a
@@ -565,6 +576,24 @@ def assign_regions(
     # partner chain, and scoring each chain in isolation would call those interfaces
     # disordered.
     loop_counts = loop_contact_counts(structure)
+
+    # ONE pass per scoring metric, over the whole structure, computed the first time a chain
+    # asks for it. The comment above used to describe what the code was meant to do rather than
+    # what it did: the burial profile is a whole-structure quantity, but it was being recomputed
+    # inside the loop below, so a structure with N chains paid for N passes over every atom in
+    # it. Invisible on a single AlphaFold chain -- one chain, one pass -- and quadratic on an
+    # assembly. Measured on the 29-chain, 61,511-atom 6kn7: 29 passes, 2.10 s, against 0.11 s
+    # for the one pass it needs. The 808-chain nuclear pore made it a wait of hours.
+    profiles: dict[Strategy, ContactProfile] = {}
+
+    def profile_for(metric: Strategy) -> ContactProfile:
+        if metric not in profiles:
+            profiles[metric] = (
+                density_profile(structure)
+                if metric is Strategy.DENSITY
+                else contact_profile(structure)
+            )
+        return profiles[metric]
 
     for chain in structure.chains:
         notes: list[str] = []
@@ -589,10 +618,14 @@ def assign_regions(
             score, folded_mask = _folded_mask_from_plddt(structure, chain, cutoff)
         elif resolved is Strategy.CONTACT:
             cutoff = CA_CONTACT_SCORE_THRESHOLD if threshold is None else threshold
-            score, folded_mask = _folded_mask_from_contact(structure, chain, cutoff)
+            score, folded_mask = _folded_mask_from_contact(
+                structure, chain, cutoff, profile_for(Strategy.CONTACT)
+            )
         else:
             cutoff = CONTACT_SCORE_THRESHOLD if threshold is None else threshold
-            score, folded_mask = _folded_mask_from_density(structure, chain, cutoff)
+            score, folded_mask = _folded_mask_from_density(
+                structure, chain, cutoff, profile_for(Strategy.DENSITY)
+            )
 
         # Seed -> merge -> length filter. Offsets are chain-local until here.
         seeds = find_runs(folded_mask, min_length=min_seed_run)
@@ -650,6 +683,8 @@ def assign_regions(
                 notes=tuple(notes),
             )
         )
+        if on_chain_done is not None:
+            on_chain_done(1)
 
     return assignments
 

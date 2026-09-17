@@ -341,3 +341,88 @@ def test_runs_fast_enough_to_be_default_one_day() -> None:
     refine_backbone(ca, start.n_xyz, start.c_xyz)
     elapsed = time.perf_counter() - began
     assert elapsed < 10.0, f"refining 60 residues took {elapsed:.1f} s"
+
+
+class TestPolishIndexReuse:
+    """The clash polish must not rebuild a whole-cloud spatial index per clash group.
+
+    It used to. `try_polish` masked its three-to-six moved atoms out of the cloud and built a
+    fresh `cKDTree` over what was left, once per group per round. MEASURED at nuclear-pore scale
+    (5,795,040 points): 2,190 ms for the tree plus 58 ms of masking, 2.25 s per group -- more than
+    an hour of a two-hour run, spent rebuilding the same index.
+
+    Two facts make it avoidable, and both are asserted here rather than trusted: the moved atoms
+    can be dropped from the query RESULTS instead of the tree's INPUT, and the first `n_fixed`
+    rows of the cloud -- every folded-domain atom and every rebuilt alpha carbon -- never move at
+    all, so that half is indexed once for the whole pass.
+    """
+
+    @staticmethod
+    def _count_tree_builds(path: str) -> tuple[list[int], int]:
+        """Sizes of every spatial index the polish builds, and the clash groups it examined."""
+        import numpy as np
+        import scipy.spatial
+
+        from dodo.construct import ca_backbone
+        from dodo.construct.pipeline import rebuild
+
+        state = {"on": False, "builds": [], "groups": 0}
+        real_tree = scipy.spatial.cKDTree
+
+        class Counting(real_tree):  # type: ignore[misc,valid-type]
+            def __init__(self, data, *args, **kwargs):
+                if state["on"] and len(data) > 500:
+                    state["builds"].append(len(data))
+                super().__init__(data, *args, **kwargs)
+
+        real_polish = ca_backbone._polish_coupled_clashes
+        real_isin = np.isin
+
+        def polish(*args, **kwargs):
+            state["on"] = True
+            try:
+                return real_polish(*args, **kwargs)
+            finally:
+                state["on"] = False
+
+        def counting_isin(a, b, **kwargs):
+            # try_polish drops its own moved atoms with isin against a handful of indices.
+            if state["on"] and isinstance(b, np.ndarray) and 0 < b.size <= 24:
+                state["groups"] += 1
+            return real_isin(a, b, **kwargs)
+
+        scipy.spatial.cKDTree = Counting
+        ca_backbone._polish_coupled_clashes = polish
+        np.isin = counting_isin
+        try:
+            rebuild(path, seed=0, n_models=1, progress=False)
+        finally:
+            scipy.spatial.cKDTree = real_tree
+            ca_backbone._polish_coupled_clashes = real_polish
+            np.isin = real_isin
+        return state["builds"], state["groups"] // 3
+
+    #: The polish's own round cap. The whole cloud is needed once per round to find the clashes,
+    #: and must not be indexed again for each clash group inside a round.
+    ROUNDS = 8
+
+    def test_the_whole_cloud_is_not_indexed_per_clash_group(self) -> None:
+        builds, groups = self._count_tree_builds(str(FIXTURES / "p300.pdb"))
+        assert groups > 0, "the fixture no longer reaches the joint search, so this proves nothing"
+        cloud = max(builds)
+        whole = sum(1 for n in builds if n == cloud)
+        assert whole <= self.ROUNDS, (
+            f"the whole {cloud}-point cloud was indexed {whole} times for {groups} clash "
+            f"group(s); it should be at most once per round"
+        )
+
+    def test_the_indexing_work_does_not_scale_with_clash_groups(self) -> None:
+        """The property that actually costs time: total points pushed through cKDTree."""
+        builds, groups = self._count_tree_builds(str(FIXTURES / "p300.pdb"))
+        cloud = max(builds)
+        indexed = sum(builds)
+        per_group = groups * cloud  # what one whole-cloud index per group would have cost
+        assert indexed < 0.5 * per_group, (
+            f"{indexed:,} points indexed against {per_group:,} for a per-group rebuild -- "
+            f"the saving has gone"
+        )

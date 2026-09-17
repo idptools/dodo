@@ -42,7 +42,38 @@ __all__ = [
     "DomainKind",
     "Span",
     "Structure",
+    "classify_experimental_method",
 ]
+
+#: Values that appear in an experimental-method field but describe a PREDICTION.
+#:
+#: ``EXPDTA    THEORETICAL MODEL`` is the long-standing PDB convention for a computed structure,
+#: and treating it as a measurement would be exactly backwards: DODO would decline to reposition
+#: folded domains whose arrangement is the arbitrary part.
+_PREDICTED_METHODS: frozenset[str] = frozenset(
+    {"THEORETICAL MODEL", "PREDICTED", "COMPUTATIONAL MODEL", "IN SILICO MODEL"}
+)
+
+
+def classify_experimental_method(declared: str | None) -> str | None:
+    """Normalise a declared experimental method, or return ``None`` for a prediction.
+
+    One rule for both readers -- ``EXPDTA`` in a PDB and ``_exptl.method`` in an mmCIF -- because
+    a difference between them would mean the same structure got repositioned in one format and
+    held rigid in the other.
+
+    Returns the uppercased method for a real measurement, and ``None`` both when nothing was
+    declared and when what was declared says "this is a model". AlphaFold DB files and
+    AlphaFold 3 server output declare nothing at all, which is the common case for a prediction.
+    """
+    if declared is None:
+        return None
+    text = " ".join(declared.replace(";", " ").split()).upper().strip()
+    if not text or text in {"?", ".", "NULL"}:
+        return None
+    if any(marker in text for marker in _PREDICTED_METHODS):
+        return None
+    return text
 
 
 class DomainKind(str, Enum):
@@ -440,10 +471,34 @@ class Structure:
     #: CSR-style offsets into the atom arrays. ``(n_residues + 1,)`` int64.
     residue_atom_offsets: np.ndarray
 
+    #: Per-residue flag: True where DODO INSERTED the residue because a reference sequence
+    #: said it exists and the input did not model it. ``(n_residues,)`` bool, all False for a
+    #: structure read from a file.
+    #:
+    #: An inserted residue has no observed coordinates. It carries a placeholder alpha carbon
+    #: so the arrays stay well-formed, and that placeholder is fiction: it must never be scored
+    #: for burial, never be a clash obstacle, and never be written out unless the region
+    #: containing it was actually rebuilt. Every one of those is a separate code path, which is
+    #: why this is a first-class field rather than something a caller carries alongside.
+    #:
+    #: Never ``None`` once constructed. The default is an empty array only because a dataclass
+    #: default cannot depend on another field's length; :meth:`__post_init__` expands it, so
+    #: every reader can index it without a check.
+    inserted: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=bool))
+
     # --- structure-level metadata --------------------------------------------------
     chains: list[Chain] = field(default_factory=list)
     #: Where this structure came from, for error messages and provenance.
     source: str | None = None
+    #: The experimental method the file declares -- ``EXPDTA`` in a PDB, ``_exptl.method`` in an
+    #: mmCIF -- uppercased, or ``None`` when the file declares none.
+    #:
+    #: This is how DODO tells a measurement from a prediction, and the distinction decides
+    #: whether folded domains may be repositioned at all. A predicted structure's inter-domain
+    #: arrangement across a long linker is arbitrary, which is the premise the whole package
+    #: rests on; an experimental structure's is data. ``"THEORETICAL MODEL"`` is a prediction
+    #: despite living in an experimental-method field, and is not stored here.
+    experimental_method: str | None = None
     #: Free-form provenance notes, e.g. which records were skipped while parsing.
     notes: list[str] = field(default_factory=list)
 
@@ -455,6 +510,12 @@ class Structure:
         self.xyz = np.ascontiguousarray(self.xyz, dtype=np.float64)
         if self.xyz.ndim != 2 or self.xyz.shape[1] != 3:
             raise GeometryError(f"xyz must have shape (n_atoms, 3), got {self.xyz.shape}.")
+        # A caller that never heard of unmodelled residues gets all-False, so every downstream
+        # `structure.inserted[i]` is answerable without a check. A wrong-length array that is not
+        # the empty default is left alone for validate() to reject by name.
+        self.inserted = np.asarray(self.inserted, dtype=bool)
+        if self.inserted.size == 0 and self.residue_name.shape[0]:
+            self.inserted = np.zeros(self.residue_name.shape[0], dtype=bool)
 
     def __repr__(self) -> str:
         return (
@@ -815,7 +876,9 @@ class Structure:
             occupancy=self.occupancy.copy(),
             chain_index=self.chain_index.copy(),
             residue_atom_offsets=offsets,
+            inserted=self.inserted.copy(),
             source=self.source,
+            experimental_method=self.experimental_method,
             notes=list(self.notes),
         )
         for chain in self.chains:
@@ -828,6 +891,143 @@ class Structure:
             )
             new_chain.domains = [replace(domain, structure=new) for domain in chain.domains]
             new.chains.append(new_chain)
+
+        new.validate()
+        return new
+
+    def select_residues(self, keep: np.ndarray) -> Structure:
+        """Return a copy containing only the residues selected by a boolean mask.
+
+        Unlike :meth:`select_atoms`, this drops whole residues, so every chain and domain span
+        has to be recomputed. That is the reason the two are separate methods rather than one
+        with a flag: dropping atoms is a filter, dropping residues is a renumbering, and the
+        pre-rewrite code conflated them and left spans pointing at the wrong residues.
+
+        Exists for one job: DODO can INSERT residues that a structure did not model, from a
+        reference sequence. When such a region cannot be rebuilt there is no input geometry to
+        fall back on -- the placeholder alpha carbons are fiction -- so the residues come back
+        out rather than being written as though they had been modelled.
+
+        Parameters
+        ----------
+        keep
+            Boolean mask over residues, length ``n_residues``.
+
+        Returns
+        -------
+        Structure
+            A new structure. The original is unchanged. Chains that lose every residue are
+            dropped; domains that lose every residue are dropped; domains that lose some are
+            clipped, and their anchors re-resolved to the surviving neighbours.
+
+        Raises
+        ------
+        GeometryError
+            If the mask is the wrong length or would remove every residue.
+        """
+        keep = np.asarray(keep, dtype=bool)
+        if keep.shape != (self.n_residues,):
+            raise GeometryError(
+                f"keep must be a boolean mask of length n_residues ({self.n_residues}), got "
+                f"shape {keep.shape}."
+            )
+        if not keep.any():
+            raise GeometryError("keep would remove every residue.")
+
+        atom_keep = keep[self.residue_index]
+        counts = np.diff(self.residue_atom_offsets)[keep]
+        offsets = np.empty(int(keep.sum()) + 1, dtype=np.int64)
+        offsets[0] = 0
+        np.cumsum(counts, out=offsets[1:])
+
+        # Old residue index -> new, or -1 where dropped. The single source of truth for every
+        # span remap below; deriving each one independently is how spans drift apart.
+        remap = np.full(self.n_residues, -1, dtype=np.int64)
+        remap[keep] = np.arange(int(keep.sum()))
+
+        new = Structure(
+            xyz=self.xyz[atom_keep].copy(),
+            atom_name=self.atom_name[atom_keep].copy(),
+            element=self.element[atom_keep].copy(),
+            residue_index=np.repeat(np.arange(int(keep.sum())), counts),
+            residue_name=self.residue_name[keep].copy(),
+            residue_number=self.residue_number[keep].copy(),
+            insertion_code=self.insertion_code[keep].copy(),
+            b_factor=self.b_factor[keep].copy(),
+            occupancy=self.occupancy[keep].copy(),
+            chain_index=self.chain_index[keep].copy(),
+            residue_atom_offsets=offsets,
+            inserted=self.inserted[keep].copy(),
+            source=self.source,
+            experimental_method=self.experimental_method,
+            notes=list(self.notes),
+        )
+
+        def clip(span: Span, *, with_anchors: bool) -> Span | None:
+            """Map a span through the remap, dropping residues that did not survive."""
+            surviving = remap[span.start : span.stop]
+            surviving = surviving[surviving >= 0]
+            if surviving.size == 0:
+                return None
+            start, stop = int(surviving[0]), int(surviving[-1]) + 1
+            if not with_anchors:
+                return Span(start, stop)
+            # An anchor is a fixed residue OUTSIDE the span. If it was dropped, the nearest
+            # surviving residue on that side becomes the anchor -- and if there is none, the
+            # span is now terminal, which is exactly what a None anchor means.
+            n_anchor = start - 1 if start > 0 else None
+            c_anchor = stop if stop < new.n_residues else None
+            if span.n_anchor is None:
+                n_anchor = None
+            if span.c_anchor is None:
+                c_anchor = None
+            return Span(start, stop, n_anchor=n_anchor, c_anchor=c_anchor)
+
+        kept_chain_indices: list[int] = []
+        for chain_index, chain in enumerate(self.chains):
+            chain_span = clip(chain.span, with_anchors=False)
+            if chain_span is None:
+                continue
+            kept_chain_indices.append(chain_index)
+            new_chain = Chain(
+                structure=new,
+                span=chain_span,
+                chain_id=chain.chain_id,
+                uniprot_id=chain.uniprot_id,
+                full_sequence=chain.full_sequence,
+            )
+            for domain in chain.domains:
+                domain_span = clip(domain.span, with_anchors=True)
+                if domain_span is None:
+                    continue
+                # Loop indices are positional, and `rebuilt_loops` holds indices -- so a
+                # dropped loop renumbers the survivors and the set has to move with them.
+                # Keeping the set as-is would attribute one loop's provenance to another.
+                loops: list[Span] = []
+                rebuilt_loops: set[int] = set()
+                for old_index, original in enumerate(domain.loops):
+                    clipped = clip(original, with_anchors=True)
+                    if clipped is None:
+                        continue
+                    if old_index in domain.rebuilt_loops:
+                        rebuilt_loops.add(len(loops))
+                    loops.append(clipped)
+                new_chain.domains.append(
+                    replace(
+                        domain,
+                        structure=new,
+                        span=domain_span,
+                        loops=tuple(loops),
+                        rebuilt_loops=rebuilt_loops,
+                    )
+                )
+            new.chains.append(new_chain)
+
+        # chain_index is positional, so dropping a chain has to renumber the rest.
+        if len(kept_chain_indices) != len(self.chains):
+            chain_remap = np.full(len(self.chains), -1, dtype=np.int64)
+            chain_remap[kept_chain_indices] = np.arange(len(kept_chain_indices))
+            new.chain_index = chain_remap[new.chain_index]
 
         new.validate()
         return new
@@ -849,7 +1049,9 @@ class Structure:
             occupancy=self.occupancy.copy(),
             chain_index=self.chain_index.copy(),
             residue_atom_offsets=self.residue_atom_offsets.copy(),
+            inserted=self.inserted.copy(),
             source=self.source,
+            experimental_method=self.experimental_method,
             notes=list(self.notes),
         )
         for chain in self.chains:
@@ -897,6 +1099,7 @@ class Structure:
             "b_factor": self.b_factor,
             "occupancy": self.occupancy,
             "chain_index": self.chain_index,
+            "inserted": self.inserted,
         }
         for name, array in residue_arrays.items():
             if array.shape[0] != self.n_residues:

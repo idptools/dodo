@@ -46,6 +46,7 @@ def _python_blocks(document: str) -> list[str]:
 def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Create a directory containing the filenames the examples refer to."""
     shutil.copy(FIXTURES / "dnmt3a.pdb", tmp_path / "model.pdb")
+    shutil.copy(FIXTURES / "dnmt3a_dimer.pdb", tmp_path / "complex.pdb")
     shutil.copy(FIXTURES / "arf19.cif", tmp_path / "model.cif")
     shutil.copy(FIXTURES / "dnmt3a.pdb", tmp_path / "AF-P04637-F1-model_v6.pdb")
     monkeypatch.chdir(tmp_path)

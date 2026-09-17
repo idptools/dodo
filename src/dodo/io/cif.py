@@ -34,7 +34,7 @@ from __future__ import annotations
 import gzip
 import re
 from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -49,7 +49,7 @@ from ..exceptions import (
     StructureFileError,
     UnsupportedFormatError,
 )
-from ..structure import Structure
+from ..structure import Structure, classify_experimental_method
 
 __all__ = [
     "parse_cif_text",
@@ -243,7 +243,12 @@ class _Block:
     loops: dict[str, _Loop]
 
 
-def _parse_blocks(text: str, *, categories: frozenset[str] | None = None) -> list[_Block]:
+def _parse_blocks(
+    text: str,
+    *,
+    categories: frozenset[str] | None = None,
+    on_progress_rows: Callable[[int], None] | None = None,
+) -> list[_Block]:
     """Parse mmCIF text into data blocks.
 
     Parameters
@@ -260,6 +265,9 @@ def _parse_blocks(text: str, *, categories: frozenset[str] | None = None) -> lis
     -------
     list of _Block
         Blocks in file order.
+    on_progress_rows
+        Called with the number of loop rows read since the last call. The only place a large
+        file spends real time, so it is the only place worth reporting from.
     """
     blocks: list[_Block] = []
     current: _Block | None = None
@@ -291,7 +299,7 @@ def _parse_blocks(text: str, *, categories: frozenset[str] | None = None) -> lis
             continue
 
         if token.kind == _LOOP:
-            pending = _parse_loop(token, tokens, current, categories)
+            pending = _parse_loop(token, tokens, current, categories, on_progress_rows)
             continue
 
         if token.kind == _TAG:
@@ -324,6 +332,7 @@ def _parse_loop(
     tokens: Iterator[_Token],
     block: _Block,
     categories: frozenset[str] | None,
+    on_row: Callable[[int], None] | None = None,
 ) -> _Token | None:
     """Consume one ``loop_`` and store it on ``block``; return the first token after it."""
     names: list[str] = []
@@ -367,6 +376,8 @@ def _parse_loop(
                 rows.append(buffer)
                 row_lines.append(buffer_line)
             buffer = []
+            if on_row is not None:
+                on_row(1)
         token = next(tokens, None)
 
     if buffer:
@@ -856,6 +867,20 @@ def _split_strand_ids(raw: str | None) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def _exptl_method(block: _Block) -> str | None:
+    """Read ``_exptl.method``, whether it was written as an item or as a loop.
+
+    A single-method entry is usually a plain item; a structure solved by more than one technique
+    writes a loop instead. Both forms mean the same thing here -- the file describes a
+    measurement -- so the methods are joined rather than the first taken.
+    """
+    loop = _category_loop(block, "exptl")
+    if loop is None:
+        return None
+    methods = [row.get("method") for row, _line in loop.dict_rows()]
+    return "; ".join(m for m in methods if m) or None
+
+
 def _entity_poly_sequences(
     block: _Block,
 ) -> tuple[dict[str, str], dict[str, list[str]], list[str]]:
@@ -1079,6 +1104,7 @@ _READ_CATEGORIES: Final = frozenset(
     {
         "atom_site",
         "entity_poly",
+        "exptl",
         "struct_ref",
         "struct_ref_seq",
         _UNOBS_CATEGORY,
@@ -1289,6 +1315,7 @@ def parse_cif_text(
     source: str | None = None,
     model: int | None = None,
     keep_hydrogens: bool = False,
+    on_progress: Callable[[int], None] | None = None,
 ) -> Structure:
     """Parse mmCIF text into a :class:`~dodo.structure.Structure`.
 
@@ -1346,7 +1373,7 @@ def parse_cif_text(
             f"{source or 'This text'} contains no data_ block, so it is not mmCIF."
         )
 
-    blocks = _parse_blocks(text, categories=_READ_CATEGORIES)
+    blocks = _parse_blocks(text, categories=_READ_CATEGORIES, on_progress_rows=on_progress)
     if not blocks:
         # A data_ header matched but the tokenizer found none, so the only ``data_`` in
         # the file is inside a text field or a comment.
@@ -1375,6 +1402,8 @@ def parse_cif_text(
         source=source,
     )
     notes.extend(_component_id_conflicts(structure, table))
+
+    structure.experimental_method = classify_experimental_method(_exptl_method(block))
 
     sequences, entity_strands, sequence_notes = _entity_poly_sequences(block)
     notes.extend(sequence_notes)
@@ -1410,6 +1439,7 @@ def read_cif(
     *,
     model: int | None = None,
     keep_hydrogens: bool = False,
+    on_progress: Callable[[int], None] | None = None,
 ) -> Structure:
     """Read an mmCIF file into a :class:`~dodo.structure.Structure`.
 
@@ -1459,7 +1489,11 @@ def read_cif(
         decode_note = f"{file_path} is not valid UTF-8; it was decoded as latin-1."
 
     structure = parse_cif_text(
-        text, source=str(file_path), model=model, keep_hydrogens=keep_hydrogens
+        text,
+        source=str(file_path),
+        model=model,
+        keep_hydrogens=keep_hydrogens,
+        on_progress=on_progress,
     )
     if decode_note is not None:
         structure.notes.insert(0, decode_note)

@@ -20,10 +20,10 @@ from __future__ import annotations
 
 import sys
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -34,6 +34,8 @@ from ..constants import (
     CA_CA_BOND_LENGTH,
     CA_CLASH_DISTANCE,
     DEFAULT_MODE,
+    INTERFACE_CONTACT_RADIUS,
+    INTERFACE_MIN_RESIDUE_PAIRS,
     MIN_IDR_LENGTH,
     SHORT_REGION_TOLERANCE,
 )
@@ -41,8 +43,20 @@ from ..engines.walk import END_TO_END_TOLERANCE_FRACTION, SelfAvoidingWalk
 from ..exceptions import DodoError, InvalidParameterError
 from ..regions.identify import RegionAssignment, Strategy, assign_regions
 from ..structure import Domain, DomainKind, Span, Structure
+from .assembly import Assembly, Interface, find_rigid_units, units_from_spec
 from .dimensions import DimensionTarget, target_dimensions
-from .place import DomainPlacement, reposition_folded_domains
+from .place import (
+    DomainPlacement,
+    LinkerOutcome,
+    UnitPlacement,
+    reposition_folded_domains,
+)
+from .unmodelled import (
+    InsertionReport,
+    hold_observed_residues,
+    insert_unmodelled_residues,
+    skipped_for_length,
+)
 
 if TYPE_CHECKING:
     from ..engines.base import IDRRequest, IDRResult
@@ -54,6 +68,31 @@ __all__ = [
     "build_from_sequence",
     "rebuild",
 ]
+
+#: ``units=`` name -> ``(lock_interfaces, lock_chains)``. See :func:`rebuild`.
+#:
+#: The two that matter are named after the kind of input they suit, because that is the actual
+#: decision: whether the arrangement of the folded domains is a guess DODO may improve on, or a
+#: measurement it must not touch.
+#:
+#: * ``predicted`` -- an AlphaFold model. Its inter-domain arrangement across a long linker is
+#:   arbitrary, which is the premise DODO rests on, so linker-connected domains may move.
+#:   Contacts ACROSS chains still lock, so a predicted complex stays a complex.
+#: * ``experimental`` -- a crystal or cryo-EM structure. Everything the file models is a
+#:   measurement, so nothing that arrived with coordinates moves at all; only the disordered
+#:   regions are rebuilt, including any filled in from a reference sequence.
+#: * ``none`` -- the low-level escape hatch: covalent rules only, which is what DODO did before
+#:   rigid units existed.
+#:
+#: ``chains`` is kept as a literal-minded alias for ``experimental``: holding every chain rigid
+#: is exactly what "do not move anything that was in the input" comes to, since a linker only
+#: ever joins two domains of the same chain.
+_UNIT_MODES: dict[str, tuple[bool, bool]] = {
+    "predicted": (True, False),
+    "experimental": (True, True),
+    "chains": (True, True),
+    "none": (False, False),
+}
 
 #: Deviation from the requested end-to-end distance at which a built region is called out in
 #: :meth:`RebuildReport.summary`, as a fraction.
@@ -179,6 +218,20 @@ class RebuildReport:
     #: Where every folded domain ended up. Folded domains are moved as rigid bodies, never
     #: rebuilt, so this records position and orientation changes only.
     placements: list[DomainPlacement] = field(default_factory=list)
+    #: The rigid units: which folded domains were held together, and whether each unit moved.
+    #: A unit with more than one domain is what keeps a complex intact -- see
+    #: :mod:`dodo.construct.assembly`.
+    units: list[UnitPlacement] = field(default_factory=list)
+    #: Every connecting IDR: what its dimensions predicted, and what the geometry gave it. A
+    #: linker inside one rigid unit has its span dictated by the complex rather than set by
+    #: DODO, and says so.
+    linkers: list[LinkerOutcome] = field(default_factory=list)
+    #: Every measured contact between two folded domains, locked or not. A contact DODO was
+    #: prepared to break is exactly what a user of a complex needs to see.
+    interfaces: list[Interface] = field(default_factory=list)
+    #: What was filled in from a reference sequence, when one was supplied. ``None`` when the
+    #: input was taken as complete.
+    insertions: InsertionReport | None = None
     notes: list[str] = field(default_factory=list)
     #: Seams left with a strained (over-long) peptide bond when ``backbone=True``, one entry per
     #: model per seam. Empty when no backbone was placed or every seam closed. A strained seam is
@@ -227,6 +280,28 @@ class RebuildReport:
         return sum(1 for o in self.outcomes if o.built)
 
     @property
+    def rigid_units(self) -> list[UnitPlacement]:
+        """Units holding more than one folded domain: the ones that keep a complex together."""
+        return [u for u in self.units if len(u.domains) > 1]
+
+    @property
+    def unbridgeable_linkers(self) -> list[LinkerOutcome]:
+        """Connecting IDRs whose flanking domains are further apart than the chain can span.
+
+        Counted against :attr:`ok`. This is the failure mode a complex introduces that a single
+        chain does not: two folded domains held rigid by an interface can be further apart than
+        the residues between them reach, and then no conformation exists. It is a property of
+        the input and the locking decision, not of the build, so it is knowable before any
+        region is attempted -- and reporting it as a generic build failure would hide that.
+        """
+        return [linker for linker in self.linkers if linker.unbridgeable]
+
+    @property
+    def broken_interfaces(self) -> list[Interface]:
+        """Contacts between folded domains that were not locked, so may not have survived."""
+        return [i for i in self.interfaces if not i.preserved]
+
+    @property
     def ok(self) -> bool:
         """True if every region that matters was rebuilt.
 
@@ -241,7 +316,13 @@ class RebuildReport:
 
         This is what the CLI's exit status reflects.
         """
-        return not self.blocking_failures and not self.unresolved_contacts
+        return (
+            not self.blocking_failures
+            and not self.unresolved_contacts
+            and not self.unbridgeable_linkers
+            and not any(placement.clashing for placement in self.placements)
+            and not any(unit.clashing for unit in self.units)
+        )
 
     def summary(self) -> str:
         """Multi-line human-readable summary."""
@@ -250,10 +331,40 @@ class RebuildReport:
             f"region-model pair(s) rebuilt"
         ]
         lines += [f"  {a.describe()}" for a in self.assignments]
+        if self.rigid_units:
+            lines.append(
+                f"  {len(self.rigid_units)} rigid unit(s) hold more than one folded domain, so "
+                f"those domains keep their relative positions exactly:"
+            )
+            lines += [f"    {u}" for u in self.rigid_units]
         moved = [p for p in self.placements if p.moved]
         if moved:
             lines.append(f"  {len(moved)} folded domain(s) repositioned:")
             lines += [f"    {p}" for p in moved]
+        # A contact between folded domains that was measured and NOT locked is geometry DODO is
+        # prepared to pull apart. On a single chain that is the whole point of step 3; across
+        # chains it would take a complex apart, so it is surfaced either way and the user
+        # decides.
+        broken_inter_chain = [i for i in self.broken_interfaces if i.inter_chain]
+        if broken_inter_chain:
+            lines.append(
+                f"  {len(broken_inter_chain)} inter-chain contact(s) between folded domains "
+                f"were below the locking threshold and may not have survived:"
+            )
+            lines += [f"    {i}" for i in broken_inter_chain]
+        dictated = [linker for linker in self.linkers if linker.dictated]
+        if dictated:
+            lines.append(
+                f"  {len(dictated)} linker span(s) dictated by the complex rather than set from "
+                f"the prediction (both flanking domains are in one rigid unit):"
+            )
+            lines += [f"    {linker}" for linker in dictated]
+        if self.unbridgeable_linkers:
+            lines.append(
+                f"  {len(self.unbridgeable_linkers)} linker(s) cannot be built at all: their "
+                f"flanking domains are further apart than the residues between them reach:"
+            )
+            lines += [f"    {linker}" for linker in self.unbridgeable_linkers]
         if self.blocking_failures:
             lines.append(f"  {len(self.blocking_failures)} failure(s):")
             lines += [f"    {f}" for f in self.blocking_failures]
@@ -378,16 +489,6 @@ def _doomed_atom_mask(structure: Structure) -> np.ndarray:
     return doomed
 
 
-def _too_short_to_build(sequence: str, min_length: int) -> bool:
-    """Whether a region is skipped for length alone, leaving its input coordinates final.
-
-    One predicate for the two callers that must agree: :func:`_build_region`, which skips the
-    region, and :func:`_rebuild_one_model`, which relies on that decision being knowable in
-    advance to put the region into the obstacle set before anything is built.
-    """
-    return len(sequence) < min_length
-
-
 def _build_region(
     structure: Structure,
     *,
@@ -426,7 +527,7 @@ def _build_region(
             **kwargs,  # type: ignore[arg-type]
         )
 
-    if _too_short_to_build(sequence, min_length):
+    if skipped_for_length(structure, span, min_length):
         return outcome(
             built=False,
             reason=f"{label}: shorter than the {min_length}-residue minimum; left as-is",
@@ -762,33 +863,93 @@ def _obstacles_for_span(
 
 
 class _Progress:
-    """A residue-weighted progress bar over the regions a rebuild will attempt.
+    """One progress bar, reused across every stage of a rebuild.
 
     Wraps tqdm rather than exposing it, for two reasons. A rebuild is slow enough that silence
-    reads as a hang -- a 2,400-residue structure spends most of a minute inside one region -- and
-    the bar has to be genuinely optional: writing carriage returns into a piped log or a notebook
-    cell is worse than showing nothing.
+    reads as a hang, and the bar has to be genuinely optional: writing carriage returns into a
+    piped log or a notebook cell is worse than showing nothing.
+
+    **Stages, not just the region loop.** Rebuilding the regions used to be the only part with a
+    bar, which was fine while every input was a single AlphaFold chain that parsed in a tenth of
+    a second. On a 597 MB, 4.9-million-atom nuclear pore the reader alone runs for two minutes
+    before the bar exists, and everything between it and the build -- region identification,
+    filling in unmodelled residues, finding rigid units, positioning them -- is silent too. One
+    bar that is relabelled and reset per stage keeps the terminal to a single line while still
+    saying which part of the process is running and how far into it.
+
+    Every stage has to produce *updates*, not just a label: tqdm only redraws when something
+    advances, so a stage that sets a description and then works silently leaves a frozen line on
+    screen, which is exactly the thing this is meant to prevent.
     """
 
-    __slots__ = ("_bar",)
+    __slots__ = ("_bar", "_pending")
 
-    def __init__(self, total: int) -> None:
+    #: A stage whose size is known: show the percentage and the bar.
+    _MEASURED = "{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} {unit} [{elapsed}]"
+    #: A stage whose size is not known until it finishes -- reading a file, mostly. No bar and
+    #: no percentage, because both would be lies; the count and the clock still move.
+    _OPEN_ENDED = "{desc}: {n_fmt} {unit} [{elapsed}]"
+
+    def __init__(self) -> None:
         from tqdm.auto import tqdm
 
         self._bar = tqdm(
-            total=max(total, 1),
-            unit="res",
-            desc="rebuilding",
-            # Residues, not iterations: "1.2k/2.4k res" is meaningful where "3/6" is not.
-            bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} {unit} [{elapsed}]",
+            total=None,
+            unit="",
+            desc="starting",
+            bar_format=self._OPEN_ENDED,
             leave=False,
         )
+        self._pending: list[list[int]] = []
 
-    def advance(self, residues: int) -> None:
-        self._bar.update(residues)
+    def batched(self, batch: int) -> Callable[[int], None]:
+        """Return a callback that advances once per ``batch`` items rather than per item.
+
+        Reading 4.9 million atoms is the case that needs it: one tqdm update per row costs more
+        than the parsing does, while one per twenty thousand is free and still redraws several
+        times a second. The remainder is flushed when the stage ends, so a stage smaller than one
+        batch does not finish showing zero.
+        """
+        counter = [0]
+        self._pending.append(counter)
+
+        def advance(amount: int = 1) -> None:
+            counter[0] += amount
+            if counter[0] >= batch:
+                self._bar.update(counter[0])
+                counter[0] = 0
+
+        return advance
+
+    def _flush(self) -> None:
+        for counter in self._pending:
+            if counter[0]:
+                self._bar.update(counter[0])
+                counter[0] = 0
+        self._pending.clear()
+
+    def stage(self, label: str, total: int | None = None, unit: str = "") -> None:
+        """Begin a new stage, resetting the count.
+
+        ``total=None`` means the size is not known in advance; the bar then shows the running
+        count and the elapsed time instead of a percentage.
+        """
+        self._flush()
+        # Label, unit and format BEFORE reset, and the label without a refresh of its own.
+        # tqdm redraws inside reset(), so setting them afterwards paints one frame carrying the
+        # previous stage's name against the new stage's total -- which is how "positioning
+        # folded domains: 0/6752 units" appeared on screen, quoting the residue count of the
+        # stage after it.
+        self._bar.unit = unit
+        self._bar.bar_format = self._MEASURED if total else self._OPEN_ENDED
+        self._bar.set_description_str(label, refresh=False)
+        self._bar.reset(total=total)
+
+    def advance(self, amount: int = 1) -> None:
+        self._bar.update(amount)
 
     def describe(self, text: str) -> None:
-        """Relabel the bar, so a long second phase is not mistaken for a stall."""
+        """Relabel without resetting, so a long second phase is not mistaken for a stall."""
         self._bar.set_description_str(text)
 
     def next_model(self, done: int, total: int) -> None:
@@ -798,6 +959,7 @@ class _Progress:
             self._bar.set_description_str(f"rebuilding (model {min(done + 1, total)}/{total})")
 
     def close(self) -> None:
+        self._flush()
         self._bar.close()
 
 
@@ -806,7 +968,13 @@ class _NoProgress:
 
     __slots__ = ()
 
-    def advance(self, residues: int) -> None:
+    def stage(self, label: str, total: int | None = None, unit: str = "") -> None:
+        return
+
+    def batched(self, batch: int) -> Callable[[int], None]:
+        return self.advance
+
+    def advance(self, amount: int = 1) -> None:
         return
 
     def describe(self, text: str) -> None:
@@ -819,7 +987,7 @@ class _NoProgress:
         return
 
 
-def _progress_bar(requested: bool | None, total: int) -> _Progress | _NoProgress:
+def _progress_bar(requested: bool | None) -> _Progress | _NoProgress:
     """Build a progress tracker, or a no-op stand-in.
 
     ``None`` means decide from the environment: a bar on an interactive terminal, silence when
@@ -832,7 +1000,7 @@ def _progress_bar(requested: bool | None, total: int) -> _Progress | _NoProgress
     if requested is None and not sys.stderr.isatty():
         return _NoProgress()
     try:
-        return _Progress(total)
+        return _Progress()
     except ImportError:
         return _NoProgress()
 
@@ -901,7 +1069,7 @@ def _rebuild_one_model(
 
     # A region too short to build is an obstacle from the outset too, and for the same reason:
     # its coordinates are already final. The skip is decided by length alone (see
-    # _too_short_to_build), so it is known BEFORE anything is built rather than discovered when
+    # skipped_for_length), so it is known BEFORE anything is built rather than discovered when
     # its turn comes -- and marking it only when its turn comes is what let every longer region
     # ahead of it in the loop below be built straight through it. `placed`, not `rebuilt`: these
     # are the INPUT coordinates, kept deliberately, so they must not be attributed to DODO or
@@ -914,7 +1082,7 @@ def _rebuild_one_model(
     # that is ABOUT to be rebuilt must not be avoided at its input coordinates, since those are
     # exactly the coordinates that are about to be replaced.
     for domain in structure.idrs():
-        if _too_short_to_build(domain.sequence, min_length):
+        if skipped_for_length(structure, domain.span, min_length):
             domain.placed = True
 
     # BUILD ORDER, and it is deliberate: loops, then connecting IDRs, then terminal IDRs.
@@ -989,7 +1157,7 @@ def _rebuild_one_model(
                 span=domain.span,
                 sequence=domain.sequence,
                 target=target_dimensions(domain.sequence, mode=mode)
-                if not _too_short_to_build(domain.sequence, min_length)
+                if not skipped_for_length(structure, domain.span, min_length)
                 else None,
                 requested_override=float(drawn[model - 1]) if drawn is not None else None,
                 model=model,
@@ -1011,15 +1179,7 @@ def _rebuild_one_model(
 
         return _RegionAttempt(span=domain.span, run=run, record=record)
 
-    # MUTATION EXPERIMENT (temporary): loops built outside `attempts`, i.e. the repair pass
-    # sees IDRs only -- the exact revert the reviewer describes.
-    for _parent, _index, _loop in loops:
-        _loop_attempt = loop_attempt(_parent, _index, _loop)
-        _loop_outcome = _loop_attempt.run()
-        _loop_attempt.record(_loop_outcome)
-        outcomes.append(_loop_outcome)
-        if on_region_done is not None:
-            on_region_done(len(_loop))
+    attempts.extend(loop_attempt(parent, index, loop) for parent, index, loop in loops)
     attempts.extend(idr_attempt(domain) for domain in connecting + terminal)
 
     for attempt in attempts:
@@ -1141,6 +1301,13 @@ def rebuild(
     engine: str = "walk",
     backbone: bool = True,
     min_length: int = MIN_IDR_LENGTH,
+    fasta: str | Path | None = None,
+    sequences: Mapping[str, str] | None = None,
+    fill_missing: bool = False,
+    units: str | Sequence[Sequence[Any]] = "auto",
+    lock_intra_chain_interfaces: bool = False,
+    interface_contact_radius: float = INTERFACE_CONTACT_RADIUS,
+    interface_min_residue_pairs: int = INTERFACE_MIN_RESIDUE_PAIRS,
     seed: int | None = None,
     progress: bool | None = None,
 ) -> RebuildReport:
@@ -1190,6 +1357,64 @@ def rebuild(
         :attr:`RebuildReport.backbone_seams`. Nothing physically impossible is ever written.
     min_length
         Shortest region worth rebuilding. Shorter ones keep their input coordinates.
+    fasta
+        Path to a FASTA file giving the **full-length** sequence of each chain. Any residue the
+        reference says is there and the structure does not model is treated as disordered,
+        inserted, and rebuilt -- which is what makes a crystal or cryo-EM structure usable,
+        since what those files leave out is very often the disordered region DODO exists to
+        rebuild. Headers may name chains the way the RCSB does
+        (``|Chains A[auth X], B[auth Y]|``) or simply as ``>X``; a chain the headers do not name
+        is matched on its sequence instead. See :mod:`dodo.io.fasta`.
+    sequences
+        Chain id to full-length sequence, as an alternative to ``fasta``. Takes precedence for
+        the chains it names.
+    fill_missing
+        For chains that neither ``fasta`` nor ``sequences`` covers, fall back to the deposited
+        sequence the file itself declares -- ``SEQRES`` in a PDB, ``_entity_poly`` in an mmCIF.
+        **Off by default**, because turning it on changes what DODO builds for any file with a
+        ``SEQRES`` record, which is most experimental structures.
+    units
+        Which folded domains must move together -- see :mod:`dodo.construct.assembly`. This is
+        what makes a multi-chain complex come out intact, and the real decision behind it is
+        whether the arrangement of the folded domains is a guess DODO may improve on or a
+        measurement it must not touch.
+
+        ``"predicted"``
+            An AlphaFold model. Its inter-domain arrangement across a long linker is arbitrary
+            -- that is the premise DODO rests on -- so folded domains joined by a linker are
+            repositioned to the linker's predicted end-to-end distance. Domains in contact
+            **across chains** still move as one rigid body, so a predicted complex stays a
+            complex.
+        ``"experimental"``
+            A crystal or cryo-EM structure. Everything the file models is a measurement, so
+            **nothing that arrived with coordinates moves at all**; only the disordered regions
+            are rebuilt, including any filled in from ``fasta`` or ``sequences``.
+        ``"auto"`` (the default)
+            Choose between them from the file. A declared experimental method (``EXPDTA``, or
+            mmCIF ``_exptl.method``) means experimental, and so does having had residues filled
+            in from a reference. AlphaFold DB models and AlphaFold 3 server output declare no
+            method and are complete, so they resolve to ``"predicted"``. The resolution is
+            always written into :attr:`RebuildReport.notes`.
+        ``"none"``
+            The low-level escape hatch: covalent rules only, which is what DODO did before
+            rigid units existed.
+
+        A sequence names the units explicitly instead, each as ``(chain_id, residue_number)``
+        pairs::
+
+            units=[[("A", 300), ("B", 1200)], [("A", 700)]]
+
+        On a single chain, ``"predicted"`` and ``"none"`` both give one unit per folded domain,
+        so single-chain output is unaffected by any of this.
+    lock_intra_chain_interfaces
+        Also hold together two folded domains of the *same* chain that are in contact. Off by
+        default: that arrangement is exactly what folded-domain repositioning exists to
+        re-sample, and locking it would change the behaviour validated over 23,587 single-chain
+        structures.
+    interface_contact_radius, interface_min_residue_pairs
+        The contact definition and the locking threshold. See
+        :data:`~dodo.constants.INTERFACE_MIN_RESIDUE_PAIRS` for why the default errs toward
+        locking.
     seed
         Seed for reproducibility. With a fixed seed the output is bit-identical.
     progress
@@ -1218,11 +1443,44 @@ def rebuild(
     if n_models < 1:
         raise InvalidParameterError(f"n_models must be at least 1, got {n_models}.")
 
-    original = read_structure(source) if not isinstance(source, Structure) else source
+    # The tracker is created FIRST, before the file is even opened, because reading it is one of
+    # the stages worth reporting: a 597 MB assembly spends over two minutes in the reader, and
+    # the bar used to be created afterwards, so that whole wait was silent.
+    tracker = _progress_bar(progress)
+
+    if isinstance(source, Structure):
+        original = source
+    else:
+        tracker.stage(f"reading {Path(source).name}", unit="records")
+        original = read_structure(source, on_progress=tracker.batched(20_000))
     report = RebuildReport()
     report.notes.extend(original.notes)
 
     rng = np.random.default_rng(seed)
+
+    # Regions are assigned ONCE, here, on the input geometry, and everything downstream carries
+    # them by copy. Assigning before the unmodelled residues are inserted is deliberate: an
+    # inserted residue's placeholder alpha carbon is fiction, and burial is scored from
+    # coordinates, so letting the placeholders be scored would let fiction decide which residues
+    # are folded. See dodo.construct.unmodelled.
+    base = original.copy()
+    tracker.stage("identifying regions", total=len(base.chains), unit="chains")
+    base_assignments = assign_regions(base, strategy=strategy, on_chain_done=tracker.advance)
+
+    reference = _reference_sequences(base, fasta=fasta, sequences=sequences, report=report)
+    if reference or fill_missing:
+        tracker.stage("filling in unmodelled residues", total=len(base.chains), unit="chains")
+        base, base_assignments = _insert_reference_residues(
+            base,
+            base_assignments,
+            reference=reference,
+            fill_missing=fill_missing,
+            report=report,
+            on_chain_done=tracker.advance,
+        )
+    report.assignments = base_assignments
+    for assignment in base_assignments:
+        report.notes.extend(assignment.notes)
 
     # Draw every model's end-to-end target for every region BEFORE building anything.
     #
@@ -1239,8 +1497,7 @@ def rebuild(
     if n_models > 1:
         from ..engines.walk import sample_end_to_end_targets
 
-        probe = original.copy()
-        for assignment in assign_regions(probe, strategy=strategy):
+        for assignment in base_assignments:
             for domain in assignment.domains:
                 if domain.kind is not DomainKind.IDR or not domain.span.is_terminal:
                     continue
@@ -1275,14 +1532,50 @@ def rebuild(
     # differ -- which also means a connecting IDR's end-to-end distance is fixed by its anchors
     # across all models (its path varies, its span cannot), while a terminal IDR is free and
     # does scatter.
-    base = original.copy()
-    base_assignments = assign_regions(base, strategy=strategy)
+    # The mode has to be settled before the units are, because "experimental" changes what
+    # counts as a region at all -- see hold_observed_residues.
+    resolved_units, base_assignments = _prepare_unit_mode(
+        base, base_assignments, units=units, report=report
+    )
     report.assignments = base_assignments
-    for assignment in base_assignments:
-        report.notes.extend(assignment.notes)
 
-    placement = reposition_folded_domains(base, mode=mode, rng=rng)
+    tracker.stage("finding rigid units", unit="domain pairs")
+    assembly = _resolve_units(
+        base,
+        resolved_units,
+        min_length=min_length,
+        lock_intra_chain_interfaces=lock_intra_chain_interfaces,
+        contact_radius=interface_contact_radius,
+        min_residue_pairs=interface_min_residue_pairs,
+        report=report,
+        on_progress=tracker.batched(200),
+    )
+    # Linkers and units in one stage, because the split is invisible to a user and the linkers
+    # are where the time goes: each one costs a dimension prediction. A stage totalled on units
+    # alone shows "0/1" and freezes for a minute on an assembly that resolves to a single unit.
+    n_linkers = sum(
+        1
+        for assignment in base_assignments
+        for domain in assignment.domains
+        if domain.kind is DomainKind.IDR and not domain.span.is_terminal
+    )
+    tracker.stage(
+        "positioning folded domains",
+        total=max(len(assembly.units) + n_linkers, 1),
+        unit="steps",
+    )
+    placement = reposition_folded_domains(
+        base,
+        mode=mode,
+        rng=rng,
+        assembly=assembly,
+        on_unit_done=tracker.advance,
+        on_linker_done=tracker.advance,
+    )
     report.placements.extend(placement.placements)
+    report.units.extend(placement.units)
+    report.linkers.extend(placement.linkers)
+    report.interfaces.extend(placement.interfaces)
     report.notes.extend(placement.notes)
     for clashing in placement.clashing:
         report.notes.append(str(clashing))
@@ -1299,7 +1592,7 @@ def rebuild(
     # place N, C and O on them. Counting only the first left the bar at 100% while the backbone pass
     # ran on, which on p300 was most of the wait with no indication anything was still happening.
     total_work = n_models * rebuildable * (2 if backbone else 1)
-    tracker = _progress_bar(progress, total_work)
+    tracker.stage("rebuilding", total=max(total_work, 1), unit="res")
     # One engine for the whole run, so a per-sequence cache inside it survives across models.
     engine_instance = _make_engine(engine)
 
@@ -1336,6 +1629,13 @@ def rebuild(
         # Rebuilt regions are CA-only, so drop the atoms that did not move with them. This has to
         # happen BEFORE any backbone placement: it deletes every non-CA atom in a generated region,
         # which would otherwise take the N, C and O placed just below straight back out again.
+        working, dropped = _drop_unbuilt_inserted(working)
+        for chain_id, first, last in dropped:
+            report.notes.append(
+                f"model {model_number} chain {chain_id} residues {first}-{last}: inserted from "
+                f"the reference sequence but not rebuilt, so they were left out of the output "
+                f"rather than written as a placeholder."
+            )
         final = _drop_non_ca_from_rebuilt(working)
         if backbone:
             from .ca_backbone import add_backbone_to_rebuilt
@@ -1362,6 +1662,179 @@ def rebuild(
     tracker.close()
     _reconcile_ensemble_topology(report)
     return report
+
+
+def _reference_sequences(
+    structure: Structure,
+    *,
+    fasta: str | Path | None,
+    sequences: Mapping[str, str] | None,
+    report: RebuildReport,
+) -> dict[str, str]:
+    """Work out each chain's full-length reference sequence from what the caller supplied."""
+    resolved: dict[str, str] = {}
+    if fasta is not None:
+        from ..io.fasta import match_chains, read_fasta
+
+        records = read_fasta(fasta)
+        observed = {chain.chain_id: chain.sequence for chain in structure.chains}
+        matched, notes = match_chains(records, observed.keys(), observed)
+        resolved.update(matched)
+        report.notes.extend(notes)
+    # An explicit mapping wins: the caller naming a chain outright is the least ambiguous thing
+    # available, and it is how a user overrides a FASTA that matched the wrong record.
+    resolved.update(sequences or {})
+    return resolved
+
+
+def _insert_reference_residues(
+    structure: Structure,
+    assignments: list[RegionAssignment],
+    *,
+    reference: Mapping[str, str],
+    fill_missing: bool,
+    report: RebuildReport,
+    on_chain_done: Callable[[int], None] | None = None,
+) -> tuple[Structure, list[RegionAssignment]]:
+    """Apply the rebuild's missing-residue preprocessing and update its report."""
+    filled, insertion = insert_unmodelled_residues(
+        structure,
+        reference,
+        use_full_sequence=fill_missing,
+        on_chain_done=on_chain_done,
+    )
+    report.insertions = insertion
+    report.notes.extend(insertion.notes)
+    if not insertion.n_inserted:
+        return filled, assignments
+    # The spliced regions are the real assignment now, so report those rather than the ones
+    # identified before the chain was complete.
+    return filled, assign_regions(filled, strategy=Strategy.PRESET)
+
+
+def _drop_unbuilt_inserted(structure: Structure) -> tuple[Structure, list[tuple[str, int, int]]]:
+    """Remove inserted residues whose region was not rebuilt, and say which.
+
+    An inserted residue has no observed coordinates -- only a placeholder on the straight line
+    between its anchors. Every other region DODO fails to build keeps its input coordinates,
+    which is honest because they came from the input; here there is nothing to keep, so writing
+    the placeholder would mean writing a straight line and calling it a structure. The residues
+    come back out and the report says which ones.
+    """
+    if not structure.inserted.any():
+        return structure, []
+    generated = np.zeros(structure.n_residues, dtype=bool)
+    for domain in structure.domains:
+        for span in domain.generated_spans():
+            generated[span.slice] = True
+    doomed = structure.inserted & ~generated
+    if not doomed.any():
+        return structure, []
+
+    dropped: list[tuple[str, int, int]] = []
+    padded = np.concatenate([[False], doomed, [False]])
+    edges = np.flatnonzero(padded[1:] != padded[:-1])
+    for start, stop in zip(edges[::2], edges[1::2], strict=True):
+        chain = structure.chains[int(structure.chain_index[start])]
+        dropped.append(
+            (
+                chain.chain_id,
+                int(structure.residue_number[start]),
+                int(structure.residue_number[stop - 1]),
+            )
+        )
+    return structure.select_residues(~doomed), dropped
+
+
+def _detect_input_kind(structure: Structure) -> tuple[str, str]:
+    """Decide whether a structure is a measurement or a prediction, and say why.
+
+    Two signals, and both are facts about the file rather than guesses about the science:
+
+    1. **The file declares an experimental method** -- ``EXPDTA`` in a PDB, ``_exptl.method`` in
+       an mmCIF. Measured across every fixture class present: AlphaFold DB models and AlphaFold 3
+       server output declare nothing at all, while 6kn7 and 7R5J declare ELECTRON MICROSCOPY in
+       both formats. ``THEORETICAL MODEL`` is filtered out upstream, in
+       :func:`~dodo.structure.classify_experimental_method`.
+    2. **Residues were filled in from a reference sequence.** A prediction models every residue
+       it was given; having unmodelled residues at all is a property of an experiment.
+
+    Either one means experimental. The decision is always written into the report, because a
+    default that silently decides whether a user's domains may move is a default they need to be
+    able to see and override.
+    """
+    if structure.experimental_method:
+        return "experimental", (
+            f"the file declares an experimental method ({structure.experimental_method}), so "
+            f"the arrangement of its folded domains is a measurement and nothing that arrived "
+            f"with coordinates is moved"
+        )
+    if bool(structure.inserted.any()):
+        return "experimental", (
+            "residues were filled in from a reference sequence, which only happens for a "
+            "structure that did not model everything, so the coordinates it did model are "
+            "treated as a measurement"
+        )
+    return "predicted", (
+        "the file declares no experimental method and nothing was missing from it, so it is "
+        "treated as a prediction and folded domains joined by a linker may be repositioned"
+    )
+
+
+def _prepare_unit_mode(
+    structure: Structure,
+    assignments: list[RegionAssignment],
+    *,
+    units: str | Sequence[Sequence[Any]],
+    report: RebuildReport,
+) -> tuple[str | Sequence[Sequence[Any]], list[RegionAssignment]]:
+    """Resolve unit mode and apply the experimental-input region policy."""
+    resolved: str | Sequence[Sequence[Any]] = units
+    if isinstance(units, str) and units.lower() == "auto":
+        resolved, why = _detect_input_kind(structure)
+        report.notes.append(f"units=auto resolved to {resolved!r}: {why}.")
+    if isinstance(resolved, str) and resolved.lower() == "experimental":
+        report.notes.extend(hold_observed_residues(structure))
+        assignments = assign_regions(structure, strategy=Strategy.PRESET)
+    return resolved, assignments
+
+
+def _resolve_units(
+    structure: Structure,
+    units: str | Sequence[Sequence[Any]],
+    *,
+    min_length: int,
+    lock_intra_chain_interfaces: bool,
+    contact_radius: float,
+    min_residue_pairs: int,
+    report: RebuildReport,
+    on_progress: Callable[[int], None] | None = None,
+) -> Assembly:
+    """Turn the ``units=`` argument into an :class:`~dodo.construct.assembly.Assembly`."""
+    if not isinstance(units, str):
+        return units_from_spec(structure, units, min_length=min_length)
+    named = units.lower()
+    if named == "auto":
+        # rebuild() resolves this earlier, because the answer changes what a region is. Kept for
+        # a caller that reaches this function directly.
+        named, why = _detect_input_kind(structure)
+        report.notes.append(f"units=auto resolved to {named!r}: {why}.")
+    if named not in _UNIT_MODES:
+        raise InvalidParameterError(
+            f"Unknown units={units!r}. Use 'auto', {sorted(_UNIT_MODES)}, or a sequence naming "
+            f"the units explicitly."
+        )
+    lock_interfaces, lock_chains = _UNIT_MODES[named]
+    return find_rigid_units(
+        structure,
+        min_length=min_length,
+        contact_radius=contact_radius,
+        min_residue_pairs=min_residue_pairs,
+        lock_intra_chain_interfaces=lock_intra_chain_interfaces,
+        lock_interfaces=lock_interfaces,
+        lock_chains=lock_chains,
+        on_progress=on_progress,
+    )
 
 
 def _reconcile_ensemble_topology(report: RebuildReport) -> None:

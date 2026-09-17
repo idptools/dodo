@@ -41,7 +41,7 @@ from __future__ import annotations
 import gzip
 import re
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Final
 
@@ -54,7 +54,7 @@ from ..exceptions import (
     StructureFileError,
     UnsupportedFormatError,
 )
-from ..structure import Structure
+from ..structure import Structure, classify_experimental_method
 
 __all__ = [
     "decode_hybrid36",
@@ -300,6 +300,7 @@ def read_pdb(
     *,
     model: int | None = None,
     keep_hydrogens: bool = False,
+    on_progress: Callable[[int], None] | None = None,
 ) -> Structure:
     """Read a PDB-format file into a :class:`~dodo.structure.Structure`.
 
@@ -368,6 +369,7 @@ def read_pdb(
         source=str(file_path),
         model=model,
         keep_hydrogens=keep_hydrogens,
+        on_progress=on_progress,
     )
 
 
@@ -377,6 +379,7 @@ def parse_pdb_lines(
     source: str | None = None,
     model: int | None = None,
     keep_hydrogens: bool = False,
+    on_progress: Callable[[int], None] | None = None,
 ) -> Structure:
     """Parse PDB-format records into a :class:`~dodo.structure.Structure`.
 
@@ -429,6 +432,7 @@ def parse_pdb_lines(
     seqres_declared: dict[str, int] = {}
     dbref_hits: list[tuple[str, str]] = []
     dbref1_uniprot_chains: set[str] = set()
+    expdta_lines: list[str] = []
 
     skipped_names: Counter[str] = Counter()
     unrecognized_polymer_names: Counter[str] = Counter()
@@ -570,6 +574,8 @@ def parse_pdb_lines(
             b_factors.append(b_factor)
             segment_labels.append(current_label)
             alt_locs.append(line[16:17].strip())
+            if on_progress is not None:
+                on_progress(1)
 
         elif record.startswith("TER"):
             # A TER ends a chain even when the next one reuses the id. Ignoring it is
@@ -595,6 +601,11 @@ def parse_pdb_lines(
                 n_stray_endmdl += 1
             open_frame = 0
             break_pending = False
+
+        elif record.startswith("EXPDTA"):
+            # How DODO tells a measurement from a prediction. The record is free text and may
+            # be continued over several lines, so they are joined rather than the first taken.
+            expdta_lines.append(line[10:].strip())
 
         elif record.startswith("SEQRES"):
             seqres_chain = line[11:12].strip()
@@ -681,6 +692,7 @@ def parse_pdb_lines(
         occupancy=occupancies,
         source=source,
     )
+    structure.experimental_method = classify_experimental_method(" ".join(expdta_lines))
 
     for chain in structure.chains:
         if chain.chain_id.endswith(_SEGMENT_MARKER):

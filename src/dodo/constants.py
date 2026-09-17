@@ -369,6 +369,52 @@ ALBATROSS_MIN_LENGTH: Final[int] = 35
 
 
 # ---------------------------------------------------------------------------
+# Rigid units (multi-chain complexes)
+# ---------------------------------------------------------------------------
+
+#: Heavy-atom distance in Angstroms at which two folded domains count as touching.
+#:
+#: CHOICE, and the standard one: 5.0 A between heavy atoms is the usual definition of a
+#: residue-residue contact across a protein-protein interface, which makes the counts this
+#: produces comparable to published buried-surface figures rather than to a number invented here.
+INTERFACE_CONTACT_RADIUS: Final[float] = 5.0
+
+#: Residue-residue contacts at which two folded domains are locked into one rigid unit.
+#:
+#: CHOICE, and deliberately low, because the two errors are not symmetric. Locking a pair that
+#: did not need it costs only that the pair stays where the input put it -- DODO declines to
+#: re-sample an arrangement it could have re-sampled. NOT locking a pair that needed it takes a
+#: real complex apart and reports the result clean, which is the failure this whole mechanism
+#: exists to prevent. So err toward locking. Same reasoning as CA_CONTACT_SCORE_THRESHOLD.
+#:
+#: MEASURED over the five AlphaFold 3 complexes in
+#: tests/data/complexes_full_sequences_modeled: 95 inter-chain folded-domain pairs are in contact
+#: at all, and the distribution is strongly bimodal -- 7 pairs touch at exactly 1 residue pair and
+#: 3 more at 2, then the next value is 3 and the median is 37 (max 286). Three is therefore the
+#: floor of the real-interface mode: it locks 85 of the 95 and rejects only the single- and
+#: double-residue brush that two chains passing near each other produce.
+INTERFACE_MIN_RESIDUE_PAIRS: Final[int] = 3
+
+#: Worst per-linker error, in Angstroms, at which a multi-constraint unit placement is accepted.
+#:
+#: CHOICE. A linker's predicted end-to-end distance is the mean of a distribution whose spread is
+#: tens of Angstroms, so insisting on an exact hit would be false precision. One Angstrom is far
+#: inside that spread and still tight enough that a converged placement is visibly converged.
+UNIT_PLACEMENT_TOLERANCE: Final[float] = 1.0
+
+#: Sphere-projection/Kabsch iterations per multi-constraint unit placement.
+#:
+#: CHOICE. The iteration converges geometrically; this is a backstop against a configuration that
+#: oscillates rather than a budget the normal case spends.
+MAX_UNIT_RELAX_ITERATIONS: Final[int] = 100
+
+#: Whole-component relaxation sweeps run after the spanning-tree placement, to close cycles.
+#:
+#: CHOICE. Skipped entirely when the tree placement already satisfies every constraint, which is
+#: every acyclic component and therefore every single-chain input.
+MAX_UNIT_RELAX_SWEEPS: Final[int] = 200
+
+# ---------------------------------------------------------------------------
 # Sampling budgets
 # ---------------------------------------------------------------------------
 

@@ -19,7 +19,7 @@ applied silently.
 from __future__ import annotations
 
 import gzip
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from ..exceptions import StructureFileError, UnsupportedFormatError
@@ -104,6 +104,7 @@ def read_structure(
     *,
     model: int | None = None,
     keep_hydrogens: bool = False,
+    on_progress: Callable[[int], None] | None = None,
 ) -> Structure:
     """Read a structure file, choosing the reader from its extension and content.
 
@@ -117,6 +118,11 @@ def read_structure(
         which is geometrically meaningless.
     keep_hydrogens
         Keep hydrogens. DODO's geometry is heavy-atom based, so they are dropped by default.
+    on_progress
+        Called with the number of atom records read since the last call, for a caller that wants
+        to show progress. Worth passing only for a file large enough that reading it is itself a
+        wait: a 597 MB biological assembly takes over two minutes, and nothing else can report
+        anything until it finishes.
 
     Returns
     -------
@@ -143,21 +149,31 @@ def read_structure(
         suffix = ".pdb"
 
     if suffix in _CIF_SUFFIXES:
-        return read_cif(path, model=model, keep_hydrogens=keep_hydrogens)
+        return read_cif(
+            path, model=model, keep_hydrogens=keep_hydrogens, on_progress=on_progress
+        )
 
     if suffix in _PDB_SUFFIXES:
         # Trust content over extension: mmCIF misnamed .pdb is common enough that
         # dispatching on the name alone produces a baffling parse error.
         if _content_looks_like_cif(path):
-            return read_cif(path, model=model, keep_hydrogens=keep_hydrogens)
-        return read_pdb(path, model=model, keep_hydrogens=keep_hydrogens)
+            return read_cif(
+            path, model=model, keep_hydrogens=keep_hydrogens, on_progress=on_progress
+        )
+        return read_pdb(
+            path, model=model, keep_hydrogens=keep_hydrogens, on_progress=on_progress
+        )
 
     # Unknown extension: sniff rather than refuse, since structures are routinely
     # downloaded with no extension at all.
     if _content_looks_like_cif(path):
-        return read_cif(path, model=model, keep_hydrogens=keep_hydrogens)
+        return read_cif(
+            path, model=model, keep_hydrogens=keep_hydrogens, on_progress=on_progress
+        )
     try:
-        return read_pdb(path, model=model, keep_hydrogens=keep_hydrogens)
+        return read_pdb(
+            path, model=model, keep_hydrogens=keep_hydrogens, on_progress=on_progress
+        )
     except StructureFileError as exc:
         raise UnsupportedFormatError(
             f"{path} is neither PDB nor mmCIF, as far as DODO can tell. Reading it as PDB "

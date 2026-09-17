@@ -8,6 +8,8 @@ what exposes them. Each has a named test here.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -830,3 +832,64 @@ class TestManualSpec:
             assign_regions_from_spec(
                 structure, {"A": [("folded", 20, 59), ("folded", 80, 119)]}
             )
+
+
+class TestWholeStructureScoringHappensOnce:
+    """Burial is a whole-structure property, so it must be measured once, not once per chain.
+
+    The comment in :func:`assign_regions` said "one structure-wide contact pass, reused across
+    chains" while the code called ``density_profile(structure)`` from inside the per-chain loop,
+    so an N-chain structure paid for N passes over every atom in it. Invisible on a single
+    AlphaFold chain and quadratic on an assembly: measured on the 29-chain, 61,511-atom 6kn7,
+    29 passes and 2.10 s against 0.08 s for the one pass it needs. On an 808-chain nuclear pore
+    it was a wait of hours with no output, which is how it was found.
+    """
+
+    @staticmethod
+    def _count_passes(structure, monkeypatch, strategy="auto") -> int:
+        from dodo.regions import identify
+
+        calls = [0]
+        for name in ("density_profile", "contact_profile"):
+            real = getattr(identify, name)
+
+            def counted(structure, _real=real, **kwargs):
+                calls[0] += 1
+                return _real(structure, **kwargs)
+
+            monkeypatch.setattr(identify, name, counted)
+        identify.assign_regions(structure, strategy=strategy)
+        return calls[0]
+
+    def test_one_pass_however_many_chains(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import dodo
+
+        structure = dodo.read_structure(
+            Path(__file__).resolve().parents[1] / "data" / "structures" / "6kn7.pdb"
+        )
+        assert len(structure.chains) > 20, "the fixture must have many chains to be a test at all"
+        assert self._count_passes(structure, monkeypatch) == 1
+
+    def test_a_single_chain_still_takes_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import dodo
+
+        structure = dodo.read_structure(
+            Path(__file__).resolve().parents[1] / "data" / "structures" / "dnmt3a.pdb"
+        )
+        assert self._count_passes(structure, monkeypatch) == 1
+
+    def test_the_assignment_is_unchanged_by_the_hoist(self) -> None:
+        """Hoisting must not move a single boundary; it is the same function on the same input."""
+        import dodo
+        from dodo.regions.contact import density_profile
+        from dodo.regions.identify import assign_regions
+
+        path = Path(__file__).resolve().parents[1] / "data" / "structures" / "6kn7.pdb"
+        structure = dodo.read_structure(path)
+        assignments = assign_regions(structure)
+        # Recompute each chain's mask straight from a fresh whole-structure profile and check the
+        # folded/disordered call agrees residue for residue.
+        profile = density_profile(dodo.read_structure(path))
+        for assignment, chain in zip(assignments, structure.chains, strict=True):
+            expected = profile.smoothed[chain.span.slice] >= CONTACT_SCORE_THRESHOLD
+            assert np.array_equal(assignment.folded_mask, expected)

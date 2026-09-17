@@ -68,6 +68,11 @@ _LAZY_ATTRS: dict[str, str] = {
     # which is what replaced v1's regions_dict= parameter.
     "assign_regions_from_spec": "dodo.regions",
     "reposition_folded_domains": "dodo.construct",
+    # Rigid units: which folded domains must move together. The complex story.
+    "find_rigid_units": "dodo.construct",
+    "units_from_spec": "dodo.construct",
+    "RigidUnit": "dodo.construct",
+    "Assembly": "dodo.construct",
     "Strategy": "dodo.regions",
     "RegionAssignment": "dodo.regions",
     # Target dimensions
@@ -111,13 +116,17 @@ if TYPE_CHECKING:
         validate,
     )
     from .construct import (
+        Assembly,
         RebuildReport,
+        RigidUnit,
         albatross_available,
         build_from_sequence,
+        find_rigid_units,
         predict_end_to_end,
         rebuild,
         reposition_folded_domains,
         target_dimensions,
+        units_from_spec,
     )
     from .exceptions import (
         BuildError,

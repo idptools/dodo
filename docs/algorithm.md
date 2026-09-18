@@ -122,10 +122,10 @@ disordered regions move.
 Shipped, and where the effort has gone: the alpha-carbon approach itself, and backbone building
 (N, C, O) for rebuilt regions — on by default, held out against all-atom simulation at N 0.16 Å,
 C 0.22 Å, O 0.63 Å, with every bond length inside a region exact. The peptide-plane lookup is keyed
-on five consecutive alpha carbons, worth 5.1% on C and 3.8% on N over the four-carbon form. Its one
-irreducible limit is the seams: an exact peptide bond onto an untouched folded domain is
-geometrically unsatisfiable from a rebuilt alpha carbon, so that bond is drawn as close as possible,
-left long, and reported. `--no-backbone` returns alpha-carbon-only output.
+on five consecutive alpha carbons, worth 5.1% on C and 3.8% on N over the four-carbon form.
+Folded-domain C/N/O atoms now constrain the boundary alpha carbons during generation, so the seam
+peptide bonds are exact without moving the folded domain. `--no-backbone` returns alpha-carbon-only
+output from the same seam-compatible trace.
 
 Still ahead, in priority order:
 

@@ -597,19 +597,15 @@ unit's one remaining degree of freedom against bond angles, clashes and φ/ψ to
 
 Every bond length inside a rebuilt region is exact by construction. Side chains are still not built.
 
-The one place it cannot be exact is the **seams**. Where a rebuilt region meets a folded domain,
-that domain's nitrogen still points toward where the region ran in AlphaFold's model, and
-folded-domain atoms are not DODO's to move. A peptide unit reaches at most 2.854 Å from an alpha
-carbon to the nitrogen it bonds to; a rebuilt alpha carbon measures well beyond that from it. The
-bond is unsatisfiable, so DODO aims the atom as close as the residue's own N–CA–C angle allows,
-leaves the bond long — measured 2.6–3.7 Å against an ideal 1.33 (mean ~3.0) — and labels and
-reports it (on `RebuildReport.backbone_seams` and in the run summary). Nothing impossible is
-written: measured over three structures at three seeds, backbone placement introduces zero atom
-pairs closer than the 1.00 Å floor below which no real bond exists.
+The folded-domain **seams are exact too**. DODO passes the folded boundary C/N/O atoms into the CA
+walk, rejects a first or last alpha carbon that cannot support an exact peptide unit, and searches
+the exact bond-geometry circle for a collision-free N or C. Folded-domain atoms remain untouched;
+the generated trace adapts before it is frozen. Across dnmt3a, arf19 and p300 at three seeds, this
+reduced 60 strained seams to zero, with no failed regions, impossible contacts or rebuilt bond
+defects. A conservative long-bond fallback remains for unusual inputs and is reported on
+`RebuildReport.backbone_seams` rather than hidden.
 
-Building from sequence has no seams and comes out completely clean. See the
-[user guide](https://dodo.readthedocs.io) for the full accounting, including why leaving the seam
-residue un-rebuilt does not fix it.
+See the [user guide](https://dodo.readthedocs.io) for the geometry and A/B measurements.
 
 ## What changed, and migrating from 1.x
 

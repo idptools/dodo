@@ -30,12 +30,15 @@ from ..constants import (
     BACKBONE_ANGLE_MEAN,
     BACKBONE_ANGLE_MIN,
     BACKBONE_ANGLE_SD,
+    C_N_PEPTIDE_BOND_LENGTH,
+    CA_C_BOND_LENGTH,
     CA_CA_BOND_LENGTH,
     CA_CLASH_DISTANCE,
     CANDIDATES_PER_ANGLE,
     CLASH_EXCLUDE_WITHIN_RESIDUES,
     MAX_ATTEMPTS_PER_REGION,
     MAX_CANDIDATES_PER_RESIDUE,
+    N_CA_BOND_LENGTH,
     WALK_BATCH_SIZE,
     backbone_angle_grid,
 )
@@ -49,6 +52,7 @@ from ..geometry.metrics import end_to_end, validate_ca_trace
 from ..geometry.sampling import cone_candidates_batch, random_unit_vectors
 from ..geometry.transforms import align_frame
 from ..geometry.transforms import apply as apply_rotation
+from ..validate.impossible import IMPOSSIBLE_SEPARATION
 from .base import IDRRequest, IDRResult
 
 __all__ = [
@@ -68,6 +72,12 @@ _PARALLEL_QUERY_MINIMUM: Final[int] = 2000
 
 #: Clearance around a candidate cloud's centre below which the cloud cannot clash, in A.
 _CANDIDATE_CLEAR_DISTANCE: Final[float] = CA_CA_BOND_LENGTH + CA_CLASH_DISTANCE
+
+#: Maximum separation between a generated boundary CA and the fixed atom across its peptide seam.
+#: These are triangle-inequality limits, not tolerances: beyond them no atom can simultaneously
+#: satisfy both covalent bond lengths, regardless of peptide-plane orientation.
+_N_SEAM_CA_REACH: Final[float] = C_N_PEPTIDE_BOND_LENGTH + N_CA_BOND_LENGTH
+_C_SEAM_CA_REACH: Final[float] = CA_C_BOND_LENGTH + C_N_PEPTIDE_BOND_LENGTH
 
 
 class UnconstrainedJunctionWarning(UserWarning):
@@ -580,6 +590,46 @@ def reachable_envelope(
     return max_reach(n_residues)
 
 
+def _sphere_circle_has_clear_point(
+    centre_a: np.ndarray,
+    radius_a: float,
+    centre_b: np.ndarray,
+    radius_b: float,
+    obstacle: np.ndarray,
+    clearance: float,
+) -> np.ndarray:
+    """Whether each two-sphere intersection circle contains a point clear of one obstacle.
+
+    ``centre_a`` may carry arbitrary leading dimensions. The farthest point on an intersection
+    circle from ``obstacle`` is analytic: split the obstacle offset into the circle-axis and
+    circle-plane components, then take the radial point on the opposite side. This filters a
+    whole boundary candidate cloud without sampling another axis or adding a Python loop.
+    """
+    a = np.asarray(centre_a, dtype=np.float64)
+    b = np.asarray(centre_b, dtype=np.float64)
+    delta_centres = b - a
+    separation = np.linalg.norm(delta_centres, axis=-1)
+    valid = (
+        (separation > 1e-9)
+        & (separation <= radius_a + radius_b)
+        & (separation >= abs(radius_a - radius_b))
+    )
+    safe_separation = np.where(valid, separation, 1.0)
+    axis = delta_centres / safe_separation[..., None]
+    along = (radius_a**2 - radius_b**2 + separation**2) / (2.0 * safe_separation)
+    height_squared = radius_a**2 - along**2
+    valid &= height_squared >= 0.0
+    circle_centre = a + along[..., None] * axis
+    offset = np.asarray(obstacle, dtype=np.float64) - circle_centre
+    axial = np.sum(offset * axis, axis=-1)
+    radial_squared = np.maximum(np.sum(offset * offset, axis=-1) - axial**2, 0.0)
+    farthest_squared = axial**2 + (
+        np.sqrt(radial_squared) + np.sqrt(np.maximum(height_squared, 0.0))
+    ) ** 2
+    result: np.ndarray = valid & (farthest_squared >= clearance**2)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Per-step goal and whole-region plan
 # ---------------------------------------------------------------------------
@@ -760,6 +810,16 @@ class _WalkPlan:
     start_outer: np.ndarray | None = None
     #: Fixed CA one residue beyond ``end_anchor``, away from the region, or ``None``.
     end_outer: np.ndarray | None = None
+    #: Fixed backbone atom across the peptide seam at the growth start, when available.
+    start_seam_xyz: np.ndarray | None = None
+    #: Maximum boundary-CA distance to :attr:`start_seam_xyz`.
+    start_seam_reach: float | None = None
+    #: Fixed backbone atom across the peptide seam at the closure end, when available.
+    end_seam_xyz: np.ndarray | None = None
+    #: Maximum boundary-CA distance to :attr:`end_seam_xyz`.
+    end_seam_reach: float | None = None
+    #: Fixed carbonyl oxygen to clear when closing an N-terminal seam at the growth start.
+    start_seam_avoid_xyz: np.ndarray | None = None
     #: Per-conformer end-to-end target in Angstroms, ``(n_conformations,)``. All equal to
     #: ``target`` in closure mode, where the anchors dictate the span; drawn from
     #: :func:`sample_end_to_end_targets` otherwise, so that a batch is an ensemble.
@@ -856,6 +916,15 @@ class _WalkPlan:
                 extension_fraction=separation / ceiling,
                 start_outer=request.n_anchor_prev_xyz,
                 end_outer=request.c_anchor_next_xyz,
+                start_seam_xyz=request.n_anchor_c_xyz,
+                start_seam_reach=(
+                    _N_SEAM_CA_REACH if request.n_anchor_c_xyz is not None else None
+                ),
+                start_seam_avoid_xyz=request.n_anchor_o_xyz,
+                end_seam_xyz=request.c_anchor_n_xyz,
+                end_seam_reach=(
+                    _C_SEAM_CA_REACH if request.c_anchor_n_xyz is not None else None
+                ),
                 # The anchors dictate the span, so there is no ensemble of targets to draw:
                 # the variety between conformers comes from the walk between the anchors.
                 targets=np.full(request.n_conformations, request.target_end_to_end),
@@ -900,6 +969,15 @@ class _WalkPlan:
         # Growth runs outward from whichever anchor exists, so for an N-terminal tail the
         # "outer" residue of the growth start is the one C-terminal to the C-anchor.
         start_outer = request.c_anchor_next_xyz if reverse else request.n_anchor_prev_xyz
+        start_seam = request.c_anchor_n_xyz if reverse else request.n_anchor_c_xyz
+        start_seam_avoid = None if reverse else request.n_anchor_o_xyz
+        start_seam_reach = (
+            _C_SEAM_CA_REACH
+            if reverse and start_seam is not None
+            else _N_SEAM_CA_REACH
+            if start_seam is not None
+            else None
+        )
         return cls(
             n_residues=n,
             start_anchor=start,
@@ -910,6 +988,9 @@ class _WalkPlan:
             extension_fraction=fraction,
             start_outer=start_outer,
             end_outer=None,
+            start_seam_xyz=start_seam,
+            start_seam_reach=start_seam_reach,
+            start_seam_avoid_xyz=start_seam_avoid,
             targets=targets,
             tolerance_fraction=tolerance_fraction,
             mean_target=mean_target,
@@ -1283,10 +1364,27 @@ class SelfAvoidingWalk:
             if live.size == 0:
                 break
             candidates, weights, centres = self._candidates_for(plan, coords, live, index, rng)
+            seam_mask = None
+            if index == 0 and plan.start_seam_xyz is not None:
+                if plan.start_seam_reach is None:  # pragma: no cover - plan invariant
+                    raise GeometryError("A seam atom was supplied without its geometric reach.")
+                seam_distance = np.linalg.norm(
+                    candidates - plan.start_seam_xyz[None, None, :], axis=2
+                )
+                seam_mask = seam_distance <= plan.start_seam_reach + 1e-12
+                if plan.start_seam_avoid_xyz is not None:
+                    seam_mask &= _sphere_circle_has_clear_point(
+                        candidates,
+                        N_CA_BOND_LENGTH,
+                        plan.start_seam_xyz,
+                        C_N_PEPTIDE_BOND_LENGTH,
+                        plan.start_seam_avoid_xyz,
+                        IMPOSSIBLE_SEPARATION,
+                    )
             chosen, ok, rung = self._select(
                 candidates,
                 weights=weights,
-                extra_mask=None,
+                extra_mask=seam_mask,
                 reference=self._reference_for(plan, coords, live),
                 goal=plan.goal_for(
                     index, targets[live], self._distance_from_origin(plan, coords, live, index)
@@ -1544,6 +1642,14 @@ class SelfAvoidingWalk:
             )
             junction_weight = _gaussian_weight(junction)
             weights = junction_weight if weights is None else weights * junction_weight
+
+        if plan.end_seam_xyz is not None:
+            if plan.end_seam_reach is None:  # pragma: no cover - plan invariant
+                raise GeometryError("A seam atom was supplied without its geometric reach.")
+            seam_distance = np.linalg.norm(
+                candidates - plan.end_seam_xyz[None, None, :], axis=2
+            )
+            extra &= seam_distance <= plan.end_seam_reach + 1e-12
 
         chosen, ok, rung = self._select(
             candidates,

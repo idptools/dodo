@@ -1402,10 +1402,8 @@ class TestBackboneFlag:
     """The ``backbone=`` flag on the two entry points, and its default.
 
     On by default: the backbone is the point of a rebuild for most callers. ``backbone=False`` opts
-    back out to alpha carbons only. The one wrinkle it carries is the seams -- where a rebuilt
-    region joins a residue DODO did not touch, that residue's existing N or C still points toward
-    where the region ran in the *original* model, folded-domain atoms are not DODO's to move, so
-    the seam bond is left long and reported. See :meth:`test_folded_domains_keep_every_atom`.
+    back out to alpha carbons only. Both modes use the same seam-compatible CA trace, so the flag
+    adds atoms without quietly returning a different conformation.
     """
 
     def test_on_by_default(self) -> None:
@@ -1466,39 +1464,17 @@ class TestBackboneFlag:
             names = {str(n) for n in fancy.atom_name[atoms]}
             assert names == {"N", "CA", "C", "O"}, f"residue {residue} has {sorted(names)}"
 
-    def test_every_generated_bond_violation_is_at_a_seam(self) -> None:
-        """The seams are strained, and nothing else is. That is the measured limit of this flag.
-
-        An exact peptide bond onto a folded domain is not reachable from a rebuilt alpha carbon: a
-        peptide unit spans at most 2.854 A to the nitrogen it bonds to, and the measured distance
-        across 17 seams in three structures was 3.2-4.5 A. So the requirement is not that these
-        bonds be ideal -- they cannot be -- but that every violation sit AT a seam, so the interior
-        of a rebuilt region is known to be clean.
-
-        Leaving the seam residue un-rebuilt does not fix it, which is worth recording because it is
-        the obvious idea and it very nearly works. Its alpha carbon being input geometry does make
-        the bond reachable -- 2.45-2.52 A at all 17 seams. But closing onto it means re-placing its
-        nitrogen, and that residue's side chain was built around where its nitrogen used to be, so
-        the new one is driven into its own CB (measured 1.405 A against a correct 2.45) and, for
-        proline, snaps the ring bond to CD (3.444 A against 1.47).
-        """
+    def test_every_generated_bond_is_exact_including_seams(self) -> None:
+        """Boundary-aware CA generation closes the former folded-domain gaps exactly."""
         source = FIXTURES / "dnmt3a.pdb"
         for seed in (0, 1, 2):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                fancy = rebuild(source, seed=seed, backbone=True).models[0]
-            seams = {
-                residue
-                for domain in fancy.domains
-                for span in domain.generated_spans()
-                for residue in (span.start, span.start - 1, span.stop - 1, span.stop)
-            }
-            for violation in validate_bonds(fancy).violations:
-                if violation.provenance != "rebuilt":
-                    continue
-                assert set(violation.residue_indices) & seams, (
-                    f"seed {seed}: a violation away from any seam -- {violation.message}"
-                )
+                report = rebuild(source, seed=seed, backbone=True)
+            bonds = validate_bonds(report.models[0])
+            assert not report.backbone_seams
+            assert not bonds.of_kind("seam")
+            assert not bonds.of_provenance("rebuilt")
 
     def test_introduces_no_impossible_contacts(self) -> None:
         """Whatever the seams do, they must not put two atoms on top of each other.
@@ -1524,33 +1500,15 @@ class TestBackboneFlag:
 
 
 class TestBackboneDoesNotDamageInputGeometry:
-    """The guard that catches the seam "fix" that keeps looking correct and is not.
+    """Closing seams must never come at the cost of damaging folded-domain geometry.
 
-    A rebuilt alpha carbon sits 3.2-4.5 A from the folded domain's fixed nitrogen, where a peptide
-    unit reaches only 2.854 A, so the seam bond is geometrically unsatisfiable and DODO leaves it
-    long. The obvious repair is to stop rebuilding one residue short, so the seam falls on input
-    geometry -- and measured, that does make the distance 2.45-2.52 A at all 17 seams.
-
-    It was implemented on that basis and it is wrong, because closing an exact bond onto that
-    residue means re-placing its nitrogen, and the residue's side chain was built around where that
-    nitrogen used to be. Measured on dnmt3a: PRO282's ring bond CD-N stretched to 2.263 A against an
-    accepted 1.378-1.705, and GLU473's new N landed 1.683 A from its own CB. Trading four strained
-    backbone bonds for a snapped proline ring is not a trade worth making.
-
-    What makes this worth a test rather than a comment is how it hid: both defects are reported with
-    ``input`` provenance, because a residue that was deliberately not rebuilt is not DODO's work by
-    the provenance rules. Any check filtered to ``provenance == "rebuilt"`` -- the natural thing to
-    write when asking "did DODO break anything" -- sees a clean run.
+    A rejected shortcut kept the input boundary residue and replaced its nitrogen. That drove the
+    nitrogen into its existing side chain and broke a proline ring. The production fix instead
+    constrains generated alpha carbons and leaves every folded-domain atom untouched.
     """
 
     def test_no_new_violation_inside_a_single_residue(self) -> None:
-        """The check that catches the seam experiment without flagging the accepted compromise.
-
-        Deliberately scoped to violations WITHIN one residue. The strained seam bonds are between
-        two residues and are the known, reported trade; flagging those would only mean deleting this
-        test the first time somebody read it. What must never appear is a residue whose own internal
-        geometry got damaged -- exactly how the seam experiment failed, on PRO282's ring bond CD-N
-        and GLU473's N-to-CB separation.
+        """Catch the rejected repair that damaged PRO282 and GLU473 internally.
 
         Provenance is deliberately not filtered. Both of those defects were reported as ``input``,
         because a residue DODO did not rebuild is not DODO's work by the provenance rules, so the
@@ -1572,17 +1530,15 @@ class TestBackboneDoesNotDamageInputGeometry:
                 f"{[v.message[:90] for v in introduced]}"
             )
 
-    def test_seam_bonds_are_the_only_thing_introduced(self) -> None:
-        """And they are between-residue, bounded, and reported rather than silent."""
+    def test_no_bond_violation_is_introduced(self) -> None:
+        """The exact seam repair leaves neither seam nor internal bond violations."""
         source = FIXTURES / "dnmt3a.pdb"
         baseline = {v.message for v in validate_bonds(read_structure(source)).violations}
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             model = rebuild(source, seed=0, backbone=True).models[0]
         introduced = [v for v in validate_bonds(model).violations if v.message not in baseline]
-        assert introduced, "expected the known seam compromise to show up"
-        assert all(len(set(v.residue_indices)) == 2 for v in introduced)
-        assert len(introduced) < 10, f"{len(introduced)} is more seams than dnmt3a has"
+        assert introduced == []
 
     def test_side_chain_geometry_of_untouched_residues_survives(self) -> None:
         """No atom of a residue DODO did not rebuild may move at all.
@@ -1629,9 +1585,9 @@ class TestBackboneDoesNotDamageInputGeometry:
 
 
 _BACKBONE_BASELINE: dict[str, tuple[int, int]] = {
-    "dnmt3a": (2, 4),
-    "arf19": (0, 6),
-    "p300": (3, 10),  # clashes 4 -> 3: finer coupled-clash azimuth grid (5 deg vs 15 deg)
+    "dnmt3a": (2, 0),
+    "arf19": (0, 0),
+    "p300": (3, 0),  # clashes 4 -> 3: finer coupled-clash azimuth grid (5 deg vs 15 deg)
 }
 
 
@@ -1708,12 +1664,9 @@ class TestEndToEndToleranceIsDisclosed:
 class TestBackboneBaseline:
     """Frozen 2026-08 baseline for ``--backbone`` quality on the committed corpus (BB-0 floor).
 
-    The analytic backbone currently leaves introduced steric clashes and strained seams. The
-    ceilings below are the measured baseline and are **ratchets**: they may only ever move DOWN as
-    the backbone redo (BB-1 clashes, BB-2 seams) improves them. Raising one to make a change pass
-    hides a regression -- fix the change instead. Impossible contacts are a hard invariant, never a
-    ratchet. This also guards BB-0's own deliverable: that strained seams are surfaced on the
-    report rather than left for the validator to rediscover.
+    The ceilings below are measured **ratchets**: they may only move down. Seam ceilings are now
+    zero; clash ceilings retain the best committed seed-0 result. Raising one to make a change pass
+    hides a regression. Impossible contacts are a hard invariant, never a ratchet.
     """
 
     def _check(self, name: str) -> None:
@@ -1741,17 +1694,13 @@ class TestBackboneBaseline:
             f"{clash_ceiling}. This ratchet only moves down; fix the change, do not raise it."
         )
 
-        # The rebuild introduces ZERO bond defects. The unavoidable seam bonds are reclassified as
-        # kind="seam"/provenance="seam" (approximate by construction, inherited from the
-        # rigidly-repositioned folded neighbour), so nothing is attributed to "rebuilt" -- the same
-        # differential-clean bar the CA-only path already meets.
+        # The rebuild introduces ZERO bond defects, including at folded-domain seams.
         bond_report = validate_bonds(bb_model)
         assert not bond_report.of_provenance("rebuilt"), (
             f"{name}: rebuild introduced a bond defect: "
             + "; ".join(v.message for v in bond_report.of_provenance("rebuilt"))
         )
-        # The seams the validator independently sees (kind="seam") match the seams the report
-        # records; both are within baseline and typed. CA-only placement strains no seam.
+        # Validator and report agree, and the zero seam ceiling is exact rather than aspirational.
         assert len(bond_report.of_kind("seam")) == len(bb.backbone_seams)
         assert all(isinstance(s, SeamStrain) for s in bb.backbone_seams)
         assert len(bb.backbone_seams) <= seam_ceiling
@@ -1764,10 +1713,10 @@ class TestBackboneBaseline:
     def test_seam_reclassification_needs_the_generated_boundary(self, tmp_path: Path) -> None:
         """The 'seam' exemption must not mask a real chain break in non-DODO input.
 
-        The rebuilt structure labels its unclosable seams kind='seam' (not counted against ok). The
-        IDENTICAL geometry, written out and read back as a plain PDB with no region assignments,
-        must instead be chain_breaks -- proving the exemption keys strictly on the
-        generated<->input boundary and cannot silently accept a genuine break.
+        Normal fixture rebuilds now close every seam, so make one deliberately long after the
+        rebuild. With region provenance it is a seam; the IDENTICAL geometry, written and read
+        back without assignments, must be a chain break. This proves the exemption keys strictly
+        on the generated/input boundary and cannot silently accept a genuine break.
         """
         import dodo
 
@@ -1775,12 +1724,28 @@ class TestBackboneBaseline:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             report = rebuild(source, seed=0, backbone=True)
-        with_regions = validate_bonds(report.models[0])
+        model = report.models[0].copy()
+        span = next(
+            span
+            for domain in model.domains
+            for span in domain.generated_spans()
+            if span.stop < model.n_residues
+        )
+        boundary = span.stop - 1
+        anchor = span.stop
+        c_atoms = model.atom_slice_for_residues(boundary, boundary + 1)
+        n_atoms = model.atom_slice_for_residues(anchor, anchor + 1)
+        c_index = next(i for i in range(c_atoms.start, c_atoms.stop) if model.atom_name[i] == "C")
+        n_index = next(i for i in range(n_atoms.start, n_atoms.stop) if model.atom_name[i] == "N")
+        direction = model.xyz[n_index] - model.xyz[c_index]
+        model.xyz[n_index] = model.xyz[c_index] + 4.0 * direction / np.linalg.norm(direction)
+
+        with_regions = validate_bonds(model)
         seams = with_regions.of_kind("seam")
         assert seams, "expected the rebuilt structure to carry labelled seams"
 
         out = tmp_path / "backbone.pdb"
-        dodo.write_pdb(report.models, out)
+        dodo.write_pdb([model], out)
         bare = read_structure(out)  # a fresh read carries no generated spans
         without = validate_bonds(bare)
         assert not without.of_kind("seam"), "a region-less structure must not get the exemption"
@@ -1833,12 +1798,10 @@ def _atoms_by_name(model: Structure, residue: int) -> dict[str, np.ndarray]:
 class TestBackboneIsFirstClass:
     """First-class guarantees for ``--backbone``, at EVERY seed on EVERY committed fixture.
 
-    :class:`TestBackboneBaseline` pins the seed-0 clash and seam *ceilings*, which are seed-specific
-    ratchets. These are the guarantees that do not depend on the seed, so they must hold for every
-    conformer the feature will ever emit: it writes nothing physically impossible, every bond it
-    makes inside a rebuilt region is exact, every rebuilt residue gets a complete N/CA/C/O, the only
-    long bonds are the honestly-labelled seams, and the output is reproducible. A regression that
-    surfaced only at seed 1 would pass a seed-0 baseline untouched; this is what closes that gap.
+    :class:`TestBackboneBaseline` pins the seed-0 quality floor. These guarantees must hold for
+    every conformer: no impossible contact, exact rebuilt and seam bonds, a complete N/CA/C/O on
+    every rebuilt residue, and reproducible output. A regression that surfaced only at seed 1
+    would pass a seed-0 baseline untouched; this closes that gap.
     """
 
     @pytest.mark.parametrize("seed", [0, 1, 2])
@@ -1874,9 +1837,7 @@ class TestBackboneIsFirstClass:
         ]
         assert introduced == [], f"{name} seed {seed}: --backbone introduced {introduced}"
 
-        # 2. The rebuild introduces zero bond defects of its own. Seams are provenance="seam" and
-        #    excluded by design -- inherited strain from a rigidly repositioned neighbour, not a
-        #    defect DODO caused.
+        # 2. The rebuild introduces zero bond defects of its own.
         bonds = validate_bonds(model)
         assert not bonds.of_provenance("rebuilt"), (
             f"{name} seed {seed}: rebuilt-provenance bond defect: "
@@ -1884,8 +1845,8 @@ class TestBackboneIsFirstClass:
         )
 
         # 3. Every rebuilt residue carries a COMPLETE N/CA/C/O backbone, and the three bonds one
-        #    residue determines are exact by construction. (The C-N peptide bond spans two residues;
-        #    where it is long that is a seam, covered by (2) and (4).)
+        #    residue determines are exact by construction. The cross-residue C-N bonds, including
+        #    folded-domain seams, are covered by (2) and (4).
         for residue in rebuilt:
             atoms = _atoms_by_name(model, residue)
             missing = {"N", "CA", "C", "O"} - set(atoms)
@@ -1902,10 +1863,13 @@ class TestBackboneIsFirstClass:
                     f"{name} seed {seed} residue {residue}: {label} bond {bond:.6f} A vs {ideal}"
                 )
 
-        # 4. The only long bonds are the seams, and every one the validator independently sees is
-        #    one the report recorded and typed -- the honest-labelling contract, held at every seed.
+        # 4. Boundary-aware CA generation makes every peptide seam exactly closable. Keep the
+        #    validator/report agreement check too, so a future fallback cannot go unreported.
         assert len(bonds.of_kind("seam")) == len(report.backbone_seams)
         assert all(isinstance(s, SeamStrain) for s in report.backbone_seams)
+        assert not report.backbone_seams, (
+            f"{name} seed {seed}: boundary-aware generation left a strained seam"
+        )
 
         # 5. Reproducible: the same seed yields byte-identical backbone atoms on a second run.
         with warnings.catch_warnings():

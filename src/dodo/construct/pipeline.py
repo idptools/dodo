@@ -500,6 +500,7 @@ def _build_region(
     engine: object,
     min_length: int,
     label: str,
+    close_backbone_seams: bool = False,
     requested_override: float | None = None,
     domain: Domain | None = None,
 ) -> RegionOutcome:
@@ -556,6 +557,15 @@ def _build_region(
         c_anchor_xyz=c_anchor_xyz,
         n_anchor_prev_xyz=_outer_ca(structure, span.n_anchor, step=-1),
         c_anchor_next_xyz=_outer_ca(structure, span.c_anchor, step=+1),
+        n_anchor_c_xyz=(
+            _anchor_atom(structure, span.n_anchor, "C") if close_backbone_seams else None
+        ),
+        n_anchor_o_xyz=(
+            _anchor_atom(structure, span.n_anchor, "O") if close_backbone_seams else None
+        ),
+        c_anchor_n_xyz=(
+            _anchor_atom(structure, span.c_anchor, "N") if close_backbone_seams else None
+        ),
         # The ensemble mean, not this model's draw: see IDRRequest.ensemble_mean_end_to_end.
         ensemble_mean_end_to_end=(target.end_to_end if target is not None else None),
         n_conformations=1,
@@ -797,6 +807,18 @@ def _outer_ca(structure: Structure, anchor: int | None, *, step: int) -> np.ndar
         return None
     coords: np.ndarray = structure.ca_xyz[outer]
     return coords
+
+
+def _anchor_atom(structure: Structure, residue: int | None, name: str) -> np.ndarray | None:
+    """Coordinate of one fixed anchor atom, or ``None`` when the input does not contain it."""
+    if residue is None:
+        return None
+    atoms = structure.atom_slice_for_residues(residue, residue + 1)
+    for index in range(atoms.start, atoms.stop):
+        if str(structure.atom_name[index]) == name:
+            coordinate: np.ndarray = structure.xyz[index]
+            return coordinate
+    return None
 
 
 def _obstacles_for_span(
@@ -1049,6 +1071,7 @@ def _rebuild_one_model(
     rng: np.random.Generator,
     min_length: int,
     model_targets: dict[tuple[str, int, int], np.ndarray],
+    close_backbone_seams: bool = True,
     on_region_done: Callable[[int], None] | None = None,
 ) -> list[RegionOutcome]:
     """Rebuild every loop and IDR of one model, in place. Returns per-region outcomes.
@@ -1132,6 +1155,7 @@ def _rebuild_one_model(
                 engine=loops_engine,
                 min_length=min_length,
                 label=f"loop in FD {parent.span.start + 1}-{parent.span.stop}",
+                close_backbone_seams=close_backbone_seams,
             )
 
         def record(outcome: RegionOutcome) -> None:
@@ -1165,6 +1189,7 @@ def _rebuild_one_model(
                 engine=engine,
                 min_length=min_length,
                 label="connecting IDR" if not domain.span.is_terminal else "terminal IDR",
+                close_backbone_seams=close_backbone_seams,
                 domain=domain,
             )
 
@@ -1348,13 +1373,14 @@ def rebuild(
         (both pseudo-dihedrals flanking a unit); against the four-carbon form it replaced, that is
         worth 5.1% on C and 3.8% on N, each with a paired 95% CI excluding zero.
 
-        The one thing it cannot make exact is the seams. Where a rebuilt region meets a folded
-        domain, an exact peptide bond is geometrically impossible: a peptide unit reaches 2.854 A
-        from an alpha carbon to the nitrogen it bonds to, and a rebuilt alpha carbon sits 3.2-4.5 A
-        from that fixed (rigidly repositioned) nitrogen. DODO aims the carbon at it, leaving the
-        bond long -- about 2.2 A against an ideal 1.329 -- rather than writing two atoms on top of
-        each other, and labels and reports every such seam on
-        :attr:`RebuildReport.backbone_seams`. Nothing physically impossible is ever written.
+        Folded-domain seams are constraints on the CA walk rather than a post-processing repair.
+        The first and last generated alpha carbons are accepted only when the fixed folded-domain
+        C/N atoms are within exact peptide reach; the N-terminal constraint also rejects a CA when
+        every exact seam nitrogen would overlap the folded carbonyl oxygen. Backbone placement then
+        searches the whole exact-bond intersection circle for a valid angle and collision-free
+        atom. If an unusual input still supplies no valid point, the conservative fallback leaves
+        a long bond rather than an impossible overlap and reports it on
+        :attr:`RebuildReport.backbone_seams`.
     min_length
         Shortest region worth rebuilding. Shorter ones keep their input coordinates.
     fasta
@@ -1622,6 +1648,10 @@ def rebuild(
                 engine=engine_instance,
                 rng=rng,
                 min_length=min_length,
+                # A CA-only build must describe a trace that can receive a backbone later, and
+                # ``backbone=`` promises to decorate rather than re-sample that trace. Enforce seam
+                # reachability in both modes so identical seeds keep identical alpha carbons.
+                close_backbone_seams=True,
                 model_targets=model_targets,
                 on_region_done=tracker.advance,
             )

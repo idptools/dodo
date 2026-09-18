@@ -109,6 +109,17 @@ class IDRRequest:
         CA coordinate of the fixed residue one further C-terminal, the mirror image of
         :attr:`n_anchor_prev_xyz`. Constrains and exposes the pseudo-angle centred on the
         C-anchor.
+    n_anchor_c_xyz
+        Carbonyl-carbon coordinate of the fixed residue immediately N-terminal to the region.
+        When supplied, the first generated alpha carbon must remain within the geometric reach
+        of an exact ``C-N-CA`` peptide junction. This turns seam closure into a generation
+        constraint instead of discovering an unreachable bond after the CA trace is frozen.
+    n_anchor_o_xyz
+        Carbonyl-oxygen coordinate paired with :attr:`n_anchor_c_xyz`. It lets the generator
+        reject a boundary CA when every exact seam-nitrogen position would overlap that oxygen.
+    c_anchor_n_xyz
+        Backbone-nitrogen coordinate of the fixed residue immediately C-terminal to the region.
+        The mirror constraint for the last generated alpha carbon.
     ensemble_mean_end_to_end
         The end-to-end distance the *region* was asked for, in Angstroms, when
         :attr:`target_end_to_end` is one draw from an ensemble spread around it rather than
@@ -150,6 +161,9 @@ class IDRRequest:
     c_anchor_xyz: np.ndarray | None = None
     n_anchor_prev_xyz: np.ndarray | None = None
     c_anchor_next_xyz: np.ndarray | None = None
+    n_anchor_c_xyz: np.ndarray | None = None
+    n_anchor_o_xyz: np.ndarray | None = None
+    c_anchor_n_xyz: np.ndarray | None = None
     ensemble_mean_end_to_end: float | None = None
     n_conformations: int = 1
 
@@ -182,6 +196,15 @@ class IDRRequest:
         object.__setattr__(
             self, "c_anchor_next_xyz", _as_anchor(self.c_anchor_next_xyz, "c_anchor_next_xyz")
         )
+        object.__setattr__(
+            self, "n_anchor_c_xyz", _as_anchor(self.n_anchor_c_xyz, "n_anchor_c_xyz")
+        )
+        object.__setattr__(
+            self, "n_anchor_o_xyz", _as_anchor(self.n_anchor_o_xyz, "n_anchor_o_xyz")
+        )
+        object.__setattr__(
+            self, "c_anchor_n_xyz", _as_anchor(self.c_anchor_n_xyz, "c_anchor_n_xyz")
+        )
         # An outer neighbour with no anchor is not a partially specified junction, it is a
         # contradiction: the only thing the coordinate is for is the pseudo-angle centred
         # on the anchor, and without the anchor there is no such angle. Accepting it
@@ -196,6 +219,22 @@ class IDRRequest:
                     f"anchor, and its only use is the pseudo-angle centred on that anchor, "
                     f"so there is nothing for it to constrain when the anchor is absent."
                 )
+        for atom, anchor in (
+            ("n_anchor_c_xyz", "n_anchor_xyz"),
+            ("n_anchor_o_xyz", "n_anchor_xyz"),
+            ("c_anchor_n_xyz", "c_anchor_xyz"),
+        ):
+            if getattr(self, atom) is not None and getattr(self, anchor) is None:
+                raise EngineError(
+                    f"{atom} was given without {anchor}. A seam atom belongs to its fixed "
+                    f"anchor residue, so it cannot constrain a boundary when that anchor is "
+                    f"absent."
+                )
+        if self.n_anchor_o_xyz is not None and self.n_anchor_c_xyz is None:
+            raise EngineError(
+                "n_anchor_o_xyz was given without n_anchor_c_xyz. The oxygen is only used to "
+                "check candidate nitrogens on the exact seam circle around that carbon."
+            )
 
     def __repr__(self) -> str:
         anchors = {

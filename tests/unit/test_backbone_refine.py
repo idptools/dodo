@@ -416,13 +416,22 @@ class TestPolishIndexReuse:
             f"group(s); it should be at most once per round"
         )
 
-    def test_the_indexing_work_does_not_scale_with_clash_groups(self) -> None:
-        """The property that actually costs time: total points pushed through cKDTree."""
+    def test_accepted_moves_reindex_only_the_moving_suffix(self) -> None:
+        """An accepted move must not rebuild the larger, immutable prefix index.
+
+        A total-work ratio against ``groups * cloud`` is not a stable assertion here: when better
+        input geometry reduces the number of clash groups, the fixed once-per-pass and
+        once-per-round work dominates that ratio even though less indexing is done in absolute
+        terms.  The exact implementation property is stronger and geometry-independent: the two
+        component indexes partition the cloud, the larger fixed component is built once, and only
+        the moving component can be rebuilt after accepted moves.
+        """
         builds, groups = self._count_tree_builds(str(FIXTURES / "p300.pdb"))
         cloud = max(builds)
-        indexed = sum(builds)
-        per_group = groups * cloud  # what one whole-cloud index per group would have cost
-        assert indexed < 0.5 * per_group, (
-            f"{indexed:,} points indexed against {per_group:,} for a per-group rebuild -- "
-            f"the saving has gone"
-        )
+        components = sorted({size for size in builds if size < cloud}, reverse=True)
+        assert len(components) == 2, f"expected fixed and moving indexes, observed {builds}"
+        fixed, moving = components
+        assert fixed + moving == cloud
+        assert fixed > moving, "the fixture no longer exercises a larger immutable prefix"
+        assert builds.count(fixed) == 1, f"the {fixed}-point fixed index was rebuilt: {builds}"
+        assert builds.count(moving) <= groups

@@ -202,46 +202,34 @@ bond lengths are exact by construction.
 Only the regions DODO generated gain atoms, which is what makes this additive rather than a
 rewrite — and `--ca-only` remains the way to strip folded domains down.
 
-**The seams are strained, and cannot be made exact.** Where a rebuilt region meets a folded domain,
-the domain's existing nitrogen still points toward where the region ran in AlphaFold's original
-model — DODO moved the domain rigidly and redrew the region beneath it, and folded-domain atoms are
-not DODO's to move. A peptide unit reaches at most 2.854 Å from an alpha carbon to the nitrogen it
-bonds to; measured across these three structures, a rebuilt alpha carbon sits well beyond that —
-around **3–5 Å** away. The bond is therefore not merely hard to get right, it is geometrically
-unsatisfiable.
+**The seams are exact.** The old order of operations generated a CA-only region first and asked the
+backbone pass to repair its folded-domain junction afterwards. That was too late: a peptide unit
+can reach only 2.787 Å from a folded carbon to the next alpha carbon, or 2.854 Å from a generated
+alpha carbon to the next folded nitrogen, while the frozen trace often left 3–5 Å. The visible gap
+was therefore real geometry, not a viewer problem.
 
-DODO aims the atom as close as the residue's own N–CA–C angle allows and leaves the bond long —
-measured 2.6–3.7 Å against an ideal 1.33 (mean ~3.0) — rather than writing two atoms into the same
-space, and reports every seam where it does (now on `RebuildReport.backbone_seams`). Measured over
-these three structures at seed 0, that is 4 such bonds on dnmt3a (of 911 residues), 6 on arf19 and
-10 on p300.
+DODO now supplies the folded boundary C/N/O coordinates to the walk. The first and last generated
+alpha carbons are accepted only when an exact peptide unit is reachable. At an N-terminal seam it
+also rejects a CA if *every* exact nitrogen on the two-bond intersection circle would overlap the
+folded carbonyl oxygen. Once the trace is fixed, backbone placement searches the full exact-bond
+circle rather than testing only the point nearest its lookup-table prediction. Folded-domain atoms
+still never move.
 
-Where the carbon and its oxygen go is **checked, not merely constructed**, and that distinction was
-earned the hard way. Three successive versions placed them by geometry alone and each was blind to
-one more neighbour: aiming the carbon at the anchor's nitrogen made the two collinear and threw the
-carbonyl onto an arbitrary axis (O 0.6 Å from its own alpha carbon); holding the residue's own
-N–CA–C angle instead left the oxygen 0.975 Å from that nitrogen; putting the oxygen trans to the
-nitrogen left it 0.96 Å from the anchor's CB. The placement now sweeps the one free azimuth and
-rejects any position that collides. Over the same 15 runs, `--backbone` introduces **zero** atom
-pairs closer than the 1.00 Å floor below which no real bond exists, and **zero** damage to any
-residue's own internal geometry.
+The paired A/B over dnmt3a, arf19 and p300 at seeds 0–2 changed **60 strained seams to zero**. Both
+paths built every region and introduced zero impossible contacts or rebuilt-provenance bond
+defects. Introduced steric-clash findings fell from 11 to 1 across the nine runs. Total measured
+backbone runtime was 8.32 s before and 6.33 s after on the test machine; the constraint did not add
+a slow minimization step and in difficult closures reduced wasted retries.
+
+The conservative fallback still exists for inputs whose fixed folded geometry offers no valid
+exact point: it leaves and reports a long bond on `RebuildReport.backbone_seams` instead of writing
+an overlap. Normal committed fixtures do not exercise it.
 
 :::{note}
-The obvious fix is to leave the seam residue un-rebuilt so its alpha carbon is input geometry, and
-it very nearly works — that distance becomes 2.45–2.52 Å at all 17 seams, comfortably reachable.
-What defeats it is the side chain. Closing an exact bond onto that residue means re-placing its
-nitrogen, and its side chain was built around where that nitrogen used to be, so the new one is
-driven into the residue's own CB (measured 1.405 Å against a correct 2.45) and, for proline, snaps
-the ring bond to CD (3.444 Å against 1.47). Trading a strained backbone bond for a broken proline
-ring is not a trade worth making, so DODO does not.
-
-Constraining the walk so its closing alpha carbon lands within peptide reach of the anchor's
-nitrogen was tried too, and measured not to work. Over 83 closures across three structures and
-three seeds, only 22 have an in-reach point that also satisfies the CA–CA–CA pseudo-angle window —
-and those already close. 40 never bring the closure circle within reach at all, and 21 can only
-reach the nitrogen by kinking that angle. So the strained seam is not a missing feature; it is what
-independent rigid-body repositioning and chain rebuilding cost, and DODO labels it rather than
-hiding it.
+Leaving the boundary residue un-rebuilt is still the wrong repair. Although its original alpha
+carbon makes the peptide bond reachable, replacing that residue's nitrogen can drive it into its
+existing side chain and can break a proline ring. Boundary-aware generation moves only generated
+alpha carbons and preserves every folded-domain atom.
 :::
 
 **It can introduce marginal steric contacts.** Alpha carbons are placed 3.20 Å apart and the trace

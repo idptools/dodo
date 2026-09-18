@@ -561,6 +561,50 @@ def _on_two_spheres(
     return resolved
 
 
+def _on_two_spheres_circle(
+    centre_a: np.ndarray,
+    radius_a: float,
+    centre_b: np.ndarray,
+    radius_b: float,
+    toward: np.ndarray,
+    *,
+    samples: int = 72,
+) -> np.ndarray | None:
+    """Evenly sample the exact intersection circle of two bond-length spheres.
+
+    :func:`_on_two_spheres` returns the one exact point nearest a prediction. At a seam that point
+    can collide even though another point on the same exact-bond circle is clean. Return the full
+    bounded candidate set, ordered only by azimuth; the caller applies its complete angle and
+    steric checks and then chooses the survivor nearest ``toward``.
+    """
+    separation = float(np.linalg.norm(centre_b - centre_a))
+    if (
+        separation < 1e-9
+        or separation > radius_a + radius_b
+        or separation < abs(radius_a - radius_b)
+    ):
+        return None
+    axis = (centre_b - centre_a) / separation
+    along = (radius_a**2 - radius_b**2 + separation**2) / (2.0 * separation)
+    height_squared = radius_a**2 - along**2
+    if height_squared < 0.0:
+        return None
+    centre = centre_a + along * axis
+    first = toward - centre
+    first = first - float(np.dot(first, axis)) * axis
+    if float(np.linalg.norm(first)) < 1e-9:
+        arbitrary = np.array([1.0, 0.0, 0.0])
+        if abs(float(np.dot(arbitrary, axis))) > 0.9:
+            arbitrary = np.array([0.0, 1.0, 0.0])
+        first = arbitrary - float(np.dot(arbitrary, axis)) * axis
+    first = _unit(first)
+    second = np.cross(axis, first)
+    azimuth = np.linspace(0.0, 2.0 * np.pi, samples, endpoint=False)
+    radial = np.cos(azimuth)[:, None] * first + np.sin(azimuth)[:, None] * second
+    candidates: np.ndarray = centre + np.sqrt(max(height_squared, 0.0)) * radial
+    return candidates
+
+
 def _place_carbonyl_oxygen(ca: np.ndarray, c: np.ndarray, n_next: np.ndarray) -> np.ndarray:
     """O is fully determined by CA(i), C(i) and N(i+1); from the true three it lands to 0.013 A."""
     to_ca = _unit(ca - c)
@@ -1637,35 +1681,49 @@ def add_backbone_to_rebuilt(
                 veto = np.asarray(structure.xyz, dtype=np.float64)[
                     np.asarray(near, dtype=np.int64)
                 ]
-                seam = _on_two_spheres(
+                exact = _on_two_spheres_circle(
                     anchor_ca,
                     CA_C_BOND_LENGTH,
                     neighbour_n,
                     C_N_PEPTIDE_BOND_LENGTH,
                     placed[stop - 1]["C"],
                 )
-                # The exact point holds both bond lengths and nothing else, so it is CHECKED before
-                # it is accepted -- against everything nearby (measured on PTBP2, an exact seam atom
-                # landed 0.797 A from a folded oxygen), against the carbonyl oxygen it induces (O is
-                # fully determined by C, and on Q15642 the exact C's oxygen landed on a folded atom
-                # 56 residues away in sequence), and against the residue's own N-CA-C angle (on
-                # Q8N8A8 the exact C collapsed it to 78.9 degrees, putting the residue's own N and C
-                # 1.90 A apart -- the geometry the bond validator flags as atoms on top of each
-                # other).
-                if seam is not None:
+                # Every point on the intersection circle holds both bond lengths and nothing else,
+                # so search that exact family before accepting one. Testing only the point nearest
+                # the table prediction left avoidable gaps: on dnmt3a one such point put a seam N
+                # 0.667 A from a folded oxygen while another azimuth on the same exact circle was
+                # clean. Check the seam atom, the carbonyl oxygen it induces, and the residue's own
+                # N-CA-C angle, then keep the valid point closest to the prediction.
+                seam = None
+                if exact is not None:
                     prev_n = placed[stop - 1].get("N")
-                    angle_bad = prev_n is not None and not (
-                        N_CA_C_WINDOW_MIN
-                        <= _bond_angle(prev_n, anchor_ca, seam)
-                        <= N_CA_C_WINDOW_MAX
-                    )
-                    induced_o = _place_carbonyl_oxygen(anchor_ca, seam, neighbour_n)
-                    if (
-                        angle_bad
-                        or _would_overlap(seam, veto, IMPOSSIBLE_SEPARATION)
-                        or _would_overlap(induced_o, veto, IMPOSSIBLE_SEPARATION)
-                    ):
-                        seam = None
+                    valid: list[np.ndarray] = []
+                    for candidate in exact:
+                        angle_bad = prev_n is not None and not (
+                            N_CA_C_WINDOW_MIN
+                            <= _bond_angle(prev_n, anchor_ca, candidate)
+                            <= N_CA_C_WINDOW_MAX
+                        )
+                        induced_o = _place_carbonyl_oxygen(
+                            anchor_ca, candidate, neighbour_n
+                        )
+                        if not (
+                            angle_bad
+                            or _would_overlap(candidate, veto, IMPOSSIBLE_SEPARATION)
+                            or _would_overlap(induced_o, veto, IMPOSSIBLE_SEPARATION)
+                        ):
+                            valid.append(candidate)
+                    if valid:
+                        choices = np.asarray(valid, dtype=np.float64)
+                        seam = choices[
+                            int(
+                                np.argmin(
+                                    np.linalg.norm(
+                                        choices - placed[stop - 1]["C"], axis=1
+                                    )
+                                )
+                            )
+                        ]
                 if seam is None:
                     # The exact placement is unavailable: the spheres do not intersect (on dnmt3a's
                     # loop CA(392) sits 3.741 A from N(393) where a peptide unit reaches ~2.43, so
@@ -1708,7 +1766,7 @@ def add_backbone_to_rebuilt(
                 veto = np.asarray(structure.xyz, dtype=np.float64)[
                     np.asarray(near, dtype=np.int64)
                 ]
-                seam = _on_two_spheres(
+                exact = _on_two_spheres_circle(
                     first_ca,
                     N_CA_BOND_LENGTH,
                     neighbour_c,
@@ -1719,15 +1777,29 @@ def add_backbone_to_rebuilt(
                 # (measured on PTBP2: an exact N 0.797 A from the folded carbonyl O) and against
                 # the residue's own N-CA-C angle. No induced oxygen here -- this residue's O hangs
                 # off its C, which the seam does not move.
-                if seam is not None:
+                seam = None
+                if exact is not None:
                     own_c = placed[start].get("C")
-                    angle_bad = own_c is not None and not (
-                        N_CA_C_WINDOW_MIN
-                        <= _bond_angle(seam, first_ca, own_c)
-                        <= N_CA_C_WINDOW_MAX
-                    )
-                    if angle_bad or _would_overlap(seam, veto, IMPOSSIBLE_SEPARATION):
-                        seam = None
+                    valid = []
+                    for candidate in exact:
+                        angle_bad = own_c is not None and not (
+                            N_CA_C_WINDOW_MIN
+                            <= _bond_angle(candidate, first_ca, own_c)
+                            <= N_CA_C_WINDOW_MAX
+                        )
+                        if not angle_bad and not _would_overlap(
+                            candidate, veto, IMPOSSIBLE_SEPARATION
+                        ):
+                            valid.append(candidate)
+                    if valid:
+                        choices = np.asarray(valid, dtype=np.float64)
+                        seam = choices[
+                            int(
+                                np.argmin(
+                                    np.linalg.norm(choices - placed[start]["N"], axis=1)
+                                )
+                            )
+                        ]
                 if seam is None:
                     # Hold this residue's own N-CA-C angle and spend the remaining freedom reaching
                     # toward the neighbour's carbon while clearing its atoms and the wide shell.

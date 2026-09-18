@@ -31,12 +31,15 @@ from dodo.constants import (
     BACKBONE_ANGLE_MEAN,
     BACKBONE_ANGLE_MIN,
     BACKBONE_ANGLE_SD,
+    C_N_PEPTIDE_BOND_LENGTH,
+    CA_C_BOND_LENGTH,
     CA_CA_BOND_LENGTH,
     CA_CA_BOND_TOLERANCE,
     CA_CLASH_DISTANCE,
     CLASH_EXCLUDE_WITHIN_RESIDUES,
     CLASH_RELAXATION_LADDER,
     MAX_ATTEMPTS_PER_REGION,
+    N_CA_BOND_LENGTH,
     flory_end_to_end,
 )
 from dodo.engines.base import ConformationEngine, IDRRequest, IDRResult
@@ -148,6 +151,17 @@ class TestIDRRequest:
         assert request.n_anchor_xyz is not None
         assert request.n_anchor_xyz.dtype == np.float64
 
+    def test_normalizes_seam_atoms_to_float_arrays(self) -> None:
+        request = IDRRequest(
+            "GG",
+            2,
+            5.0,
+            n_anchor_xyz=ORIGIN,
+            n_anchor_c_xyz=np.array([1, 2, 3]),
+        )
+        assert request.n_anchor_c_xyz is not None
+        assert request.n_anchor_c_xyz.dtype == np.float64
+
     def test_sequence_length_must_match_residue_count(self) -> None:
         with pytest.raises(EngineError, match="sequence has 3 residues"):
             IDRRequest("GGG", 5, 10.0)
@@ -179,6 +193,20 @@ class TestIDRRequest:
         tail = IDRRequest("GGG", 3, 10.0, n_anchor_xyz=ORIGIN)
         assert not tail.is_interior
         assert tail.anchor_separation is None
+
+    def test_seam_atom_without_its_anchor_is_refused(self) -> None:
+        with pytest.raises(EngineError, match="n_anchor_c_xyz"):
+            IDRRequest("GGG", 3, 10.0, n_anchor_c_xyz=ORIGIN)
+
+    def test_seam_oxygen_without_its_carbon_is_refused(self) -> None:
+        with pytest.raises(EngineError, match="without n_anchor_c_xyz"):
+            IDRRequest(
+                "GGG",
+                3,
+                10.0,
+                n_anchor_xyz=ORIGIN,
+                n_anchor_o_xyz=np.array([0.0, 1.0, 0.0]),
+            )
 
 
 class TestIDRResult:
@@ -357,6 +385,34 @@ class TestJunctions:
         distances = np.linalg.norm(trace[:, None, :] - trace[None, :, :], axis=2)
         np.fill_diagonal(distances, np.inf)
         assert distances.min() > 1.0
+
+
+class TestPeptideSeamConstraints:
+    def test_both_boundary_cas_stay_inside_exact_peptide_reach(self) -> None:
+        """The CA walk must not hand an impossible seam to the later backbone pass."""
+        separation = 20.0
+        request = IDRRequest(
+            "G" * 10,
+            10,
+            separation,
+            n_anchor_xyz=np.array([0.0, 0.0, 0.0]),
+            c_anchor_xyz=np.array([separation, 0.0, 0.0]),
+            n_anchor_prev_xyz=np.array([-CA_CA_BOND_LENGTH, 0.0, 0.0]),
+            c_anchor_next_xyz=np.array(
+                [separation + CA_CA_BOND_LENGTH, 0.0, 0.0]
+            ),
+            n_anchor_c_xyz=np.array([1.5, 0.0, 0.0]),
+            n_anchor_o_xyz=np.array([1.5, 1.23, 0.0]),
+            c_anchor_n_xyz=np.array([separation - 1.45, 0.0, 0.0]),
+        )
+        result = SelfAvoidingWalk().generate(request, None, np.random.default_rng(0))
+        trace = result.ca_coords[0]
+        assert np.linalg.norm(trace[0] - request.n_anchor_c_xyz) <= (
+            C_N_PEPTIDE_BOND_LENGTH + N_CA_BOND_LENGTH + 1e-12
+        )
+        assert np.linalg.norm(trace[-1] - request.c_anchor_n_xyz) <= (
+            CA_C_BOND_LENGTH + C_N_PEPTIDE_BOND_LENGTH + 1e-12
+        )
 
 
 class TestBondGeometry:
